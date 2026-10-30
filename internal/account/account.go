@@ -31,12 +31,15 @@ var (
 	ErrInvalidPassword = errors.New("invalid password")
 	// ErrInvalidCredentials means password verification failed.
 	ErrInvalidCredentials = errors.New("invalid credentials")
+	// ErrCurrentDevice means the current device cannot revoke itself.
+	ErrCurrentDevice = errors.New("cannot revoke the current device")
 )
 
 const (
-	aadServerKey  = "toget:server-key:v1"
-	aadAccountKey = "toget:account-key:v1"
-	aadDeviceKey  = "toget:device-key:v1"
+	aadServerKey           = "toget:server-key:v1"
+	aadAccountKey          = "toget:account-key:v1"
+	aadDeviceKey           = "toget:device-key:v1"
+	aadDeviceEncryptionKey = "toget:device-encryption-key:v1"
 
 	minPasswordLength = 8
 	maxPasswordLength = 1024
@@ -76,13 +79,18 @@ type Account struct {
 
 // Device is the machine running this node.
 type Device struct {
-	ID          string    `json:"id"`
-	AccountID   string    `json:"account_id"`
-	Name        string    `json:"name"`
-	PublicKey   []byte    `json:"-"`
-	PrivateKey  []byte    `json:"-"`
-	Certificate string    `json:"certificate"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID                   string     `json:"id"`
+	AccountID            string     `json:"account_id"`
+	Name                 string     `json:"name"`
+	PublicKey            []byte     `json:"-"`
+	PrivateKey           []byte     `json:"-"`
+	EncryptionPublicKey  []byte     `json:"-"`
+	EncryptionPrivateKey []byte     `json:"-"`
+	Certificate          string     `json:"certificate"`
+	Role                 string     `json:"role"`
+	RevokedAt            *time.Time `json:"revoked_at,omitempty"`
+	LastSeenAt           *time.Time `json:"last_seen_at,omitempty"`
+	CreatedAt            time.Time  `json:"created_at"`
 }
 
 // Snapshot is the local account state.
@@ -97,7 +105,11 @@ type Store interface {
 	GetServer(ctx context.Context) (*Server, error)
 	GetAccount(ctx context.Context) (*Account, error)
 	GetDevice(ctx context.Context, accountID string) (*Device, error)
+	GetDeviceByID(ctx context.Context, deviceID string) (*Device, error)
+	ListDevices(ctx context.Context, accountID string) ([]Device, error)
 	CreateAccount(ctx context.Context, server *Server, account *Account, device *Device) error
+	AddDevice(ctx context.Context, device *Device) error
+	UpdateDevice(ctx context.Context, device *Device) error
 	AccountCodeExists(ctx context.Context, serverID, code string) (bool, error)
 }
 
@@ -156,10 +168,14 @@ func (s *Service) Create(ctx context.Context, name, password, deviceName string)
 	if err != nil {
 		return nil, err
 	}
+	encryptionPub, encryptionPriv, err := identity.NewEncryptionKey()
+	if err != nil {
+		return nil, err
+	}
 	deviceID := identity.NewID()
 	accountID := identity.AccountID(server.Code, accountCode)
 
-	cert, err := identity.SignDeviceCertificate(deviceID, accountID, devicePub, accountPriv, now)
+	cert, err := identity.SignDeviceCertificate(deviceID, accountID, devicePub, encryptionPub, accountPriv, now)
 	if err != nil {
 		return nil, err
 	}
@@ -177,6 +193,10 @@ func (s *Service) Create(ctx context.Context, name, password, deviceName string)
 	if err != nil {
 		return nil, fmt.Errorf("seal device key: %w", err)
 	}
+	sealedEncryptionKey, err := s.vault.Seal(encryptionPriv, aadDeviceEncryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("seal device encryption key: %w", err)
+	}
 
 	account := &Account{
 		ID:           accountID,
@@ -189,13 +209,16 @@ func (s *Service) Create(ctx context.Context, name, password, deviceName string)
 		CreatedAt:    now,
 	}
 	device := &Device{
-		ID:          deviceID,
-		AccountID:   accountID,
-		Name:        deviceName,
-		PublicKey:   devicePub,
-		PrivateKey:  []byte(sealedDeviceKey),
-		Certificate: string(cert),
-		CreatedAt:   now,
+		ID:                   deviceID,
+		AccountID:            accountID,
+		Name:                 deviceName,
+		PublicKey:            devicePub,
+		PrivateKey:           []byte(sealedDeviceKey),
+		EncryptionPublicKey:  encryptionPub,
+		EncryptionPrivateKey: []byte(sealedEncryptionKey),
+		Certificate:          string(cert),
+		Role:                 "node",
+		CreatedAt:            now,
 	}
 
 	if err := s.store.CreateAccount(ctx, server, account, device); err != nil {
@@ -222,6 +245,66 @@ func (s *Service) Get(ctx context.Context) (*Snapshot, error) {
 		return nil, err
 	}
 	return &Snapshot{Account: account, Server: server, Device: device}, nil
+}
+
+// Login verifies the account password and returns the local snapshot.
+func (s *Service) Login(ctx context.Context, password string) (*Snapshot, error) {
+	snapshot, err := s.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !VerifyPassword(snapshot.Account.PasswordHash, password) {
+		return nil, ErrInvalidCredentials
+	}
+	return snapshot, nil
+}
+
+// ListDevices returns every device on this account.
+func (s *Service) ListDevices(ctx context.Context) ([]Device, error) {
+	snapshot, err := s.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.store.ListDevices(ctx, snapshot.Account.ID)
+}
+
+// GetDeviceByID returns one device on the local account.
+func (s *Service) GetDeviceByID(ctx context.Context, id string) (*Device, error) {
+	return s.store.GetDeviceByID(ctx, id)
+}
+
+// AddDevice stores a device whose certificate was signed by the account key.
+func (s *Service) AddDevice(ctx context.Context, device *Device) error {
+	return s.store.AddDevice(ctx, device)
+}
+
+// UpdateDevice persists mutable device fields.
+func (s *Service) UpdateDevice(ctx context.Context, device *Device) error {
+	return s.store.UpdateDevice(ctx, device)
+}
+
+// RevokeDevice marks another device on this account as revoked.
+func (s *Service) RevokeDevice(ctx context.Context, deviceID string) error {
+	snapshot, err := s.Get(ctx)
+	if err != nil {
+		return err
+	}
+	if snapshot.Device.ID == deviceID {
+		return ErrCurrentDevice
+	}
+	device, err := s.store.GetDeviceByID(ctx, deviceID)
+	if err != nil {
+		return err
+	}
+	if device.AccountID != snapshot.Account.ID {
+		return ErrNotFound
+	}
+	if device.RevokedAt != nil {
+		return nil
+	}
+	now := s.now().UTC().Truncate(time.Millisecond)
+	device.RevokedAt = &now
+	return s.store.UpdateDevice(ctx, device)
 }
 
 // VerifyPassword checks a password against an encoded Argon2id hash.
@@ -327,4 +410,28 @@ func (s *Service) UnsealPrivateKey(account *Account) (ed25519.PrivateKey, error)
 		return nil, errors.New("account key has the wrong size")
 	}
 	return ed25519.PrivateKey(raw), nil
+}
+
+// UnsealDeviceKey decrypts a device signing key.
+func (s *Service) UnsealDeviceKey(device *Device) (ed25519.PrivateKey, error) {
+	raw, err := s.vault.OpenBytes(device.PrivateKey, aadDeviceKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) != ed25519.PrivateKeySize {
+		return nil, errors.New("device key has the wrong size")
+	}
+	return ed25519.PrivateKey(raw), nil
+}
+
+// UnsealDeviceEncryptionKey decrypts a device X25519 private key.
+func (s *Service) UnsealDeviceEncryptionKey(device *Device) ([]byte, error) {
+	raw, err := s.vault.OpenBytes(device.EncryptionPrivateKey, aadDeviceEncryptionKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) != 32 {
+		return nil, errors.New("device encryption key has the wrong size")
+	}
+	return raw, nil
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sidenor/toget/internal/identity"
 	"github.com/sidenor/toget/internal/room"
 )
 
@@ -42,7 +43,23 @@ func seedRoom(t *testing.T, db *DB) *room.Room {
 		CreatedAt: now,
 		Hash:      "hash-1",
 	}
-	if err := db.CreateRoom(context.Background(), r, event); err != nil {
+	pub, _, err := identity.NewDeviceKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	member := &room.Member{
+		RoomID: r.ID, AccountID: "account-1", DeviceID: "device-1",
+		DisplayName: "Aiden", Role: "owner", Status: "active", JoinedAt: now,
+	}
+	device := &room.RoomDevice{
+		RoomID: r.ID, DeviceID: "device-1", AccountID: "account-1",
+		PublicKey: pub, JoinedAt: now,
+	}
+	epoch := &room.RoomEpoch{RoomID: r.ID, Epoch: 1, KeySealed: "sealed-room-key", CreatedAt: now}
+	keys := []room.RoomMemberKey{{
+		RoomID: r.ID, Epoch: 1, DeviceID: "device-1", Wrapped: []byte("wrapped-key"), CreatedAt: now,
+	}}
+	if err := db.CreateRoom(context.Background(), r, event, member, device, epoch, keys); err != nil {
 		t.Fatal(err)
 	}
 	return r

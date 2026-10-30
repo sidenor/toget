@@ -14,9 +14,13 @@ import (
 	"testing/fstest"
 
 	"github.com/sidenor/toget/internal/account"
+	"github.com/sidenor/toget/internal/agent"
 	"github.com/sidenor/toget/internal/api"
+	"github.com/sidenor/toget/internal/approval"
 	"github.com/sidenor/toget/internal/room"
+	"github.com/sidenor/toget/internal/session"
 	"github.com/sidenor/toget/internal/storage"
+	"github.com/sidenor/toget/internal/tool"
 	"github.com/sidenor/toget/internal/vault"
 	"github.com/sidenor/toget/internal/version"
 )
@@ -41,14 +45,22 @@ func newTestNode(t *testing.T, ui fs.FS) *testNode {
 	}
 	t.Cleanup(func() { db.Close() })
 
+	accounts := account.New(db, v)
+	rooms := room.New(db, v)
+	agents := agent.New(db, rooms)
+	approvals := approval.New(db, rooms)
 	handler := api.New(api.Options{
-		Accounts: account.New(db, v),
-		Rooms:    room.New(db, v),
-		Version:  version.Current(),
-		Token:    testToken,
-		Listen:   "127.0.0.1:7718",
-		UI:       ui,
-		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Accounts:  accounts,
+		Rooms:     rooms,
+		Agents:    agents,
+		Approvals: approvals,
+		Tools:     tool.New(db, rooms, approvals),
+		Session:   session.New(session.DefaultTTL),
+		Version:   version.Current(),
+		Token:     testToken,
+		Listen:    "127.0.0.1:7718",
+		UI:        ui,
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}).Handler()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)

@@ -1,13 +1,18 @@
-// Package room owns rooms, the append-only event log, and per-room ordering.
+// Package room owns rooms, membership, the append-only event log, and
+// per-room ordering.
 package room
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,69 +26,298 @@ var (
 	ErrNotFound = errors.New("room not found")
 	// ErrInvalidName means the room name is empty or too long.
 	ErrInvalidName = errors.New("invalid room name")
+	// ErrInvalidTopic means the topic is too long.
+	ErrInvalidTopic = errors.New("invalid room topic")
 	// ErrEmptyMessage means the message has no text.
 	ErrEmptyMessage = errors.New("message is empty")
 	// ErrMessageTooLong means the message exceeds the local limit.
 	ErrMessageTooLong = errors.New("message is too long")
 	// ErrCorruptEvent means an event failed its integrity check.
 	ErrCorruptEvent = errors.New("event integrity check failed")
+	// ErrNotMember means the caller is not an active member of the room.
+	ErrNotMember = errors.New("not a room member")
+	// ErrForbidden means the caller lacks the room role for this action.
+	ErrForbidden = errors.New("room action is not allowed")
+	// ErrMemberExists means the account is already a member.
+	ErrMemberExists = errors.New("account is already a room member")
+	// ErrInviteInvalid means an invitation code is malformed or unknown.
+	ErrInviteInvalid = errors.New("invite is invalid")
+	// ErrInviteExpired means an invitation has expired.
+	ErrInviteExpired = errors.New("invite has expired")
+	// ErrInviteUsed means an invitation has already been redeemed.
+	ErrInviteUsed = errors.New("invite has already been used")
+	// ErrInvalidEvent means an event is structurally invalid.
+	ErrInvalidEvent = errors.New("invalid event")
+	// ErrMessageNotFound means an edit target does not exist.
+	ErrMessageNotFound = errors.New("message not found")
+
+	// ErrKeyUnavailable means this node does not hold the room key for an
+	// event's epoch, usually because it joined without prior history.
+	ErrKeyUnavailable = errors.New("room key unavailable")
 )
 
 const (
 	MaxNameLength    = 80
+	MaxTopicLength   = 280
 	MaxMessageLength = 64 * 1024
 	defaultPageSize  = 200
 	maxPageSize      = 1000
+	maxSearchHits    = 200
 )
 
 // Room is a private conversation.
 type Room struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	HomeNode  string    `json:"home_node"`
-	CreatedBy string    `json:"created_by"`
-	Epoch     int       `json:"epoch"`
-	CreatedAt time.Time `json:"created_at"`
+	ID           string     `json:"id"`
+	Name         string     `json:"name"`
+	Topic        string     `json:"topic,omitempty"`
+	HomeNode     string     `json:"home_node"`
+	HomeServerID string     `json:"home_server_id,omitempty"`
+	HomeAddress  string     `json:"home_address,omitempty"`
+	CreatedBy    string     `json:"created_by"`
+	Epoch        int        `json:"epoch"`
+	CreatedAt    time.Time  `json:"created_at"`
+	ArchivedAt   *time.Time `json:"archived_at,omitempty"`
+}
+
+// Member is an account's membership in a room.
+type Member struct {
+	RoomID              string     `json:"room_id"`
+	AccountID           string     `json:"account_id"`
+	DeviceID            string     `json:"device_id,omitempty"`
+	DisplayName         string     `json:"display_name"`
+	Role                string     `json:"role"`
+	Status              string     `json:"status"`
+	AccountPublicKey    []byte     `json:"-"`
+	EncryptionPublicKey []byte     `json:"-"`
+	JoinedAt            time.Time  `json:"joined_at"`
+	LeftAt              *time.Time `json:"left_at,omitempty"`
+}
+
+// RoomDevice is a device allowed to sign events in a room.
+type RoomDevice struct {
+	RoomID              string     `json:"room_id"`
+	DeviceID            string     `json:"device_id"`
+	AccountID           string     `json:"account_id"`
+	PublicKey           []byte     `json:"-"`
+	EncryptionPublicKey []byte     `json:"-"`
+	JoinedAt            time.Time  `json:"joined_at"`
+	RevokedAt           *time.Time `json:"revoked_at,omitempty"`
+}
+
+// Actor is the local account and device making a change.
+type Actor struct {
+	AccountID           string
+	DeviceID            string
+	DisplayName         string
+	SigningKey          ed25519.PrivateKey
+	AccountPublicKey    ed25519.PublicKey
+	EncryptionPublicKey []byte
+}
+
+// Valid reports whether the actor can sign a local event.
+func (a Actor) Valid() bool {
+	return a.AccountID != "" && a.DeviceID != "" && len(a.SigningKey) == ed25519.PrivateKeySize
 }
 
 // Event is one immutable entry in a room log.
 type Event struct {
-	ID        string          `json:"id"`
-	RoomID    string          `json:"room_id"`
-	Seq       int64           `json:"seq"`
-	Type      string          `json:"type"`
-	AuthorID  string          `json:"author_id"`
-	Payload   json.RawMessage `json:"payload"`
-	CreatedAt time.Time       `json:"created_at"`
-	PrevID    string          `json:"prev_id,omitempty"`
-	Hash      string          `json:"hash"`
+	ID           string          `json:"id"`
+	RoomID       string          `json:"room_id"`
+	Seq          int64           `json:"seq"`
+	Epoch        int             `json:"epoch"`
+	Type         string          `json:"type"`
+	AuthorID     string          `json:"author_id"`
+	AuthorDevice string          `json:"author_device,omitempty"`
+	Payload      json.RawMessage `json:"payload"`
+	CreatedAt    time.Time       `json:"created_at"`
+	PrevID       string          `json:"prev_id,omitempty"`
+	PrevHash     string          `json:"prev_hash,omitempty"`
+	Hash         string          `json:"hash"`
+	Signature    string          `json:"signature,omitempty"`
 }
 
-// Event types used by the local loop.
+// Event types. Names are past tense and stable.
 const (
-	EventRoomCreated   = "room.created"
-	EventMessagePosted = "message.posted"
+	EventRoomCreated         = "room.created"
+	EventRoomSettingsChanged = "room.settings_changed"
+	EventRoomArchived        = "room.archived"
+	EventMemberInvited       = "room.member_invited"
+	EventMemberJoined        = "room.member_joined"
+	EventMemberLeft          = "room.member_left"
+	EventEpochRotated        = "room.epoch_rotated"
+	EventHistoryAttached     = "room.history_attached"
+	EventMessagePosted       = "message.posted"
+	EventMessageEdited       = "message.edited"
+	EventApprovalRequested   = "approval.requested"
+	EventApprovalGranted     = "approval.granted"
+	EventApprovalRejected    = "approval.rejected"
+	EventApprovalExpired     = "approval.expired"
+	EventApprovalConsumed    = "approval.consumed"
+	EventToolRequested       = "tool.requested"
+	EventToolResult          = "tool.result"
+	EventToolFailed          = "tool.failed"
+	EventAgentJoined         = "agent.joined"
+	EventAgentLeft           = "agent.left"
+	EventAgentStatus         = "agent.status"
 )
 
-// RoomCreatedPayload is the payload of room.created.
+// Payloads for the event types above.
 type RoomCreatedPayload struct {
-	Name string `json:"name"`
+	Name  string `json:"name"`
+	Topic string `json:"topic,omitempty"`
 }
 
-// MessagePostedPayload is the payload of message.posted.
+type RoomSettingsChangedPayload struct {
+	Name  string `json:"name"`
+	Topic string `json:"topic"`
+}
+
+type MemberInvitedPayload struct {
+	InviteID    string `json:"invite_id"`
+	AccountID   string `json:"account_id,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
+	History     string `json:"history"`
+	ExpiresAt   string `json:"expires_at"`
+}
+
+type MemberJoinedPayload struct {
+	AccountID   string `json:"account_id"`
+	DisplayName string `json:"display_name"`
+	Role        string `json:"role"`
+	History     string `json:"history,omitempty"`
+}
+
+type MemberLeftPayload struct {
+	AccountID string `json:"account_id"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+type EpochRotatedPayload struct {
+	Epoch  int    `json:"epoch"`
+	Reason string `json:"reason,omitempty"`
+}
+
 type MessagePostedPayload struct {
-	Text   string `json:"text"`
-	Format string `json:"format"`
+	Text        string   `json:"text"`
+	Format      string   `json:"format"`
+	Attachments []string `json:"attachments,omitempty"`
+	Mentions    []string `json:"mentions,omitempty"`
+	ReplyTo     string   `json:"reply_to,omitempty"`
 }
 
-// Store persists rooms and events.
+type MessageEditedPayload struct {
+	TargetID string `json:"target_id"`
+	Text     string `json:"text"`
+	Format   string `json:"format"`
+}
+
+type ApprovalRequestedPayload struct {
+	ApprovalID   string `json:"approval_id"`
+	AgentID      string `json:"agent_id"`
+	ActionDigest string `json:"action_digest"`
+	Description  string `json:"description"`
+	ExpiresAt    string `json:"expires_at"`
+}
+
+type ApprovalDecidedPayload struct {
+	ApprovalID string `json:"approval_id"`
+	Decision   string `json:"decision"`
+	By         string `json:"by"`
+	Digest     string `json:"digest"`
+}
+
+type ApprovalConsumedPayload struct {
+	ApprovalID string `json:"approval_id"`
+	Digest     string `json:"digest"`
+}
+
+type ToolEventPayload struct {
+	ReceiptID  string          `json:"receipt_id"`
+	AgentID    string          `json:"agent_id"`
+	Tool       string          `json:"tool"`
+	Status     string          `json:"status"`
+	Input      json.RawMessage `json:"input,omitempty"`
+	Output     string          `json:"output,omitempty"`
+	ApprovalID string          `json:"approval_id,omitempty"`
+}
+
+type AgentJoinedPayload struct {
+	AgentID     string `json:"agent_id"`
+	Name        string `json:"name"`
+	OwnerID     string `json:"owner_id"`
+	Runtime     string `json:"runtime"`
+	DisplayName string `json:"display_name"`
+}
+
+type AgentStatusPayload struct {
+	AgentID string `json:"agent_id"`
+	Status  string `json:"status"`
+	Detail  string `json:"detail,omitempty"`
+}
+
+type HistoryAttachedPayload struct {
+	AccountID string `json:"account_id"`
+	FromSeq   int64  `json:"from_seq"`
+	ToSeq     int64  `json:"to_seq"`
+	Choice    string `json:"choice"`
+}
+
+var (
+	// ErrInvalidInviteHistory is returned for an unknown history choice.
+	ErrInvalidInviteHistory = errors.New("invalid history choice")
+	// ErrInviteSecret means the invite secret is malformed.
+	ErrInviteSecret = errors.New("invalid invite secret")
+)
+
+// Invite is a single-use room invitation. The secret is returned only at
+// creation time; only its hash is stored.
+type Invite struct {
+	ID        string     `json:"id"`
+	RoomID    string     `json:"room_id"`
+	Secret    string     `json:"secret,omitempty"`
+	CreatedBy string     `json:"created_by"`
+	History   string     `json:"history"`
+	ExpiresAt time.Time  `json:"expires_at"`
+	UsedAt    *time.Time `json:"used_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+// History choices for invitations.
+const (
+	HistoryNone   = "none"
+	HistoryRecent = "recent"
+	HistoryAll    = "all"
+)
+
+// Store persists rooms, membership, and events.
 type Store interface {
-	CreateRoom(ctx context.Context, room *Room, event *Event) error
+	CreateRoom(ctx context.Context, room *Room, event *Event, member *Member, device *RoomDevice, epoch *RoomEpoch, keys []RoomMemberKey) error
 	ListRooms(ctx context.Context) ([]Room, error)
 	GetRoom(ctx context.Context, id string) (*Room, error)
+	UpdateRoom(ctx context.Context, room *Room) error
 	LastEvent(ctx context.Context, roomID string) (*Event, error)
 	AppendEvent(ctx context.Context, event *Event) error
 	ListEvents(ctx context.Context, roomID string, after int64, limit int) ([]Event, error)
+	GetEvent(ctx context.Context, eventID string) (*Event, error)
+	GetMember(ctx context.Context, roomID, accountID string) (*Member, error)
+	ListMembers(ctx context.Context, roomID string) ([]Member, error)
+	AddMember(ctx context.Context, member *Member) error
+	UpdateMember(ctx context.Context, member *Member) error
+	GetRoomDevice(ctx context.Context, roomID, deviceID string) (*RoomDevice, error)
+	ListRoomDevices(ctx context.Context, roomID string) ([]RoomDevice, error)
+	AddRoomDevice(ctx context.Context, device *RoomDevice) error
+	CreateInvite(ctx context.Context, invite *Invite, secretHash string) error
+	GetInviteByHash(ctx context.Context, secretHash string) (*Invite, error)
+	MarkInviteUsed(ctx context.Context, id string, at time.Time) error
+	SetReadCursor(ctx context.Context, roomID, deviceID string, seq int64) error
+	GetReadCursor(ctx context.Context, roomID, deviceID string) (int64, error)
+	SaveRoomEpoch(ctx context.Context, e *RoomEpoch) error
+	GetRoomEpoch(ctx context.Context, roomID string, epoch int) (*RoomEpoch, error)
+	LatestRoomEpoch(ctx context.Context, roomID string) (*RoomEpoch, error)
+	ListRoomEpochs(ctx context.Context, roomID string) ([]RoomEpoch, error)
+	SaveRoomMemberKey(ctx context.Context, k *RoomMemberKey) error
+	GetRoomMemberKey(ctx context.Context, roomID string, epoch int, deviceID string) (*RoomMemberKey, error)
+	ListRoomMemberKeys(ctx context.Context, roomID string, epoch int) ([]RoomMemberKey, error)
 }
 
 // Service owns room rules.
@@ -99,12 +333,21 @@ func New(store Store, v *vault.Vault) *Service {
 	return &Service{store: store, vault: v, now: time.Now}
 }
 
-// CreateRoom creates a room and its room.created event.
-func (s *Service) CreateRoom(ctx context.Context, name, authorID, deviceID string) (*Room, *Event, error) {
+// CreateRoom creates a room, its room.created event, and the creator's
+// membership.
+func (s *Service) CreateRoom(ctx context.Context, name, topic string, actor Actor) (*Room, *Event, error) {
 	name = strings.TrimSpace(name)
+	topic = strings.TrimSpace(topic)
 	if name == "" || len(name) > MaxNameLength {
 		return nil, nil, ErrInvalidName
 	}
+	if len(topic) > MaxTopicLength {
+		return nil, nil, ErrInvalidTopic
+	}
+	if !actor.Valid() {
+		return nil, nil, ErrForbidden
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -112,38 +355,83 @@ func (s *Service) CreateRoom(ctx context.Context, name, authorID, deviceID strin
 	room := &Room{
 		ID:        identity.NewID(),
 		Name:      name,
-		HomeNode:  deviceID,
-		CreatedBy: authorID,
+		Topic:     topic,
+		HomeNode:  actor.DeviceID,
+		CreatedBy: actor.AccountID,
 		Epoch:     1,
 		CreatedAt: now,
 	}
-	payload, err := json.Marshal(RoomCreatedPayload{Name: name})
+	payload, err := json.Marshal(RoomCreatedPayload{Name: name, Topic: topic})
 	if err != nil {
 		return nil, nil, fmt.Errorf("encode room.created: %w", err)
 	}
-	event := &Event{
-		ID:        identity.NewID(),
-		RoomID:    room.ID,
-		Seq:       1,
-		Type:      EventRoomCreated,
-		AuthorID:  authorID,
-		Payload:   payload,
-		CreatedAt: now,
-	}
-	event.Hash = eventHash(event)
-
-	stored, err := s.sealEvent(event)
+	event, err := s.buildEvent(room.ID, 1, nil, EventRoomCreated, actor, payload, now)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := s.store.CreateRoom(ctx, room, stored); err != nil {
+	key, err := newRoomKey()
+	if err != nil {
+		return nil, nil, err
+	}
+	sealedPayload, err := sealRoomPayload(key, payload, payloadAAD(room.ID, 1, "event"))
+	if err != nil {
+		return nil, nil, err
+	}
+	event.Epoch = 1
+	member := &Member{
+		RoomID:              room.ID,
+		AccountID:           actor.AccountID,
+		DeviceID:            actor.DeviceID,
+		DisplayName:         actor.DisplayName,
+		Role:                "owner",
+		Status:              "active",
+		AccountPublicKey:    actor.AccountPublicKey,
+		EncryptionPublicKey: actor.EncryptionPublicKey,
+		JoinedAt:            now,
+	}
+	device := &RoomDevice{
+		RoomID:              room.ID,
+		DeviceID:            actor.DeviceID,
+		AccountID:           actor.AccountID,
+		PublicKey:           actor.SigningKey.Public().(ed25519.PublicKey),
+		EncryptionPublicKey: actor.EncryptionPublicKey,
+		JoinedAt:            now,
+	}
+	stored := *event
+	stored.Payload = sealedPayload
+	sealedKey, err := s.vault.Seal(key, roomEpochAAD(room.ID, 1))
+	if err != nil {
+		return nil, nil, fmt.Errorf("seal room key: %w", err)
+	}
+	wrapped, err := WrapRoomKey(room.ID, 1, actor.DeviceID, actor.EncryptionPublicKey, key)
+	if err != nil {
+		return nil, nil, err
+	}
+	epoch := &RoomEpoch{RoomID: room.ID, Epoch: 1, KeySealed: sealedKey, CreatedAt: now}
+	keys := []RoomMemberKey{{RoomID: room.ID, Epoch: 1, DeviceID: actor.DeviceID, Wrapped: wrapped, CreatedAt: now}}
+	if err := s.store.CreateRoom(ctx, room, &stored, member, device, epoch, keys); err != nil {
 		return nil, nil, err
 	}
 	return room, event, nil
 }
 
 // PostMessage appends a message.posted event to a room.
-func (s *Service) PostMessage(ctx context.Context, roomID, authorID, text string) (*Event, error) {
+func (s *Service) PostMessage(ctx context.Context, roomID string, actor Actor, body MessagePostedPayload) (*Event, error) {
+	body.Text = strings.TrimSpace(body.Text)
+	if body.Text == "" && len(body.Attachments) == 0 {
+		return nil, ErrEmptyMessage
+	}
+	if len(body.Text) > MaxMessageLength {
+		return nil, ErrMessageTooLong
+	}
+	if body.Format == "" {
+		body.Format = "plain"
+	}
+	return s.Append(ctx, roomID, actor, EventMessagePosted, body)
+}
+
+// EditMessage appends a message.edited event. History is never rewritten.
+func (s *Service) EditMessage(ctx context.Context, roomID string, actor Actor, targetID, text string) (*Event, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil, ErrEmptyMessage
@@ -151,11 +439,57 @@ func (s *Service) PostMessage(ctx context.Context, roomID, authorID, text string
 	if len(text) > MaxMessageLength {
 		return nil, ErrMessageTooLong
 	}
+	if _, err := s.findEvent(ctx, roomID, targetID); err != nil {
+		return nil, err
+	}
+	return s.Append(ctx, roomID, actor, EventMessageEdited, MessageEditedPayload{
+		TargetID: targetID,
+		Text:     text,
+		Format:   "plain",
+	})
+}
+
+// Append adds a signed event of any type to a room. It is used by the
+// approval, agent, and tool services; room-level authorization is checked by
+// those services before calling it.
+// RequireMember checks that the actor is an active member of the room and
+// that its device is enrolled. It is the common authorization gate for local
+// writes.
+func (s *Service) RequireMember(ctx context.Context, roomID string, actor Actor) error {
+	if !actor.Valid() {
+		return ErrForbidden
+	}
+	if _, err := s.store.GetRoom(ctx, roomID); err != nil {
+		return err
+	}
+	member, err := s.store.GetMember(ctx, roomID, actor.AccountID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return ErrNotMember
+		}
+		return err
+	}
+	if member.Status != "active" {
+		return ErrNotMember
+	}
+	if _, err := s.store.GetRoomDevice(ctx, roomID, actor.DeviceID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return ErrForbidden
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *Service) Append(ctx context.Context, roomID string, actor Actor, eventType string, payload any) (*Event, error) {
+	if eventType == "" {
+		return nil, ErrInvalidEvent
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, err := s.store.GetRoom(ctx, roomID); err != nil {
+	if err := s.RequireMember(ctx, roomID, actor); err != nil {
 		return nil, err
 	}
 	last, err := s.store.LastEvent(ctx, roomID)
@@ -163,23 +497,20 @@ func (s *Service) PostMessage(ctx context.Context, roomID, authorID, text string
 		return nil, err
 	}
 	now := s.now().UTC().Truncate(time.Millisecond)
-	payload, err := json.Marshal(MessagePostedPayload{Text: text, Format: "plain"})
+	raw, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("encode message.posted: %w", err)
+		return nil, fmt.Errorf("encode %s: %w", eventType, err)
 	}
-	event := &Event{
-		ID:        identity.NewID(),
-		RoomID:    roomID,
-		Seq:       last.Seq + 1,
-		Type:      EventMessagePosted,
-		AuthorID:  authorID,
-		Payload:   payload,
-		CreatedAt: now,
-		PrevID:    last.ID,
+	epoch, key, err := s.latestRoomKeyLocked(ctx, roomID)
+	if err != nil {
+		return nil, err
 	}
-	event.Hash = eventHash(event)
-
-	stored, err := s.sealEvent(event)
+	event, err := s.buildEvent(roomID, last.Seq+1, last, eventType, actor, raw, now)
+	if err != nil {
+		return nil, err
+	}
+	event.Epoch = epoch
+	stored, err := s.sealEvent(event, epoch, key)
 	if err != nil {
 		return nil, err
 	}
@@ -189,9 +520,73 @@ func (s *Service) PostMessage(ctx context.Context, roomID, authorID, text string
 	return event, nil
 }
 
-// ListRooms returns rooms, newest first.
-func (s *Service) ListRooms(ctx context.Context) ([]Room, error) {
-	return s.store.ListRooms(ctx)
+// AppendRemote stores an event received from another node. The caller must
+// synchronize ordering with the home node; this function verifies the event's
+// chain, author device, and signature before persisting it.
+func (s *Service) AppendRemote(ctx context.Context, event *Event) error {
+	if event == nil || event.RoomID == "" || event.ID == "" || event.Seq <= 0 || event.Type == "" {
+		return ErrInvalidEvent
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, err := s.store.GetRoom(ctx, event.RoomID); err != nil {
+		return err
+	}
+	last, err := s.store.LastEvent(ctx, event.RoomID)
+	if err != nil {
+		return err
+	}
+	if event.Seq <= last.Seq {
+		// Idempotent replay by event ID.
+		if existing, err := s.findEvent(ctx, event.RoomID, event.ID); err == nil && existing.Seq == event.Seq {
+			return nil
+		}
+		return fmt.Errorf("%w: sequence is not after the local head", ErrInvalidEvent)
+	}
+	if event.Seq != last.Seq+1 {
+		return fmt.Errorf("%w: gap in room sequence", ErrInvalidEvent)
+	}
+	if event.PrevID != last.ID || event.PrevHash != last.Hash {
+		return fmt.Errorf("%w: chain does not link to the local head", ErrInvalidEvent)
+	}
+	device, err := s.store.GetRoomDevice(ctx, event.RoomID, event.AuthorDevice)
+	if err != nil {
+		return fmt.Errorf("%w: unknown author device", ErrInvalidEvent)
+	}
+	plain := *event
+	if isRoomPayload(event.Payload) {
+		epoch := event.Epoch
+		if epoch <= 0 {
+			epoch = 1
+		}
+		key, err := s.roomKeyLocked(ctx, event.RoomID, epoch)
+		if err != nil {
+			return err
+		}
+		opened, err := openRoomPayload(key, event.Payload, payloadAAD(event.RoomID, epoch, "event"))
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidEvent, err)
+		}
+		plain.Payload = opened
+		event.Epoch = epoch
+	}
+	if err := VerifyEvent(&plain, device.PublicKey); err != nil {
+		return err
+	}
+	stored := event
+	if !isRoomPayload(event.Payload) {
+		epoch, key, err := s.latestRoomKeyLocked(ctx, event.RoomID)
+		if err != nil {
+			return err
+		}
+		storedCopy, err := s.sealEvent(event, epoch, key)
+		if err != nil {
+			return err
+		}
+		stored = storedCopy
+	}
+	return s.store.AppendEvent(ctx, stored)
 }
 
 // GetRoom returns one room.
@@ -199,7 +594,28 @@ func (s *Service) GetRoom(ctx context.Context, id string) (*Room, error) {
 	return s.store.GetRoom(ctx, id)
 }
 
-// ListEvents returns decrypted events after a sequence number.
+// ListRooms returns rooms, newest first.
+func (s *Service) ListRooms(ctx context.Context) ([]Room, error) {
+	return s.store.ListRooms(ctx)
+}
+
+// ListMembers returns active and past members of a room.
+func (s *Service) ListMembers(ctx context.Context, roomID string) ([]Member, error) {
+	if _, err := s.store.GetRoom(ctx, roomID); err != nil {
+		return nil, err
+	}
+	return s.store.ListMembers(ctx, roomID)
+}
+
+// ListDevices returns the device keys trusted for a room.
+func (s *Service) ListDevices(ctx context.Context, roomID string) ([]RoomDevice, error) {
+	if _, err := s.store.GetRoom(ctx, roomID); err != nil {
+		return nil, err
+	}
+	return s.store.ListRoomDevices(ctx, roomID)
+}
+
+// ListEvents returns decrypted, verified events after a sequence number.
 func (s *Service) ListEvents(ctx context.Context, roomID string, after int64, limit int) ([]Event, error) {
 	if limit <= 0 {
 		limit = defaultPageSize
@@ -216,7 +632,10 @@ func (s *Service) ListEvents(ctx context.Context, roomID string, after int64, li
 	}
 	events := make([]Event, 0, len(stored))
 	for i := range stored {
-		event, err := s.openEvent(&stored[i])
+		event, err := s.openEvent(ctx, &stored[i])
+		if errors.Is(err, ErrKeyUnavailable) {
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -225,34 +644,793 @@ func (s *Service) ListEvents(ctx context.Context, roomID string, after int64, li
 	return events, nil
 }
 
-func (s *Service) sealEvent(event *Event) (*Event, error) {
-	sealed, err := s.vault.Seal(event.Payload, payloadAAD(event.RoomID))
+// SetReadCursor records the last sequence read by a device.
+func (s *Service) SetReadCursor(ctx context.Context, roomID, deviceID string, seq int64) error {
+	if seq < 0 {
+		return ErrInvalidEvent
+	}
+	if _, err := s.store.GetRoom(ctx, roomID); err != nil {
+		return err
+	}
+	last, err := s.store.LastEvent(ctx, roomID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			if seq != 0 {
+				return ErrInvalidEvent
+			}
+		} else {
+			return err
+		}
+	} else if seq > last.Seq {
+		return ErrInvalidEvent
+	}
+	return s.store.SetReadCursor(ctx, roomID, deviceID, seq)
+}
+
+// ReadCursor returns the last sequence a device has read.
+func (s *Service) ReadCursor(ctx context.Context, roomID, deviceID string) (int64, error) {
+	if _, err := s.store.GetRoom(ctx, roomID); err != nil {
+		return 0, err
+	}
+	seq, err := s.store.GetReadCursor(ctx, roomID, deviceID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return seq, nil
+}
+
+// Unread returns the number of events after a device's read cursor.
+func (s *Service) Unread(ctx context.Context, roomID, deviceID string) (int64, error) {
+	last, err := s.store.LastEvent(ctx, roomID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	cursor, err := s.store.GetReadCursor(ctx, roomID, deviceID)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return 0, err
+	}
+	if cursor >= last.Seq {
+		return 0, nil
+	}
+	return last.Seq - cursor, nil
+}
+
+// Rename updates a room's name and topic with a settings event.
+func (s *Service) Rename(ctx context.Context, roomID string, actor Actor, name, topic string) (*Room, *Event, error) {
+	name = strings.TrimSpace(name)
+	topic = strings.TrimSpace(topic)
+	if name == "" || len(name) > MaxNameLength {
+		return nil, nil, ErrInvalidName
+	}
+	if len(topic) > MaxTopicLength {
+		return nil, nil, ErrInvalidTopic
+	}
+	if err := s.requireOwner(ctx, roomID, actor); err != nil {
+		return nil, nil, err
+	}
+	event, err := s.Append(ctx, roomID, actor, EventRoomSettingsChanged, RoomSettingsChangedPayload{
+		Name: name, Topic: topic,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	current, err := s.store.GetRoom(ctx, roomID)
+	if err != nil {
+		return nil, nil, err
+	}
+	current.Name = name
+	current.Topic = topic
+	if err := s.store.UpdateRoom(ctx, current); err != nil {
+		return nil, nil, err
+	}
+	return current, event, nil
+}
+
+// CreateInvite creates a single-use invitation to a room.
+func (s *Service) CreateInvite(ctx context.Context, roomID string, actor Actor, history string, ttl time.Duration) (*Invite, *Event, error) {
+	switch history {
+	case "", HistoryNone:
+		history = HistoryNone
+	case HistoryRecent, HistoryAll:
+	default:
+		return nil, nil, ErrInvalidInviteHistory
+	}
+	if ttl <= 0 {
+		ttl = 7 * 24 * time.Hour
+	}
+	if err := s.requireMember(ctx, roomID, actor); err != nil {
+		return nil, nil, err
+	}
+	secret, err := randomSecret()
+	if err != nil {
+		return nil, nil, err
+	}
+	now := s.now().UTC().Truncate(time.Millisecond)
+	invite := &Invite{
+		ID:        identity.NewID(),
+		RoomID:    roomID,
+		Secret:    secret,
+		CreatedBy: actor.AccountID,
+		History:   history,
+		ExpiresAt: now.Add(ttl),
+		CreatedAt: now,
+	}
+	if err := s.store.CreateInvite(ctx, invite, HashInviteSecret(secret)); err != nil {
+		return nil, nil, err
+	}
+	event, err := s.Append(ctx, roomID, actor, EventMemberInvited, MemberInvitedPayload{
+		InviteID:  invite.ID,
+		History:   history,
+		ExpiresAt: invite.ExpiresAt.Format(time.RFC3339),
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return invite, event, nil
+}
+
+// RedeemInvite joins a room using an invitation secret.
+func (s *Service) RedeemInvite(ctx context.Context, secret string, actor Actor) (*Room, *Member, *Event, error) {
+	if !actor.Valid() {
+		return nil, nil, nil, ErrForbidden
+	}
+	secret = strings.TrimSpace(secret)
+	if len(secret) < 16 {
+		return nil, nil, nil, ErrInviteSecret
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	invite, err := s.store.GetInviteByHash(ctx, HashInviteSecret(secret))
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, nil, nil, ErrInviteInvalid
+		}
+		return nil, nil, nil, err
+	}
+	now := s.now().UTC().Truncate(time.Millisecond)
+	if invite.UsedAt != nil {
+		return nil, nil, nil, ErrInviteUsed
+	}
+	if !now.Before(invite.ExpiresAt) {
+		return nil, nil, nil, ErrInviteExpired
+	}
+	room, err := s.store.GetRoom(ctx, invite.RoomID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	existing, err := s.store.GetMember(ctx, room.ID, actor.AccountID)
+	if err == nil && existing.Status == "active" {
+		return nil, nil, nil, ErrMemberExists
+	}
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, nil, nil, err
+	}
+
+	member := &Member{
+		RoomID:              room.ID,
+		AccountID:           actor.AccountID,
+		DeviceID:            actor.DeviceID,
+		DisplayName:         actor.DisplayName,
+		Role:                "member",
+		Status:              "active",
+		AccountPublicKey:    actor.AccountPublicKey,
+		EncryptionPublicKey: actor.EncryptionPublicKey,
+		JoinedAt:            now,
+	}
+	device := &RoomDevice{
+		RoomID:              room.ID,
+		DeviceID:            actor.DeviceID,
+		AccountID:           actor.AccountID,
+		PublicKey:           actor.SigningKey.Public().(ed25519.PublicKey),
+		EncryptionPublicKey: actor.EncryptionPublicKey,
+		JoinedAt:            now,
+	}
+	if err := s.store.AddMember(ctx, member); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := s.store.AddRoomDevice(ctx, device); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := s.store.MarkInviteUsed(ctx, invite.ID, now); err != nil {
+		return nil, nil, nil, err
+	}
+	if invite.History != HistoryNone {
+		if err := s.shareHistoryLocked(ctx, room.ID, actor.DeviceID, actor.EncryptionPublicKey, invite.History); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	if _, err := s.rotateEpochLocked(ctx, room.ID); err != nil {
+		return nil, nil, nil, err
+	}
+	room, err = s.store.GetRoom(ctx, room.ID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	event, err := s.appendUnchecked(ctx, room.ID, actor, EventMemberJoined, MemberJoinedPayload{
+		AccountID:   actor.AccountID,
+		DisplayName: actor.DisplayName,
+		Role:        "member",
+		History:     invite.History,
+	}, now)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return room, member, event, nil
+}
+
+// Leave marks the caller's membership as left.
+func (s *Service) Leave(ctx context.Context, roomID string, actor Actor) (*Event, error) {
+	if err := s.requireMember(ctx, roomID, actor); err != nil {
+		return nil, err
+	}
+	event, err := s.Append(ctx, roomID, actor, EventMemberLeft, MemberLeftPayload{
+		AccountID: actor.AccountID,
+		Reason:    "left",
+	})
+	if err != nil {
+		return nil, err
+	}
+	member, err := s.store.GetMember(ctx, roomID, actor.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	now := s.now().UTC().Truncate(time.Millisecond)
+	member.Status = "left"
+	member.LeftAt = &now
+	if err := s.store.UpdateMember(ctx, member); err != nil {
+		return nil, err
+	}
+	if _, err := s.rotateEpochLocked(ctx, roomID); err != nil {
+		return nil, err
+	}
+	return event, nil
+}
+
+// Archive marks a room read-only for this node and records the change.
+func (s *Service) Archive(ctx context.Context, roomID string, actor Actor) (*Room, *Event, error) {
+	if err := s.requireOwner(ctx, roomID, actor); err != nil {
+		return nil, nil, err
+	}
+	current, err := s.store.GetRoom(ctx, roomID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if current.ArchivedAt != nil {
+		return current, nil, nil
+	}
+	event, err := s.Append(ctx, roomID, actor, EventRoomArchived, map[string]string{"archived_by": actor.AccountID})
+	if err != nil {
+		return nil, nil, err
+	}
+	now := s.now().UTC().Truncate(time.Millisecond)
+	current.ArchivedAt = &now
+	if err := s.store.UpdateRoom(ctx, current); err != nil {
+		return nil, nil, err
+	}
+	return current, event, nil
+}
+
+// Audit returns a verifiable snapshot of a room's history.
+type Audit struct {
+	Room        Room         `json:"room"`
+	Members     []Member     `json:"members"`
+	Devices     []RoomDevice `json:"devices"`
+	Events      []Event      `json:"events"`
+	Head        string       `json:"head"`
+	GeneratedAt time.Time    `json:"generated_at"`
+}
+
+// ExportAudit builds an audit bundle for a room.
+func (s *Service) ExportAudit(ctx context.Context, roomID string) (*Audit, error) {
+	room, err := s.store.GetRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	members, err := s.store.ListMembers(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	devices, err := s.store.ListRoomDevices(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	var events []Event
+	for after := int64(0); ; {
+		page, err := s.ListEvents(ctx, roomID, after, maxPageSize)
+		if err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			break
+		}
+		events = append(events, page...)
+		after = page[len(page)-1].Seq
+		if len(page) < maxPageSize {
+			break
+		}
+	}
+	head := ""
+	if len(events) > 0 {
+		head = events[len(events)-1].Hash
+	}
+	return &Audit{
+		Room:        *room,
+		Members:     members,
+		Devices:     devices,
+		Events:      events,
+		Head:        head,
+		GeneratedAt: s.now().UTC(),
+	}, nil
+}
+
+// VerifyAudit checks an audit bundle's event chain and signatures.
+func VerifyAudit(a *Audit) error {
+	if a == nil {
+		return ErrInvalidEvent
+	}
+	devices := make(map[string]ed25519.PublicKey, len(a.Devices))
+	for _, d := range a.Devices {
+		devices[d.DeviceID] = ed25519.PublicKey(d.PublicKey)
+	}
+	var prev *Event
+	for i := range a.Events {
+		event := &a.Events[i]
+		if event.RoomID != a.Room.ID {
+			return fmt.Errorf("%w: event belongs to a different room", ErrCorruptEvent)
+		}
+		if prev != nil {
+			if event.Seq != prev.Seq+1 || event.PrevID != prev.ID || event.PrevHash != prev.Hash {
+				return fmt.Errorf("%w: broken chain at sequence %d", ErrCorruptEvent, event.Seq)
+			}
+		} else if event.Seq != 1 {
+			return fmt.Errorf("%w: audit does not start at sequence 1", ErrCorruptEvent)
+		}
+		key, ok := devices[event.AuthorDevice]
+		if !ok {
+			return fmt.Errorf("%w: unknown device %s", ErrCorruptEvent, event.AuthorDevice)
+		}
+		if err := VerifyEvent(event, key); err != nil {
+			return err
+		}
+		prev = event
+	}
+	if a.Head != prev.Hash && !(prev == nil && a.Head == "") {
+		return fmt.Errorf("%w: head does not match the last event", ErrCorruptEvent)
+	}
+	return nil
+}
+
+// SearchHit is a matching event.
+type SearchHit struct {
+	RoomID   string    `json:"room_id"`
+	RoomName string    `json:"room_name"`
+	EventID  string    `json:"event_id"`
+	Seq      int64     `json:"seq"`
+	Type     string    `json:"type"`
+	Text     string    `json:"text"`
+	Author   string    `json:"author_id"`
+	At       time.Time `json:"created_at"`
+}
+
+// Search scans decrypted local events for a case-insensitive substring.
+func (s *Service) Search(ctx context.Context, query string, limit int) ([]SearchHit, error) {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return nil, nil
+	}
+	if limit <= 0 || limit > maxSearchHits {
+		limit = maxSearchHits
+	}
+	rooms, err := s.store.ListRooms(ctx)
+	if err != nil {
+		return nil, err
+	}
+	hits := make([]SearchHit, 0, limit)
+	for _, r := range rooms {
+		events, err := s.ListEvents(ctx, r.ID, 0, maxPageSize)
+		if err != nil {
+			return nil, err
+		}
+		for _, event := range events {
+			if len(hits) >= limit {
+				return hits, nil
+			}
+			text := searchableText(event.Payload)
+			if !strings.Contains(strings.ToLower(text), query) {
+				continue
+			}
+			hits = append(hits, SearchHit{
+				RoomID: r.ID, RoomName: r.Name, EventID: event.ID, Seq: event.Seq,
+				Type: event.Type, Text: text, Author: event.AuthorID, At: event.CreatedAt,
+			})
+		}
+	}
+	return hits, nil
+}
+
+func searchableText(payload json.RawMessage) string {
+	var value any
+	if err := json.Unmarshal(payload, &value); err != nil {
+		return string(payload)
+	}
+	var parts []string
+	var walk func(any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case string:
+			parts = append(parts, x)
+		case []any:
+			for _, item := range x {
+				walk(item)
+			}
+		case map[string]any:
+			keys := make([]string, 0, len(x))
+			for k := range x {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				walk(x[k])
+			}
+		}
+	}
+	walk(value)
+	return strings.Join(parts, " ")
+}
+
+// HashInviteSecret hashes the bearer secret stored in an invitation code.
+func HashInviteSecret(secret string) string {
+	sum := sha256.Sum256([]byte("toget:invite:v1:" + secret))
+	return hex.EncodeToString(sum[:])
+}
+
+func randomSecret() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate invite secret: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func (s *Service) requireMember(ctx context.Context, roomID string, actor Actor) error {
+	member, err := s.store.GetMember(ctx, roomID, actor.AccountID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return ErrNotMember
+		}
+		return err
+	}
+	if member.Status != "active" {
+		return ErrNotMember
+	}
+	return nil
+}
+
+func (s *Service) requireOwner(ctx context.Context, roomID string, actor Actor) error {
+	member, err := s.store.GetMember(ctx, roomID, actor.AccountID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return ErrNotMember
+		}
+		return err
+	}
+	if member.Status != "active" || member.Role != "owner" {
+		return ErrForbidden
+	}
+	return nil
+}
+
+func (s *Service) appendUnchecked(ctx context.Context, roomID string, actor Actor, eventType string, payload any, now time.Time) (*Event, error) {
+	last, err := s.store.LastEvent(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("encode %s: %w", eventType, err)
+	}
+	epoch, key, err := s.latestRoomKeyLocked(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	event, err := s.buildEvent(roomID, last.Seq+1, last, eventType, actor, raw, now)
+	if err != nil {
+		return nil, err
+	}
+	event.Epoch = epoch
+	stored, err := s.sealEvent(event, epoch, key)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.store.AppendEvent(ctx, stored); err != nil {
+		return nil, err
+	}
+	return event, nil
+}
+
+func (s *Service) buildEvent(roomID string, seq int64, prev *Event, eventType string, actor Actor, payload json.RawMessage, now time.Time) (*Event, error) {
+	event := &Event{
+		ID:           identity.NewID(),
+		RoomID:       roomID,
+		Seq:          seq,
+		Type:         eventType,
+		AuthorID:     actor.AccountID,
+		AuthorDevice: actor.DeviceID,
+		Payload:      payload,
+		CreatedAt:    now,
+	}
+	if prev != nil {
+		event.PrevID = prev.ID
+		event.PrevHash = prev.Hash
+	}
+	event.Hash = ComputeEventHash(event)
+	if len(actor.SigningKey) == ed25519.PrivateKeySize {
+		event.Signature = base64.RawStdEncoding.EncodeToString(ed25519.Sign(actor.SigningKey, []byte(event.Hash)))
+	}
+	return event, nil
+}
+
+func (s *Service) findEvent(ctx context.Context, roomID, eventID string) (*Event, error) {
+	event, err := s.store.GetEvent(ctx, eventID)
+	if err != nil {
+		return nil, err
+	}
+	if event.RoomID != roomID {
+		return nil, ErrMessageNotFound
+	}
+	opened, err := s.openEvent(ctx, event)
+	if errors.Is(err, ErrKeyUnavailable) {
+		return nil, ErrMessageNotFound
+	}
+	return opened, err
+}
+
+func (s *Service) sealEvent(event *Event, epoch int, key []byte) (*Event, error) {
+	sealed, err := sealRoomPayload(key, event.Payload, payloadAAD(event.RoomID, epoch, "event"))
 	if err != nil {
 		return nil, fmt.Errorf("seal event payload: %w", err)
 	}
 	copy := *event
-	copy.Payload = []byte(sealed)
+	copy.Payload = sealed
+	copy.Epoch = epoch
 	return &copy, nil
 }
 
-func (s *Service) openEvent(event *Event) (*Event, error) {
-	plaintext, err := s.vault.Open(string(event.Payload), payloadAAD(event.RoomID))
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrCorruptEvent, err)
+func (s *Service) openEvent(ctx context.Context, event *Event) (*Event, error) {
+	plaintext := []byte(nil)
+	if isRoomPayload(event.Payload) {
+		epoch := event.Epoch
+		if epoch <= 0 {
+			epoch = 1
+		}
+		key, err := s.roomKey(ctx, event.RoomID, epoch)
+		if errors.Is(err, ErrNotFound) {
+			return nil, ErrKeyUnavailable
+		}
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrCorruptEvent, err)
+		}
+		plaintext, err = openRoomPayload(key, event.Payload, payloadAAD(event.RoomID, epoch, "event"))
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrCorruptEvent, err)
+		}
+	} else {
+		var err error
+		plaintext, err = s.vault.Open(string(event.Payload), eventPayloadAAD(event.RoomID))
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrCorruptEvent, err)
+		}
 	}
 	copy := *event
 	copy.Payload = plaintext
-	if eventHash(&copy) != event.Hash {
+	if event.PrevHash == "" && event.AuthorDevice == "" && event.Signature == "" {
+		if legacyEventHash(&copy) != event.Hash {
+			return nil, ErrCorruptEvent
+		}
+	} else if ComputeEventHash(&copy) != event.Hash {
 		return nil, ErrCorruptEvent
 	}
 	return &copy, nil
 }
 
-func payloadAAD(roomID string) string {
+func eventPayloadAAD(roomID string) string {
 	return "toget:event-payload:v1:" + roomID
 }
 
-func eventHash(event *Event) string {
+func roomEpochAAD(roomID string, epoch int) string {
+	return fmt.Sprintf("toget:room-epoch:v1|%s|%d", roomID, epoch)
+}
+
+func isRoomPayload(payload []byte) bool {
+	return len(payload) >= len(sealedKeyPrefix) && string(payload[:len(sealedKeyPrefix)]) == sealedKeyPrefix
+}
+
+func (s *Service) roomKey(ctx context.Context, roomID string, epoch int) ([]byte, error) {
+	stored, err := s.store.GetRoomEpoch(ctx, roomID, epoch)
+	if err != nil {
+		return nil, err
+	}
+	key, err := s.vault.Open(stored.KeySealed, roomEpochAAD(roomID, epoch))
+	if err != nil {
+		return nil, fmt.Errorf("open room key: %w", err)
+	}
+	if len(key) != roomKeySize {
+		return nil, errors.New("room key has the wrong size")
+	}
+	return key, nil
+}
+
+func (s *Service) roomKeyLocked(ctx context.Context, roomID string, epoch int) ([]byte, error) {
+	return s.roomKey(ctx, roomID, epoch)
+}
+
+func (s *Service) latestRoomKey(ctx context.Context, roomID string) (int, []byte, error) {
+	return s.latestRoomKeyLocked(ctx, roomID)
+}
+
+func (s *Service) latestRoomKeyLocked(ctx context.Context, roomID string) (int, []byte, error) {
+	stored, err := s.store.LatestRoomEpoch(ctx, roomID)
+	if err != nil {
+		return 0, nil, err
+	}
+	key, err := s.vault.Open(stored.KeySealed, roomEpochAAD(roomID, stored.Epoch))
+	if err != nil {
+		return 0, nil, fmt.Errorf("open room key: %w", err)
+	}
+	if len(key) != roomKeySize {
+		return 0, nil, errors.New("room key has the wrong size")
+	}
+	return stored.Epoch, key, nil
+}
+
+func (s *Service) rotateEpochLocked(ctx context.Context, roomID string) (int, error) {
+	next := 1
+	latest, err := s.store.LatestRoomEpoch(ctx, roomID)
+	if err == nil {
+		next = latest.Epoch + 1
+	} else if !errors.Is(err, ErrNotFound) {
+		return 0, err
+	}
+	key, err := newRoomKey()
+	if err != nil {
+		return 0, err
+	}
+	now := s.now().UTC().Truncate(time.Millisecond)
+	sealed, err := s.vault.Seal(key, roomEpochAAD(roomID, next))
+	if err != nil {
+		return 0, err
+	}
+	if err := s.store.SaveRoomEpoch(ctx, &RoomEpoch{RoomID: roomID, Epoch: next, KeySealed: sealed, CreatedAt: now}); err != nil {
+		return 0, err
+	}
+	devices, err := s.store.ListRoomDevices(ctx, roomID)
+	if err != nil {
+		return 0, err
+	}
+	for i := range devices {
+		device := &devices[i]
+		if device.RevokedAt != nil || len(device.EncryptionPublicKey) != 32 {
+			continue
+		}
+		member, err := s.store.GetMember(ctx, roomID, device.AccountID)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			return 0, err
+		}
+		if member.Status != "active" {
+			continue
+		}
+		wrapped, err := WrapRoomKey(roomID, next, device.DeviceID, device.EncryptionPublicKey, key)
+		if err != nil {
+			return 0, err
+		}
+		if err := s.store.SaveRoomMemberKey(ctx, &RoomMemberKey{
+			RoomID: roomID, Epoch: next, DeviceID: device.DeviceID, Wrapped: wrapped, CreatedAt: now,
+		}); err != nil {
+			return 0, err
+		}
+	}
+	current, err := s.store.GetRoom(ctx, roomID)
+	if err != nil {
+		return 0, err
+	}
+	current.Epoch = next
+	if err := s.store.UpdateRoom(ctx, current); err != nil {
+		return 0, err
+	}
+	return next, nil
+}
+
+func (s *Service) rotateEpoch(ctx context.Context, roomID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rotateEpochLocked(ctx, roomID)
+}
+
+// shareEpochWithDeviceLocked wraps one existing epoch key for a device. The
+// device must already be registered in the room.
+func (s *Service) shareEpochWithDeviceLocked(ctx context.Context, roomID string, epoch int, deviceID string, encryptionPub []byte) error {
+	if len(encryptionPub) != 32 {
+		return errors.New("device has no encryption key")
+	}
+	key, err := s.roomKeyLocked(ctx, roomID, epoch)
+	if err != nil {
+		return err
+	}
+	wrapped, err := WrapRoomKey(roomID, epoch, deviceID, encryptionPub, key)
+	if err != nil {
+		return err
+	}
+	return s.store.SaveRoomMemberKey(ctx, &RoomMemberKey{
+		RoomID: roomID, Epoch: epoch, DeviceID: deviceID, Wrapped: wrapped, CreatedAt: s.now().UTC().Truncate(time.Millisecond),
+	})
+}
+
+// shareHistoryLocked gives a newly joined device earlier room keys. History
+// choices are enforced at epoch granularity: "all" shares every epoch and
+// "recent" shares only the current epoch.
+func (s *Service) shareHistoryLocked(ctx context.Context, roomID, deviceID string, encryptionPub []byte, history string) error {
+	epochs, err := s.store.ListRoomEpochs(ctx, roomID)
+	if err != nil {
+		return err
+	}
+	for i := range epochs {
+		if history == HistoryRecent && i != len(epochs)-1 {
+			continue
+		}
+		if err := s.shareEpochWithDeviceLocked(ctx, roomID, epochs[i].Epoch, deviceID, encryptionPub); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ComputeEventHash returns the canonical hash of an event's immutable fields.
+func ComputeEventHash(event *Event) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "toget:event:v2\n%s\n%s\n%d\n%s\n%s\n%s\n%d\n%s\n%s\n",
+		event.RoomID,
+		event.ID,
+		event.Seq,
+		event.Type,
+		event.AuthorID,
+		event.AuthorDevice,
+		event.CreatedAt.UnixMilli(),
+		event.PrevID,
+		event.PrevHash,
+	)
+	h.Write(event.Payload)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// VerifyEvent checks the event hash and, when present, its author signature.
+func VerifyEvent(event *Event, publicKey ed25519.PublicKey) error {
+	if ComputeEventHash(event) != event.Hash {
+		return fmt.Errorf("%w: hash mismatch", ErrCorruptEvent)
+	}
+	if event.Signature == "" {
+		return fmt.Errorf("%w: missing signature", ErrCorruptEvent)
+	}
+	sig, err := base64.RawStdEncoding.DecodeString(event.Signature)
+	if err != nil {
+		return fmt.Errorf("%w: bad signature encoding", ErrCorruptEvent)
+	}
+	if len(publicKey) != ed25519.PublicKeySize || !ed25519.Verify(publicKey, []byte(event.Hash), sig) {
+		return fmt.Errorf("%w: signature is invalid", ErrCorruptEvent)
+	}
+	return nil
+}
+
+func legacyEventHash(event *Event) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "%s\n%s\n%d\n%s\n%s\n%d\n%s\n",
 		event.RoomID,

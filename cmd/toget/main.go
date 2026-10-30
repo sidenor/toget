@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"sort"
@@ -21,10 +22,14 @@ import (
 	"golang.org/x/term"
 
 	"github.com/sidenor/toget/internal/account"
+	"github.com/sidenor/toget/internal/agent"
 	"github.com/sidenor/toget/internal/api"
+	"github.com/sidenor/toget/internal/approval"
 	"github.com/sidenor/toget/internal/config"
 	"github.com/sidenor/toget/internal/room"
+	"github.com/sidenor/toget/internal/session"
 	"github.com/sidenor/toget/internal/storage"
+	"github.com/sidenor/toget/internal/tool"
 	"github.com/sidenor/toget/internal/ui"
 	"github.com/sidenor/toget/internal/vault"
 	"github.com/sidenor/toget/internal/version"
@@ -58,10 +63,16 @@ func newRootCommand() *cobra.Command {
 
 	root.AddCommand(newServeCommand())
 	root.AddCommand(newStatusCommand())
+	root.AddCommand(newSessionCommand())
 	root.AddCommand(newAccountCommand())
+	root.AddCommand(newDeviceCommand())
 	root.AddCommand(newRoomCommand())
 	root.AddCommand(newSendCommand())
 	root.AddCommand(newMessagesCommand())
+	root.AddCommand(newAgentCommand())
+	root.AddCommand(newApprovalCommand())
+	root.AddCommand(newToolCommand())
+	root.AddCommand(newSearchCommand())
 	root.AddCommand(newVersionCommand())
 	return root
 }
@@ -123,16 +134,24 @@ func runServe(ctx context.Context) error {
 
 	accounts := account.New(db, v)
 	rooms := room.New(db, v)
+	agents := agent.New(db, rooms)
+	approvals := approval.New(db, rooms)
+	tools := tool.New(db, rooms, approvals)
+	sessions := session.New(session.DefaultTTL)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	handler := api.New(api.Options{
-		Accounts: accounts,
-		Rooms:    rooms,
-		Version:  version.Current(),
-		Token:    token,
-		Listen:   cfg.Listen,
-		UI:       ui.FS(),
-		Logger:   logger,
+		Accounts:  accounts,
+		Rooms:     rooms,
+		Agents:    agents,
+		Approvals: approvals,
+		Tools:     tools,
+		Session:   sessions,
+		Version:   version.Current(),
+		Token:     token,
+		Listen:    cfg.Listen,
+		UI:        ui.FS(),
+		Logger:    logger,
 	}).Handler()
 
 	server := &http.Server{
@@ -155,6 +174,7 @@ func runServe(ctx context.Context) error {
 	fmt.Printf("Data: %s\n", paths.Home)
 	if snapshot, err := accounts.Get(ctx); err == nil {
 		fmt.Printf("Account: %s · %s\n", snapshot.Account.Name, formatAccountID(snapshot.Account.ID))
+		fmt.Println("Locked: run `toget unlock` before using the CLI or UI.")
 	} else if errors.Is(err, account.ErrNotFound) {
 		fmt.Println("Account: not created yet")
 	}
@@ -197,14 +217,95 @@ func newStatusCommand() *cobra.Command {
 			if status.Account == nil {
 				fmt.Println("Account: not created yet")
 				fmt.Println("Create one with: toget account create")
-			} else {
-				fmt.Printf("Account: %s · %s\n", status.Account.Name, formatAccountID(status.Account.ID))
-				fmt.Printf("Server:  %s\n", status.Account.ServerID)
+				return nil
 			}
-			fmt.Printf("Rooms:   %d\n", status.Rooms)
+			fmt.Printf("Account: %s · %s\n", status.Account.Name, formatAccountID(status.Account.ID))
+			fmt.Printf("Server:  %s\n", status.Account.ServerID)
+			if status.Locked {
+				fmt.Println("State:   locked (run `toget unlock`)")
+				return nil
+			}
+			fmt.Printf("Rooms:   %d\nAgents:  %d\nPending: %d approval(s)\n", status.Rooms, status.Agents, status.PendingApproval)
 			return nil
 		},
 	}
+}
+
+func newSessionCommand() *cobra.Command {
+	cmd := &cobra.Command{Use: "session", Short: "Inspect or change the local unlock state"}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "show",
+		Short: "Show whether the node is unlocked",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			var state api.SessionView
+			if err := c.Get(cmd.Context(), "/api/v1/session", &state); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(state)
+			}
+			if !state.HasAccount {
+				fmt.Println("No account yet.")
+			} else if state.Locked {
+				fmt.Println("Locked. Run `toget unlock`.")
+			} else {
+				fmt.Printf("Unlocked until %s.\n", state.ExpiresAt.Local().Format(time.RFC3339))
+			}
+			return nil
+		},
+	})
+	cmd.AddCommand(newUnlockCommand())
+	cmd.AddCommand(&cobra.Command{
+		Use:   "lock",
+		Short: "Lock the node now",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			if err := c.Delete(cmd.Context(), "/api/v1/session", nil); err != nil {
+				return err
+			}
+			fmt.Println("Locked.")
+			return nil
+		},
+	})
+	return cmd
+}
+
+func newUnlockCommand() *cobra.Command {
+	var password string
+	cmd := &cobra.Command{
+		Use:   "unlock",
+		Short: "Unlock the local node with your password",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			if password == "" {
+				password, err = promptPassword("Password: ")
+				if err != nil {
+					return err
+				}
+			}
+			var state api.SessionView
+			if err := c.Post(cmd.Context(), "/api/v1/session", map[string]string{"password": password}, &state); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(state)
+			}
+			fmt.Printf("Unlocked until %s.\n", state.ExpiresAt.Local().Format(time.RFC3339))
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&password, "password", "", "password (prompted when omitted)")
+	return cmd
 }
 
 func newAccountCommand() *cobra.Command {
@@ -288,15 +389,80 @@ func newAccountShowCommand() *cobra.Command {
 	}
 }
 
+func newDeviceCommand() *cobra.Command {
+	cmd := &cobra.Command{Use: "device", Short: "Manage devices on this account"}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "List devices",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			var result struct {
+				Devices []api.DeviceView `json:"devices"`
+			}
+			if err := c.Get(cmd.Context(), "/api/v1/devices", &result); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(result.Devices)
+			}
+			for _, d := range result.Devices {
+				marker := " "
+				if d.Current {
+					marker = "*"
+				}
+				state := "active"
+				if d.RevokedAt != nil {
+					state = "revoked"
+				}
+				fmt.Printf("%s %s  %-24s %-8s %s\n", marker, d.ID, d.Name, d.Role, state)
+			}
+			return nil
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "revoke <id>",
+		Short: "Revoke another device",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			if err := c.Delete(cmd.Context(), "/api/v1/devices/"+args[0], nil); err != nil {
+				return err
+			}
+			fmt.Println("Device revoked.")
+			return nil
+		},
+	})
+	return cmd
+}
+
 func newRoomCommand() *cobra.Command {
 	cmd := &cobra.Command{Use: "room", Short: "Manage rooms"}
 	cmd.AddCommand(newRoomCreateCommand())
 	cmd.AddCommand(newRoomListCommand())
+	cmd.AddCommand(newRoomShowCommand())
+	cmd.AddCommand(newRoomRenameCommand())
+	cmd.AddCommand(newRoomArchiveCommand())
+	cmd.AddCommand(newRoomMembersCommand())
+	cmd.AddCommand(newRoomInviteCommand())
+	cmd.AddCommand(newRoomRedeemCommand())
+	cmd.AddCommand(newRoomLeaveCommand())
+	cmd.AddCommand(newRoomAgentsCommand())
+	cmd.AddCommand(newRoomAddAgentCommand())
+	cmd.AddCommand(newRoomRemoveAgentCommand())
+	cmd.AddCommand(newRoomAuditCommand())
+	cmd.AddCommand(newRoomSearchCommand())
+	cmd.AddCommand(newRoomReadCommand())
 	return cmd
 }
 
 func newRoomCreateCommand() *cobra.Command {
-	var name string
+	var name, topic string
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create a room",
@@ -315,7 +481,7 @@ func newRoomCreateCommand() *cobra.Command {
 				Room  room.Room  `json:"room"`
 				Event room.Event `json:"event"`
 			}
-			if err := c.Post(cmd.Context(), "/api/v1/rooms", map[string]string{"name": name}, &created); err != nil {
+			if err := c.Post(cmd.Context(), "/api/v1/rooms", map[string]string{"name": name, "topic": topic}, &created); err != nil {
 				return err
 			}
 			if jsonFlag {
@@ -326,11 +492,13 @@ func newRoomCreateCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "room name")
+	cmd.Flags().StringVar(&topic, "topic", "", "room topic")
 	return cmd
 }
 
 func newRoomListCommand() *cobra.Command {
-	return &cobra.Command{
+	var includeArchived bool
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List rooms",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -338,10 +506,14 @@ func newRoomListCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			path := "/api/v1/rooms"
+			if includeArchived {
+				path += "?include_archived=1"
+			}
 			var result struct {
 				Rooms []room.Room `json:"rooms"`
 			}
-			if err := c.Get(cmd.Context(), "/api/v1/rooms", &result); err != nil {
+			if err := c.Get(cmd.Context(), path, &result); err != nil {
 				return err
 			}
 			if jsonFlag {
@@ -352,15 +524,377 @@ func newRoomListCommand() *cobra.Command {
 				return nil
 			}
 			for _, r := range result.Rooms {
-				fmt.Printf("%s  %s\n", r.ID, r.Name)
+				suffix := ""
+				if r.ArchivedAt != nil {
+					suffix = " (archived)"
+				}
+				fmt.Printf("%s  %s%s\n", r.ID, r.Name, suffix)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&includeArchived, "include-archived", false, "include archived rooms")
+	return cmd
+}
+
+func newRoomShowCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "show <room-id>",
+		Short: "Show a room",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			var r room.Room
+			if err := c.Get(cmd.Context(), "/api/v1/rooms/"+args[0], &r); err != nil {
+				return err
+			}
+			return printJSON(r)
+		},
+	}
+}
+
+func newRoomRenameCommand() *cobra.Command {
+	var name, topic string
+	cmd := &cobra.Command{
+		Use:   "rename <room-id>",
+		Short: "Change a room's name or topic",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			body := map[string]any{}
+			if cmd.Flags().Changed("name") {
+				body["name"] = name
+			}
+			if cmd.Flags().Changed("topic") {
+				body["topic"] = topic
+			}
+			if len(body) == 0 {
+				return errors.New("pass --name and/or --topic")
+			}
+			var updated struct {
+				Room room.Room `json:"room"`
+			}
+			if err := c.Patch(cmd.Context(), "/api/v1/rooms/"+args[0], body, &updated); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(updated.Room)
+			}
+			fmt.Printf("Updated %s: %s\n", updated.Room.ID, updated.Room.Name)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&name, "name", "", "new name")
+	cmd.Flags().StringVar(&topic, "topic", "", "new topic")
+	return cmd
+}
+
+func newRoomArchiveCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "archive <room-id>",
+		Short: "Archive a room",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			var result struct {
+				Room room.Room `json:"room"`
+			}
+			if err := c.Post(cmd.Context(), "/api/v1/rooms/"+args[0]+"/archive", nil, &result); err != nil {
+				return err
+			}
+			fmt.Printf("Archived %s\n", result.Room.ID)
+			return nil
+		},
+	}
+}
+
+func newRoomMembersCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "members <room-id>",
+		Short: "List room members",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			var result struct {
+				Members []room.Member `json:"members"`
+			}
+			if err := c.Get(cmd.Context(), "/api/v1/rooms/"+args[0]+"/members", &result); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(result.Members)
+			}
+			for _, m := range result.Members {
+				fmt.Printf("%s  %-20s %-8s %s\n", m.AccountID, m.DisplayName, m.Role, m.Status)
 			}
 			return nil
 		},
 	}
 }
 
+func newRoomInviteCommand() *cobra.Command {
+	var history string
+	var ttlSeconds int
+	cmd := &cobra.Command{
+		Use:   "invite <room-id>",
+		Short: "Create a single-use invitation",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			var result struct {
+				Invite room.Invite `json:"invite"`
+			}
+			body := map[string]any{"history": history, "ttl_seconds": ttlSeconds}
+			if err := c.Post(cmd.Context(), "/api/v1/rooms/"+args[0]+"/invites", body, &result); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(result.Invite)
+			}
+			fmt.Printf("Share this secret once: %s\nHistory: %s\nExpires: %s\n",
+				result.Invite.Secret, result.Invite.History, result.Invite.ExpiresAt.Local().Format(time.RFC3339))
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&history, "history", "none", "history attached: none, recent, or all")
+	cmd.Flags().IntVar(&ttlSeconds, "ttl-seconds", 7*24*3600, "invitation lifetime in seconds")
+	return cmd
+}
+
+func newRoomRedeemCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "redeem <secret>",
+		Short: "Join a room with an invitation secret",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			var result struct {
+				Room room.Room `json:"room"`
+			}
+			if err := c.Post(cmd.Context(), "/api/v1/invites/redeem", map[string]string{"secret": args[0]}, &result); err != nil {
+				return err
+			}
+			fmt.Printf("Joined %s (%s)\n", result.Room.Name, result.Room.ID)
+			return nil
+		},
+	}
+}
+
+func newRoomLeaveCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "leave <room-id>",
+		Short: "Leave a room",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			if err := c.Post(cmd.Context(), "/api/v1/rooms/"+args[0]+"/leave", nil, nil); err != nil {
+				return err
+			}
+			fmt.Println("Left the room.")
+			return nil
+		},
+	}
+}
+
+func newRoomAgentsCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "agents <room-id>",
+		Short: "List Agents in a room",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			var result struct {
+				Agents []agent.Agent `json:"agents"`
+			}
+			if err := c.Get(cmd.Context(), "/api/v1/rooms/"+args[0]+"/agents", &result); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(result.Agents)
+			}
+			for _, a := range result.Agents {
+				fmt.Printf("%s  %-20s %-16s %s\n", a.ID, a.Name, a.Status, a.Runtime)
+			}
+			return nil
+		},
+	}
+}
+
+func newRoomAddAgentCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "add-agent <room-id> <agent-id>",
+		Short: "Add an Agent to a room",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			if err := c.Post(cmd.Context(), "/api/v1/rooms/"+args[0]+"/agents", map[string]string{"agent_id": args[1]}, nil); err != nil {
+				return err
+			}
+			fmt.Println("Agent joined.")
+			return nil
+		},
+	}
+}
+
+func newRoomRemoveAgentCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "remove-agent <room-id> <agent-id>",
+		Short: "Remove an Agent from a room",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			if err := c.Delete(cmd.Context(), "/api/v1/rooms/"+args[0]+"/agents/"+args[1], nil); err != nil {
+				return err
+			}
+			fmt.Println("Agent left.")
+			return nil
+		},
+	}
+}
+
+func newRoomAuditCommand() *cobra.Command {
+	var out string
+	cmd := &cobra.Command{
+		Use:   "audit <room-id>",
+		Short: "Export and verify a room's audit bundle",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			var result struct {
+				Audit    room.Audit `json:"audit"`
+				Verified bool       `json:"verified"`
+			}
+			if err := c.Get(cmd.Context(), "/api/v1/rooms/"+args[0]+"/audit", &result); err != nil {
+				return err
+			}
+			if out != "" {
+				data, err := json.MarshalIndent(result.Audit, "", "  ")
+				if err != nil {
+					return err
+				}
+				if err := os.WriteFile(out, append(data, '\n'), 0o600); err != nil {
+					return err
+				}
+			}
+			if jsonFlag {
+				return printJSON(result)
+			}
+			fmt.Printf("Events: %d\nHead:   %s\nChain:  %s\n", len(result.Audit.Events), result.Audit.Head, verifiedLabel(result.Verified))
+			if out != "" {
+				fmt.Printf("Written to %s (mode 0600).\n", out)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&out, "out", "", "write the audit bundle to a file")
+	return cmd
+}
+
+func newRoomSearchCommand() *cobra.Command {
+	var limit int
+	cmd := &cobra.Command{
+		Use:   "search <room-id> <query>",
+		Short: "Search messages in a room",
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			query := strings.Join(args[1:], " ")
+			path := fmt.Sprintf("/api/v1/rooms/%s/search?q=%s&limit=%d", args[0], urlQuery(query), limit)
+			var result struct {
+				Hits []room.SearchHit `json:"hits"`
+			}
+			if err := c.Get(cmd.Context(), path, &result); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(result.Hits)
+			}
+			for _, hit := range result.Hits {
+				fmt.Printf("[%d] %s: %s\n", hit.Seq, hit.Author, hit.Text)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&limit, "limit", 50, "maximum hits")
+	return cmd
+}
+
+func newRoomReadCommand() *cobra.Command {
+	var seq int64
+	var reset bool
+	cmd := &cobra.Command{
+		Use:   "read <room-id>",
+		Short: "Show or set this device's read cursor",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			if reset || cmd.Flags().Changed("seq") {
+				if err := c.Post(cmd.Context(), "/api/v1/rooms/"+args[0]+"/read", map[string]int64{"seq": seq}, nil); err != nil {
+					return err
+				}
+				fmt.Printf("Read cursor set to %d.\n", seq)
+				return nil
+			}
+			var result struct {
+				Seq      int64  `json:"seq"`
+				DeviceID string `json:"device_id"`
+			}
+			if err := c.Get(cmd.Context(), "/api/v1/rooms/"+args[0]+"/read", &result); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(result)
+			}
+			fmt.Printf("Read through %d on %s.\n", result.Seq, result.DeviceID)
+			return nil
+		},
+	}
+	cmd.Flags().Int64Var(&seq, "seq", 0, "set the cursor")
+	cmd.Flags().BoolVar(&reset, "reset", false, "reset the cursor to zero")
+	return cmd
+}
+
 func newSendCommand() *cobra.Command {
-	var roomID string
+	var roomID, format string
 	cmd := &cobra.Command{
 		Use:   "send [text...]",
 		Short: "Send a message to a room",
@@ -376,7 +910,8 @@ func newSendCommand() *cobra.Command {
 			}
 			text := strings.Join(args, " ")
 			var event room.Event
-			if err := c.Post(cmd.Context(), "/api/v1/rooms/"+roomID+"/messages", map[string]string{"text": text}, &event); err != nil {
+			body := map[string]string{"text": text, "format": format}
+			if err := c.Post(cmd.Context(), "/api/v1/rooms/"+roomID+"/messages", body, &event); err != nil {
 				return err
 			}
 			if jsonFlag {
@@ -387,11 +922,12 @@ func newSendCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&roomID, "room", "", "room ID (defaults to the only room)")
+	cmd.Flags().StringVar(&format, "format", "plain", "plain or markdown")
 	return cmd
 }
 
 func newMessagesCommand() *cobra.Command {
-	var roomID string
+	var roomID, eventType string
 	var after int64
 	var limit int
 	cmd := &cobra.Command{
@@ -410,6 +946,9 @@ func newMessagesCommand() *cobra.Command {
 				Events []room.Event `json:"events"`
 			}
 			path := fmt.Sprintf("/api/v1/rooms/%s/events?after=%d&limit=%d", roomID, after, limit)
+			if eventType != "" {
+				path += "&type=" + urlQuery(eventType)
+			}
 			if err := c.Get(cmd.Context(), path, &result); err != nil {
 				return err
 			}
@@ -417,18 +956,7 @@ func newMessagesCommand() *cobra.Command {
 				return printJSON(result.Events)
 			}
 			for _, event := range result.Events {
-				switch event.Type {
-				case room.EventMessagePosted:
-					var payload room.MessagePostedPayload
-					_ = json.Unmarshal(event.Payload, &payload)
-					fmt.Printf("[%d] %s: %s\n", event.Seq, event.AuthorID, payload.Text)
-				case room.EventRoomCreated:
-					var payload room.RoomCreatedPayload
-					_ = json.Unmarshal(event.Payload, &payload)
-					fmt.Printf("[%d] · room created: %s\n", event.Seq, payload.Name)
-				default:
-					fmt.Printf("[%d] · %s\n", event.Seq, event.Type)
-				}
+				printEvent(event)
 			}
 			return nil
 		},
@@ -436,6 +964,488 @@ func newMessagesCommand() *cobra.Command {
 	cmd.Flags().StringVar(&roomID, "room", "", "room ID (defaults to the only room)")
 	cmd.Flags().Int64Var(&after, "after", 0, "only show events after this sequence")
 	cmd.Flags().IntVar(&limit, "limit", 100, "maximum number of events")
+	cmd.Flags().StringVar(&eventType, "type", "", "only show this event type")
+	return cmd
+}
+
+func printEvent(event room.Event) {
+	switch event.Type {
+	case room.EventMessagePosted:
+		var payload room.MessagePostedPayload
+		_ = json.Unmarshal(event.Payload, &payload)
+		fmt.Printf("[%d] %s: %s\n", event.Seq, event.AuthorID, payload.Text)
+	case room.EventMessageEdited:
+		var payload room.MessageEditedPayload
+		_ = json.Unmarshal(event.Payload, &payload)
+		fmt.Printf("[%d] · edited: %s\n", event.Seq, payload.Text)
+	case room.EventRoomCreated:
+		var payload room.RoomCreatedPayload
+		_ = json.Unmarshal(event.Payload, &payload)
+		fmt.Printf("[%d] · room created: %s\n", event.Seq, payload.Name)
+	case room.EventApprovalRequested:
+		var payload room.ApprovalRequestedPayload
+		_ = json.Unmarshal(event.Payload, &payload)
+		fmt.Printf("[%d] · approval requested: %s\n", event.Seq, payload.Description)
+	case room.EventApprovalGranted, room.EventApprovalRejected, room.EventApprovalExpired, room.EventApprovalConsumed:
+		fmt.Printf("[%d] · %s\n", event.Seq, event.Type)
+	case room.EventToolRequested, room.EventToolResult, room.EventToolFailed:
+		var payload room.ToolEventPayload
+		_ = json.Unmarshal(event.Payload, &payload)
+		fmt.Printf("[%d] · tool %s %s\n", event.Seq, payload.Tool, payload.Status)
+	default:
+		fmt.Printf("[%d] · %s\n", event.Seq, event.Type)
+	}
+}
+
+func newAgentCommand() *cobra.Command {
+	cmd := &cobra.Command{Use: "agent", Short: "Manage local Agents"}
+	cmd.AddCommand(newAgentAddCommand())
+	cmd.AddCommand(newAgentListCommand())
+	cmd.AddCommand(newAgentShowCommand())
+	cmd.AddCommand(newAgentStatusCommand())
+	cmd.AddCommand(newAgentRevokeCommand())
+	return cmd
+}
+
+func newAgentAddCommand() *cobra.Command {
+	var name, runtime, permissions string
+	cmd := &cobra.Command{
+		Use:   "add",
+		Short: "Register a local Agent",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			if name == "" {
+				name = prompt("Agent name: ")
+			}
+			if runtime == "" {
+				runtime = "cli"
+			}
+			var perms json.RawMessage
+			if strings.TrimSpace(permissions) != "" {
+				perms = json.RawMessage(permissions)
+			}
+			var created agent.Agent
+			body := map[string]any{"name": name, "runtime": runtime, "permissions": perms}
+			if err := c.Post(cmd.Context(), "/api/v1/agents", body, &created); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(created)
+			}
+			fmt.Printf("Agent registered: %s (%s)\n", created.ID, created.Name)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&name, "name", "", "display name")
+	cmd.Flags().StringVar(&runtime, "runtime", "cli", "runtime name, e.g. claude-code")
+	cmd.Flags().StringVar(&permissions, "permissions", "", "permissions as a JSON object")
+	return cmd
+}
+
+func newAgentListCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List local Agents",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			var result struct {
+				Agents []agent.Agent `json:"agents"`
+			}
+			if err := c.Get(cmd.Context(), "/api/v1/agents", &result); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(result.Agents)
+			}
+			for _, a := range result.Agents {
+				fmt.Printf("%s  %-20s %-16s %s\n", a.ID, a.Name, a.Status, a.Runtime)
+			}
+			return nil
+		},
+	}
+}
+
+func newAgentShowCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "show <agent-id>",
+		Short: "Show an Agent",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			var got agent.Agent
+			if err := c.Get(cmd.Context(), "/api/v1/agents/"+args[0], &got); err != nil {
+				return err
+			}
+			return printJSON(got)
+		},
+	}
+}
+
+func newAgentStatusCommand() *cobra.Command {
+	var detail, roomID string
+	cmd := &cobra.Command{
+		Use:   "status <agent-id> <status>",
+		Short: "Set an Agent's presence",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			body := map[string]string{"status": args[1], "detail": detail, "room_id": roomID}
+			if err := c.Patch(cmd.Context(), "/api/v1/agents/"+args[0], body, nil); err != nil {
+				return err
+			}
+			fmt.Println("Status updated.")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&detail, "detail", "", "short status detail")
+	cmd.Flags().StringVar(&roomID, "room", "", "also post a status event in this room")
+	return cmd
+}
+
+func newAgentRevokeCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "revoke <agent-id>",
+		Short: "Permanently revoke an Agent",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			if err := c.Post(cmd.Context(), "/api/v1/agents/"+args[0]+"/revoke", nil, nil); err != nil {
+				return err
+			}
+			fmt.Println("Agent revoked.")
+			return nil
+		},
+	}
+}
+
+func newApprovalCommand() *cobra.Command {
+	cmd := &cobra.Command{Use: "approval", Short: "Review exact Agent actions"}
+	cmd.AddCommand(newApprovalListCommand())
+	cmd.AddCommand(newApprovalShowCommand())
+	cmd.AddCommand(newApprovalRequestCommand())
+	cmd.AddCommand(newApprovalDecideCommand("grant", approval.DecisionGrant))
+	cmd.AddCommand(newApprovalDecideCommand("reject", approval.DecisionReject))
+	return cmd
+}
+
+func newApprovalListCommand() *cobra.Command {
+	var roomID, status string
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List approvals",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			roomID, err = resolveRoom(cmd.Context(), c, roomID)
+			if err != nil {
+				return err
+			}
+			path := "/api/v1/rooms/" + roomID + "/approvals"
+			if status != "" {
+				path += "?status=" + urlQuery(status)
+			}
+			var result struct {
+				Approvals []approval.Approval `json:"approvals"`
+			}
+			if err := c.Get(cmd.Context(), path, &result); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(result.Approvals)
+			}
+			for _, a := range result.Approvals {
+				fmt.Printf("%s  %-10s %-10s %s\n", a.ID, a.Status, a.AgentID, a.Description)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&roomID, "room", "", "room ID (defaults to the only room)")
+	cmd.Flags().StringVar(&status, "status", "", "pending, granted, rejected, or expired")
+	return cmd
+}
+
+func newApprovalShowCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "show <approval-id>",
+		Short: "Show an approval",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			var got approval.Approval
+			if err := c.Get(cmd.Context(), "/api/v1/approvals/"+args[0], &got); err != nil {
+				return err
+			}
+			return printJSON(got)
+		},
+	}
+}
+
+func newApprovalRequestCommand() *cobra.Command {
+	var roomID, agentID, kind, toolName, target, recipient, amount, currency string
+	var ttlSeconds int
+	var params []string
+	cmd := &cobra.Command{
+		Use:   "request",
+		Short: "Ask a human to approve an exact action",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			roomID, err = resolveRoom(cmd.Context(), c, roomID)
+			if err != nil {
+				return err
+			}
+			if agentID == "" {
+				return errors.New("--agent is required")
+			}
+			values := map[string]any{}
+			for _, p := range params {
+				key, raw, ok := strings.Cut(p, "=")
+				if !ok || strings.TrimSpace(key) == "" {
+					return fmt.Errorf("invalid --param %q; use key=value", p)
+				}
+				var parsed any
+				if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
+					values[key] = parsed
+				} else {
+					values[key] = raw
+				}
+			}
+			action := approval.Action{
+				Kind: kind, Tool: toolName, Target: target, Recipient: recipient,
+				Amount: amount, Currency: currency, Parameters: values,
+			}
+			body := map[string]any{"agent_id": agentID, "action": action, "ttl_seconds": ttlSeconds}
+			var result struct {
+				Approval approval.Approval `json:"approval"`
+			}
+			if err := c.Post(cmd.Context(), "/api/v1/rooms/"+roomID+"/approvals", body, &result); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(result.Approval)
+			}
+			fmt.Printf("Approval requested: %s\n%s\nExpires: %s\n",
+				result.Approval.ID, result.Approval.Description,
+				result.Approval.ExpiresAt.Local().Format(time.RFC3339))
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&roomID, "room", "", "room ID (defaults to the only room)")
+	cmd.Flags().StringVar(&agentID, "agent", "", "Agent ID")
+	cmd.Flags().StringVar(&kind, "kind", "", "action kind, e.g. shell.run or money.spend")
+	cmd.Flags().StringVar(&toolName, "tool", "", "tool name")
+	cmd.Flags().StringVar(&target, "target", "", "target resource")
+	cmd.Flags().StringVar(&recipient, "recipient", "", "recipient")
+	cmd.Flags().StringVar(&amount, "amount", "", "amount as a decimal string")
+	cmd.Flags().StringVar(&currency, "currency", "", "currency code")
+	cmd.Flags().IntVar(&ttlSeconds, "ttl-seconds", 900, "approval lifetime in seconds")
+	cmd.Flags().StringArrayVar(&params, "param", nil, "extra parameter key=value (repeatable)")
+	return cmd
+}
+
+func newApprovalDecideCommand(use, decision string) *cobra.Command {
+	return &cobra.Command{
+		Use:   use + " <approval-id>",
+		Short: strings.Title(use) + " an approval",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			var result struct {
+				Approval approval.Approval `json:"approval"`
+			}
+			if err := c.Post(cmd.Context(), "/api/v1/approvals/"+args[0]+"/decide",
+				map[string]string{"decision": decision}, &result); err != nil {
+				return err
+			}
+			fmt.Printf("%s\n", strings.Title(result.Approval.Status))
+			return nil
+		},
+	}
+}
+
+func newToolCommand() *cobra.Command {
+	cmd := &cobra.Command{Use: "tool", Short: "Inspect and record Agent tool calls"}
+	cmd.AddCommand(newToolListCommand())
+	cmd.AddCommand(newToolRequestCommand())
+	cmd.AddCommand(newToolCompleteCommand())
+	return cmd
+}
+
+func newToolListCommand() *cobra.Command {
+	var roomID string
+	var limit int
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List tool receipts",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			roomID, err = resolveRoom(cmd.Context(), c, roomID)
+			if err != nil {
+				return err
+			}
+			var result struct {
+				Receipts []tool.Receipt `json:"receipts"`
+			}
+			if err := c.Get(cmd.Context(), fmt.Sprintf("/api/v1/rooms/%s/tools?limit=%d", roomID, limit), &result); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(result.Receipts)
+			}
+			for _, r := range result.Receipts {
+				fmt.Printf("%s  %-10s %-8s %-16s %s\n", r.ID, r.Status, r.Kind, r.Tool, r.AgentID)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&roomID, "room", "", "room ID (defaults to the only room)")
+	cmd.Flags().IntVar(&limit, "limit", 100, "maximum receipts")
+	return cmd
+}
+
+func newToolRequestCommand() *cobra.Command {
+	var roomID, agentID, kind, name, input, approvalID string
+	cmd := &cobra.Command{
+		Use:   "request",
+		Short: "Record a tool call (risky kinds need an approved action)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			roomID, err = resolveRoom(cmd.Context(), c, roomID)
+			if err != nil {
+				return err
+			}
+			if agentID == "" || name == "" {
+				return errors.New("--agent and --tool are required")
+			}
+			raw := json.RawMessage(input)
+			if len(raw) == 0 {
+				raw = json.RawMessage(`{}`)
+			}
+			body := map[string]any{
+				"agent_id": agentID, "kind": kind, "tool": name,
+				"input": raw, "approval_id": approvalID,
+			}
+			var result struct {
+				Receipt tool.Receipt `json:"receipt"`
+			}
+			if err := c.Post(cmd.Context(), "/api/v1/rooms/"+roomID+"/tools", body, &result); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(result.Receipt)
+			}
+			fmt.Printf("Receipt: %s (%s)\n", result.Receipt.ID, result.Receipt.Status)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&roomID, "room", "", "room ID (defaults to the only room)")
+	cmd.Flags().StringVar(&agentID, "agent", "", "Agent ID")
+	cmd.Flags().StringVar(&kind, "kind", "read", "read, write, external, shell, or native")
+	cmd.Flags().StringVar(&name, "tool", "", "tool name")
+	cmd.Flags().StringVar(&input, "input", "{}", "tool input JSON")
+	cmd.Flags().StringVar(&approvalID, "approval", "", "granted approval ID for risky tools")
+	return cmd
+}
+
+func newToolCompleteCommand() *cobra.Command {
+	var output string
+	var success bool
+	cmd := &cobra.Command{
+		Use:   "complete <receipt-id>",
+		Short: "Record a tool result",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			body := map[string]any{"output": output, "success": success}
+			var result struct {
+				Receipt tool.Receipt `json:"receipt"`
+			}
+			if err := c.Patch(cmd.Context(), "/api/v1/tools/"+args[0], body, &result); err != nil {
+				return err
+			}
+			fmt.Printf("Receipt %s: %s\n", result.Receipt.ID, result.Receipt.Status)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&output, "output", "", "tool output")
+	cmd.Flags().BoolVar(&success, "success", true, "whether the call succeeded")
+	return cmd
+}
+
+func newSearchCommand() *cobra.Command {
+	var limit int
+	var roomID string
+	cmd := &cobra.Command{
+		Use:   "search <query>",
+		Short: "Search messages across rooms",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			query := strings.Join(args, " ")
+			path := fmt.Sprintf("/api/v1/search?q=%s&limit=%d", urlQuery(query), limit)
+			var result struct {
+				Hits []room.SearchHit `json:"hits"`
+			}
+			if err := c.Get(cmd.Context(), path, &result); err != nil {
+				return err
+			}
+			if roomID != "" {
+				filtered := result.Hits[:0]
+				for _, hit := range result.Hits {
+					if hit.RoomID == roomID {
+						filtered = append(filtered, hit)
+					}
+				}
+				result.Hits = filtered
+			}
+			if jsonFlag {
+				return printJSON(result.Hits)
+			}
+			for _, hit := range result.Hits {
+				fmt.Printf("%s [%d] %s: %s\n", hit.RoomName, hit.Seq, hit.Author, hit.Text)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&limit, "limit", 50, "maximum hits")
+	cmd.Flags().StringVar(&roomID, "room", "", "only this room")
 	return cmd
 }
 
@@ -543,6 +1553,17 @@ func formatAccountID(id string) string {
 		return id
 	}
 	return id[:8] + "-" + id[8:]
+}
+
+func verifiedLabel(ok bool) string {
+	if ok {
+		return "verified"
+	}
+	return "FAILED"
+}
+
+func urlQuery(value string) string {
+	return url.QueryEscape(value)
 }
 
 func printJSON(value any) error {

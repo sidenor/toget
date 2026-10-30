@@ -103,8 +103,12 @@ func TestDeviceCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	encryptionPub, _, err := NewEncryptionKey()
+	if err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC()
-	data, err := SignDeviceCertificate("device-1", "12345678123456", devicePub, accountPriv, now)
+	data, err := SignDeviceCertificate("device-1", "12345678123456", devicePub, encryptionPub, accountPriv, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +127,7 @@ func TestDeviceCertificate(t *testing.T) {
 		t.Fatal("certificate verified with the wrong account key")
 	}
 
-	expired, err := SignDeviceCertificate("device-1", "12345678123456", devicePub, accountPriv, now.AddDate(-2, 0, 0))
+	expired, err := SignDeviceCertificate("device-1", "12345678123456", devicePub, encryptionPub, accountPriv, now.AddDate(-2, 0, 0))
 	if err != nil {
 		t.Fatal(err)
 	}

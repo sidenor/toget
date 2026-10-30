@@ -2,6 +2,7 @@
 package api
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -13,41 +14,53 @@ import (
 	"net/http"
 	"net/url"
 	"path"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/sidenor/toget/internal/account"
+	"github.com/sidenor/toget/internal/agent"
+	"github.com/sidenor/toget/internal/approval"
+	"github.com/sidenor/toget/internal/identity"
 	"github.com/sidenor/toget/internal/room"
+	"github.com/sidenor/toget/internal/session"
+	"github.com/sidenor/toget/internal/tool"
 	"github.com/sidenor/toget/internal/version"
 )
 
 const (
 	cookieName   = "toget_token"
-	maxBodyBytes = 1 << 20
+	maxBodyBytes = 2 << 20
 )
 
 // Options configures the local API.
 type Options struct {
-	Accounts *account.Service
-	Rooms    *room.Service
-	Version  version.Info
-	Token    string
-	Listen   string
-	UI       fs.FS
-	Logger   *slog.Logger
+	Accounts  *account.Service
+	Rooms     *room.Service
+	Agents    *agent.Service
+	Approvals *approval.Service
+	Tools     *tool.Service
+	Session   *session.Manager
+	Version   version.Info
+	Token     string
+	Listen    string
+	UI        fs.FS
+	Logger    *slog.Logger
 }
 
 // Server is the loopback HTTP server.
 type Server struct {
-	accounts *account.Service
-	rooms    *room.Service
-	version  version.Info
-	token    string
-	listen   string
-	ui       fs.FS
-	logger   *slog.Logger
-	origins  map[string]bool
+	accounts  *account.Service
+	rooms     *room.Service
+	agents    *agent.Service
+	approvals *approval.Service
+	tools     *tool.Service
+	session   *session.Manager
+	version   version.Info
+	token     string
+	listen    string
+	ui        fs.FS
+	logger    *slog.Logger
+	origins   map[string]bool
 }
 
 // New creates a local API server.
@@ -56,31 +69,88 @@ func New(opts Options) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	s := &Server{
-		accounts: opts.Accounts,
-		rooms:    opts.Rooms,
-		version:  opts.Version,
-		token:    opts.Token,
-		listen:   opts.Listen,
-		ui:       opts.UI,
-		logger:   logger,
-		origins:  allowedOrigins(opts.Listen),
+	sessions := opts.Session
+	if sessions == nil {
+		sessions = session.New(session.DefaultTTL)
 	}
-	return s
+	return &Server{
+		accounts:  opts.Accounts,
+		rooms:     opts.Rooms,
+		agents:    opts.Agents,
+		approvals: opts.Approvals,
+		tools:     opts.Tools,
+		session:   sessions,
+		version:   opts.Version,
+		token:     opts.Token,
+		listen:    opts.Listen,
+		ui:        opts.UI,
+		logger:    logger,
+		origins:   allowedOrigins(opts.Listen),
+	}
 }
 
 // Handler returns the HTTP handler.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+
+	// These stay available while locked so the client can discover state and
+	// present the login screen.
+	mux.HandleFunc("GET /api/v1/session", s.protected(s.handleGetSession))
+	mux.HandleFunc("POST /api/v1/session", s.protected(s.handleUnlock))
+	mux.HandleFunc("DELETE /api/v1/session", s.protected(s.handleLock))
 	mux.HandleFunc("GET /api/v1/status", s.protected(s.handleStatus))
 	mux.HandleFunc("GET /api/v1/account", s.protected(s.handleGetAccount))
 	mux.HandleFunc("POST /api/v1/account", s.protected(s.handleCreateAccount))
-	mux.HandleFunc("GET /api/v1/rooms", s.protected(s.handleListRooms))
-	mux.HandleFunc("POST /api/v1/rooms", s.protected(s.handleCreateRoom))
-	mux.HandleFunc("GET /api/v1/rooms/{id}", s.protected(s.handleGetRoom))
-	mux.HandleFunc("GET /api/v1/rooms/{id}/events", s.protected(s.handleListEvents))
-	mux.HandleFunc("POST /api/v1/rooms/{id}/messages", s.protected(s.handlePostMessage))
+
+	// Account and device management.
+	mux.HandleFunc("GET /api/v1/devices", s.data(s.handleListDevices))
+	mux.HandleFunc("DELETE /api/v1/devices/{id}", s.data(s.handleRevokeDevice))
+
+	// Rooms, membership, messages, search, and audit.
+	mux.HandleFunc("GET /api/v1/rooms", s.data(s.handleListRooms))
+	mux.HandleFunc("POST /api/v1/rooms", s.data(s.handleCreateRoom))
+	mux.HandleFunc("GET /api/v1/rooms/{id}", s.data(s.handleGetRoom))
+	mux.HandleFunc("PATCH /api/v1/rooms/{id}", s.data(s.handleUpdateRoom))
+	mux.HandleFunc("POST /api/v1/rooms/{id}/archive", s.data(s.handleArchiveRoom))
+	mux.HandleFunc("GET /api/v1/rooms/{id}/events", s.data(s.handleListEvents))
+	mux.HandleFunc("POST /api/v1/rooms/{id}/messages", s.data(s.handlePostMessage))
+	mux.HandleFunc("PATCH /api/v1/rooms/{id}/messages/{eventID}", s.data(s.handleEditMessage))
+	mux.HandleFunc("GET /api/v1/rooms/{id}/members", s.data(s.handleListMembers))
+	mux.HandleFunc("GET /api/v1/rooms/{id}/devices", s.data(s.handleListRoomDevices))
+	mux.HandleFunc("POST /api/v1/rooms/{id}/invites", s.data(s.handleCreateInvite))
+	mux.HandleFunc("POST /api/v1/invites/redeem", s.data(s.handleRedeemInvite))
+	mux.HandleFunc("POST /api/v1/rooms/{id}/leave", s.data(s.handleLeaveRoom))
+	mux.HandleFunc("GET /api/v1/rooms/{id}/audit", s.data(s.handleExportAudit))
+	mux.HandleFunc("POST /api/v1/audit/verify", s.data(s.handleVerifyAudit))
+	mux.HandleFunc("GET /api/v1/rooms/{id}/search", s.data(s.handleSearchRoom))
+	mux.HandleFunc("GET /api/v1/search", s.data(s.handleSearch))
+	mux.HandleFunc("GET /api/v1/rooms/{id}/read", s.data(s.handleGetReadCursor))
+	mux.HandleFunc("POST /api/v1/rooms/{id}/read", s.data(s.handleSetReadCursor))
+	mux.HandleFunc("GET /api/v1/rooms/{id}/unread", s.data(s.handleUnread))
+
+	// Agents, approvals, and tool receipts.
+	mux.HandleFunc("GET /api/v1/agents", s.data(s.handleListAgents))
+	mux.HandleFunc("POST /api/v1/agents", s.data(s.handleCreateAgent))
+	mux.HandleFunc("GET /api/v1/agents/{id}", s.data(s.handleGetAgent))
+	mux.HandleFunc("PATCH /api/v1/agents/{id}", s.data(s.handleUpdateAgent))
+	mux.HandleFunc("POST /api/v1/agents/{id}/revoke", s.data(s.handleRevokeAgent))
+	mux.HandleFunc("GET /api/v1/agents/{id}/rooms", s.data(s.handleAgentRooms))
+	mux.HandleFunc("GET /api/v1/rooms/{id}/agents", s.data(s.handleListRoomAgents))
+	mux.HandleFunc("POST /api/v1/rooms/{id}/agents", s.data(s.handleJoinAgent))
+	mux.HandleFunc("DELETE /api/v1/rooms/{id}/agents/{agentID}", s.data(s.handleLeaveAgent))
+
+	mux.HandleFunc("GET /api/v1/rooms/{id}/approvals", s.data(s.handleListApprovals))
+	mux.HandleFunc("POST /api/v1/rooms/{id}/approvals", s.data(s.handleRequestApproval))
+	mux.HandleFunc("GET /api/v1/approvals/{id}", s.data(s.handleGetApproval))
+	mux.HandleFunc("POST /api/v1/approvals/{id}/decide", s.data(s.handleDecideApproval))
+	mux.HandleFunc("POST /api/v1/approvals/{id}/consume", s.data(s.handleConsumeApproval))
+
+	mux.HandleFunc("GET /api/v1/rooms/{id}/tools", s.data(s.handleListTools))
+	mux.HandleFunc("POST /api/v1/rooms/{id}/tools", s.data(s.handleRequestTool))
+	mux.HandleFunc("GET /api/v1/tools/{id}", s.data(s.handleGetTool))
+	mux.HandleFunc("PATCH /api/v1/tools/{id}", s.data(s.handleCompleteTool))
+
 	mux.HandleFunc("GET /", s.handleUI)
 	return s.recoverer(s.logRequests(mux))
 }
@@ -93,19 +163,35 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // StatusResponse is the payload of GET /api/v1/status.
 type StatusResponse struct {
-	Version version.Info `json:"version"`
-	Account *AccountView `json:"account"`
-	Rooms   int          `json:"rooms"`
-	Listen  string       `json:"listen"`
+	Version         version.Info `json:"version"`
+	Account         *AccountView `json:"account"`
+	Rooms           int          `json:"rooms"`
+	Agents          int          `json:"agents"`
+	PendingApproval int          `json:"pending_approvals"`
+	Listen          string       `json:"listen"`
+	Locked          bool         `json:"locked"`
 }
 
 // AccountView is the public shape of an account.
 type AccountView struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	ServerID   string    `json:"server_id"`
-	ServerCode string    `json:"server_code"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID         string      `json:"id"`
+	Name       string      `json:"name"`
+	ServerID   string      `json:"server_id"`
+	ServerCode string      `json:"server_code"`
+	CreatedAt  time.Time   `json:"created_at"`
+	Device     *DeviceView `json:"device,omitempty"`
+}
+
+// DeviceView is the public shape of a device, without private key material.
+type DeviceView struct {
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	Role        string     `json:"role"`
+	Fingerprint string     `json:"fingerprint"`
+	Current     bool       `json:"current"`
+	LastSeenAt  *time.Time `json:"last_seen_at,omitempty"`
+	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -115,17 +201,33 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	snapshot, err := s.accounts.Get(r.Context())
 	if err == nil {
-		resp.Account = accountView(snapshot.Account)
+		resp.Account = accountView(snapshot.Account, snapshot.Device)
+		unlocked, _ := s.session.State()
+		resp.Locked = !unlocked
+		if unlocked {
+			rooms, err := s.rooms.ListRooms(r.Context())
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal", "could not load rooms")
+				return
+			}
+			resp.Rooms = len(rooms)
+			agents, err := s.agents.List(r.Context(), snapshot.Account.ID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal", "could not load agents")
+				return
+			}
+			resp.Agents = len(agents)
+			pending, err := s.approvals.List(r.Context(), "", approval.StatusPending)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal", "could not load approvals")
+				return
+			}
+			resp.PendingApproval = len(pending)
+		}
 	} else if !errors.Is(err, account.ErrNotFound) {
 		writeError(w, http.StatusInternalServerError, "internal", "could not load the account")
 		return
 	}
-	rooms, err := s.rooms.ListRooms(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "could not load rooms")
-		return
-	}
-	resp.Rooms = len(rooms)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -135,7 +237,7 @@ func (s *Server) handleGetAccount(w http.ResponseWriter, r *http.Request) {
 		writeAccountError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, accountView(snapshot.Account))
+	writeJSON(w, http.StatusOK, accountView(snapshot.Account, snapshot.Device))
 }
 
 type createAccountRequest struct {
@@ -155,90 +257,115 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		writeAccountError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, accountView(snapshot.Account))
+	s.session.Unlock()
+	writeJSON(w, http.StatusCreated, accountView(snapshot.Account, snapshot.Device))
 }
 
-func (s *Server) handleListRooms(w http.ResponseWriter, r *http.Request) {
-	rooms, err := s.rooms.ListRooms(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "could not load rooms")
+// SessionView reports the local unlock state.
+type SessionView struct {
+	HasAccount bool       `json:"has_account"`
+	Locked     bool       `json:"locked"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+	TTLSeconds int        `json:"ttl_seconds"`
+}
+
+func (s *Server) sessionView(r *http.Request) SessionView {
+	view := SessionView{TTLSeconds: int(session.DefaultTTL.Seconds())}
+	if _, err := s.accounts.Get(r.Context()); err != nil {
+		return view
+	}
+	view.HasAccount = true
+	unlocked, expires := s.session.State()
+	view.Locked = !unlocked
+	if unlocked {
+		view.ExpiresAt = &expires
+	}
+	return view
+}
+
+func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.sessionView(r))
+}
+
+type unlockRequest struct {
+	Password string `json:"password"`
+}
+
+func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
+	key := clientKey(r)
+	if err := s.session.Allow(key); err != nil {
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many failed attempts; wait a few minutes")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"rooms": rooms})
+	var req unlockRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if _, err := s.accounts.Login(r.Context(), req.Password); err != nil {
+		if errors.Is(err, account.ErrInvalidCredentials) {
+			s.session.Failed(key)
+			writeError(w, http.StatusUnauthorized, "invalid_credentials", "password is incorrect")
+			return
+		}
+		writeAccountError(w, err)
+		return
+	}
+	s.session.Succeeded(key)
+	expires := s.session.Unlock()
+	writeJSON(w, http.StatusOK, SessionView{
+		HasAccount: true, Locked: false, ExpiresAt: &expires,
+		TTLSeconds: int(session.DefaultTTL.Seconds()),
+	})
 }
 
-type createRoomRequest struct {
-	Name string `json:"name"`
+func (s *Server) handleLock(w http.ResponseWriter, r *http.Request) {
+	s.session.Lock()
+	w.WriteHeader(http.StatusNoContent)
 }
 
-type createRoomResponse struct {
-	Room  *room.Room  `json:"room"`
-	Event *room.Event `json:"event"`
+func clientKey(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
-func (s *Server) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 	snapshot, err := s.accounts.Get(r.Context())
 	if err != nil {
 		writeAccountError(w, err)
 		return
 	}
-	var req createRoomRequest
-	if err := decodeJSON(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	created, event, err := s.rooms.CreateRoom(r.Context(), req.Name, snapshot.Account.ID, snapshot.Device.ID)
+	devices, err := s.accounts.ListDevices(r.Context())
 	if err != nil {
-		writeRoomError(w, err)
+		writeError(w, http.StatusInternalServerError, "internal", "could not load devices")
 		return
 	}
-	writeJSON(w, http.StatusCreated, createRoomResponse{Room: created, Event: event})
+	out := make([]DeviceView, 0, len(devices))
+	for i := range devices {
+		out = append(out, deviceView(&devices[i], snapshot.Device.ID))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"devices": out})
 }
 
-func (s *Server) handleGetRoom(w http.ResponseWriter, r *http.Request) {
-	got, err := s.rooms.GetRoom(r.Context(), r.PathValue("id"))
-	if err != nil {
-		writeRoomError(w, err)
+func (s *Server) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
+	if err := s.accounts.RevokeDevice(r.Context(), r.PathValue("id")); err != nil {
+		switch {
+		case errors.Is(err, account.ErrCurrentDevice):
+			writeError(w, http.StatusConflict, "current_device", "the current device cannot revoke itself")
+		case errors.Is(err, account.ErrNotFound):
+			writeError(w, http.StatusNotFound, "device_not_found", "device not found")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal", "could not revoke the device")
+		}
 		return
 	}
-	writeJSON(w, http.StatusOK, got)
+	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
-	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	events, err := s.rooms.ListEvents(r.Context(), r.PathValue("id"), after, limit)
-	if err != nil {
-		writeRoomError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": events})
-}
-
-type postMessageRequest struct {
-	Text string `json:"text"`
-}
-
-func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
-	snapshot, err := s.accounts.Get(r.Context())
-	if err != nil {
-		writeAccountError(w, err)
-		return
-	}
-	var req postMessageRequest
-	if err := decodeJSON(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	event, err := s.rooms.PostMessage(r.Context(), r.PathValue("id"), snapshot.Account.ID, req.Text)
-	if err != nil {
-		writeRoomError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, event)
-}
-
-func accountView(a *account.Account) *AccountView {
+func accountView(a *account.Account, d *account.Device) *AccountView {
 	if a == nil {
 		return nil
 	}
@@ -246,13 +373,61 @@ func accountView(a *account.Account) *AccountView {
 	if len(a.ID) >= 8 {
 		serverCode = a.ID[:8]
 	}
-	return &AccountView{
+	view := &AccountView{
 		ID:         a.ID,
 		Name:       a.Name,
 		ServerID:   a.ServerID,
 		ServerCode: serverCode,
 		CreatedAt:  a.CreatedAt,
 	}
+	if d != nil {
+		dv := deviceView(d, d.ID)
+		view.Device = &dv
+	}
+	return view
+}
+
+func deviceView(d *account.Device, currentID string) DeviceView {
+	return DeviceView{
+		ID:          d.ID,
+		Name:        d.Name,
+		Role:        d.Role,
+		Fingerprint: identity.Fingerprint(d.PublicKey),
+		Current:     d.ID == currentID,
+		LastSeenAt:  d.LastSeenAt,
+		RevokedAt:   d.RevokedAt,
+		CreatedAt:   d.CreatedAt,
+	}
+}
+
+// actor builds the signing and encryption identity for the local account.
+func (s *Server) actor(ctx context.Context) (room.Actor, *account.Snapshot, error) {
+	snapshot, err := s.accounts.Get(ctx)
+	if err != nil {
+		return room.Actor{}, nil, err
+	}
+	if snapshot.Device.RevokedAt != nil {
+		return room.Actor{}, nil, errors.New("this device has been revoked")
+	}
+	cert, err := identity.VerifyDeviceCertificate([]byte(snapshot.Device.Certificate), snapshot.Account.PublicKey)
+	if err != nil {
+		return room.Actor{}, nil, fmt.Errorf("device certificate: %w", err)
+	}
+	if cert.DeviceID != snapshot.Device.ID || cert.AccountID != snapshot.Account.ID {
+		return room.Actor{}, nil, errors.New("device certificate does not match the local device")
+	}
+	deviceKey, err := s.accounts.UnsealDeviceKey(snapshot.Device)
+	if err != nil {
+		return room.Actor{}, nil, err
+	}
+	return room.Actor{
+		AccountID:           snapshot.Account.ID,
+		DeviceID:            snapshot.Device.ID,
+		DisplayName:         snapshot.Account.Name,
+		SigningKey:          deviceKey,
+		AccountPublicKey:    snapshot.Account.PublicKey,
+		EncryptionPublicKey: snapshot.Device.EncryptionPublicKey,
+	}, snapshot, nil
 }
 
 func (s *Server) protected(next http.HandlerFunc) http.HandlerFunc {
@@ -266,6 +441,21 @@ func (s *Server) protected(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "a local API token is required")
 			return
 		}
+		next(w, r)
+	}
+}
+
+func (s *Server) data(next http.HandlerFunc) http.HandlerFunc {
+	return s.protected(s.requireUnlocked(next))
+}
+
+func (s *Server) requireUnlocked(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := s.session.Require(); err != nil {
+			writeError(w, http.StatusLocked, "locked", "unlock the node with your password")
+			return
+		}
+		s.session.Touch()
 		next(w, r)
 	}
 }
@@ -411,14 +601,104 @@ func writeRoomError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "room_not_found", "room not found")
 	case errors.Is(err, room.ErrInvalidName):
 		writeError(w, http.StatusBadRequest, "invalid_room_name", "room name must be 1–80 characters")
+	case errors.Is(err, room.ErrInvalidTopic):
+		writeError(w, http.StatusBadRequest, "invalid_topic", "room topic is too long")
 	case errors.Is(err, room.ErrEmptyMessage):
 		writeError(w, http.StatusBadRequest, "empty_message", "message text is required")
 	case errors.Is(err, room.ErrMessageTooLong):
 		writeError(w, http.StatusRequestEntityTooLarge, "message_too_long", "message is too long")
+	case errors.Is(err, room.ErrMessageNotFound):
+		writeError(w, http.StatusNotFound, "message_not_found", "message not found")
+	case errors.Is(err, room.ErrForbidden):
+		writeError(w, http.StatusForbidden, "forbidden", "you are not allowed to do this in this room")
+	case errors.Is(err, room.ErrNotMember):
+		writeError(w, http.StatusForbidden, "not_member", "you are not a member of this room")
+	case errors.Is(err, room.ErrInviteExpired):
+		writeError(w, http.StatusGone, "invite_expired", "invitation has expired")
+	case errors.Is(err, room.ErrInviteUsed):
+		writeError(w, http.StatusConflict, "invite_used", "invitation has already been used")
+	case errors.Is(err, room.ErrInviteInvalid), errors.Is(err, room.ErrInviteSecret):
+		writeError(w, http.StatusBadRequest, "invalid_invite", "invitation is invalid")
+	case errors.Is(err, room.ErrInvalidInviteHistory):
+		writeError(w, http.StatusBadRequest, "invalid_history", "history choice must be none, recent, or all")
 	case errors.Is(err, room.ErrCorruptEvent):
 		writeError(w, http.StatusInternalServerError, "corrupt_event", "an event failed its integrity check")
 	default:
 		writeError(w, http.StatusInternalServerError, "internal", "could not complete the room request")
+	}
+}
+
+func writeAgentError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, agent.ErrNotFound):
+		writeError(w, http.StatusNotFound, "agent_not_found", "agent not found")
+	case errors.Is(err, agent.ErrInvalidName):
+		writeError(w, http.StatusBadRequest, "invalid_agent_name", "agent name must be 1–64 characters")
+	case errors.Is(err, agent.ErrInvalidRuntime):
+		writeError(w, http.StatusBadRequest, "invalid_runtime", "agent runtime is required")
+	case errors.Is(err, agent.ErrNotInRoom):
+		writeError(w, http.StatusConflict, "agent_not_in_room", "agent is not in this room")
+	case errors.Is(err, agent.ErrAlreadyInRoom):
+		writeError(w, http.StatusConflict, "agent_already_in_room", "agent already joined this room")
+	case errors.Is(err, agent.ErrRevoked):
+		writeError(w, http.StatusConflict, "agent_revoked", "agent has been revoked")
+	default:
+		writeError(w, http.StatusInternalServerError, "internal", "could not complete the agent request")
+	}
+}
+
+func writeApprovalError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, approval.ErrNotFound):
+		writeError(w, http.StatusNotFound, "approval_not_found", "approval not found")
+	case errors.Is(err, approval.ErrNotPending):
+		writeError(w, http.StatusConflict, "not_pending", "approval is no longer pending")
+	case errors.Is(err, approval.ErrExpired):
+		writeError(w, http.StatusGone, "expired", "approval has expired")
+	case errors.Is(err, approval.ErrNotGranted):
+		writeError(w, http.StatusForbidden, "not_granted", "approval has not been granted")
+	case errors.Is(err, approval.ErrConsumed):
+		writeError(w, http.StatusConflict, "consumed", "approval has already been used")
+	case errors.Is(err, approval.ErrDigestMismatch):
+		writeError(w, http.StatusConflict, "digest_mismatch", "action does not match the approved action")
+	case errors.Is(err, approval.ErrInvalidAction):
+		writeError(w, http.StatusBadRequest, "invalid_action", "approval action is invalid")
+	case errors.Is(err, approval.ErrInvalidDecision):
+		writeError(w, http.StatusBadRequest, "invalid_decision", "decision must be granted or rejected")
+	case errors.Is(err, approval.ErrNotAgentOwner):
+		writeError(w, http.StatusForbidden, "not_agent_owner", "the agent belongs to another account")
+	case errors.Is(err, approval.ErrAgentRevoked):
+		writeError(w, http.StatusConflict, "agent_revoked", "agent has been revoked")
+	case errors.Is(err, approval.ErrNotInRoom):
+		writeError(w, http.StatusConflict, "agent_not_in_room", "agent is not in this room")
+	default:
+		writeError(w, http.StatusInternalServerError, "internal", "could not complete the approval request")
+	}
+}
+
+func writeToolError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, tool.ErrNotFound):
+		writeError(w, http.StatusNotFound, "tool_not_found", "tool receipt not found")
+	case errors.Is(err, tool.ErrApprovalRequired):
+		writeError(w, http.StatusForbidden, "approval_required", "this tool requires human approval")
+	case errors.Is(err, tool.ErrNotActive):
+		writeError(w, http.StatusConflict, "not_active", "tool receipt is already complete")
+	case errors.Is(err, tool.ErrInvalidTool):
+		writeError(w, http.StatusBadRequest, "invalid_tool", "tool name is required")
+	case errors.Is(err, tool.ErrInvalidKind):
+		writeError(w, http.StatusBadRequest, "invalid_tool_kind", "tool kind is invalid")
+	case errors.Is(err, tool.ErrNotAgentOwner):
+		writeError(w, http.StatusForbidden, "not_agent_owner", "the agent belongs to another account")
+	case errors.Is(err, tool.ErrAgentRevoked):
+		writeError(w, http.StatusConflict, "agent_revoked", "agent has been revoked")
+	case errors.Is(err, tool.ErrNotInRoom):
+		writeError(w, http.StatusConflict, "agent_not_in_room", "agent is not in this room")
+	case errors.Is(err, approval.ErrExpired), errors.Is(err, approval.ErrConsumed),
+		errors.Is(err, approval.ErrDigestMismatch), errors.Is(err, approval.ErrNotGranted):
+		writeApprovalError(w, err)
+	default:
+		writeError(w, http.StatusInternalServerError, "internal", "could not complete the tool request")
 	}
 }
 
@@ -472,4 +752,21 @@ func (s *Server) recoverer(next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(w, r)
 	})
+}
+
+func decodeJSONLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		if errors.Is(err, io.EOF) {
+			return errors.New("request body is empty")
+		}
+		return fmt.Errorf("invalid JSON: %w", err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return errors.New("request body must contain one JSON object")
+	}
+	return nil
 }

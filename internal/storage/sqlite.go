@@ -21,7 +21,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const schemaVersion = 1
+const schemaVersion = 3
 
 // DB is the SQLite-backed local store.
 type DB struct {
@@ -56,14 +56,10 @@ func Open(path string) (*DB, error) {
 }
 
 // Close closes the database.
-func (d *DB) Close() error {
-	return d.db.Close()
-}
+func (d *DB) Close() error { return d.db.Close() }
 
 // Ping checks the database connection.
-func (d *DB) Ping(ctx context.Context) error {
-	return d.db.PingContext(ctx)
-}
+func (d *DB) Ping(ctx context.Context) error { return d.db.PingContext(ctx) }
 
 // SchemaVersion returns the current schema version.
 func (d *DB) SchemaVersion(ctx context.Context) (int, error) {
@@ -87,8 +83,146 @@ func (d *DB) migrate(ctx context.Context) error {
 		if _, err := d.db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
 			return fmt.Errorf("storage: set schema version: %w", err)
 		}
+	case version == 1:
+		if err := d.migrateV1(ctx); err != nil {
+			return err
+		}
+		if err := d.migrateV2(ctx); err != nil {
+			return err
+		}
+		if _, err := d.db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
+			return fmt.Errorf("storage: set schema version: %w", err)
+		}
+	case version == 2:
+		if err := d.migrateV2(ctx); err != nil {
+			return err
+		}
+		if _, err := d.db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
+			return fmt.Errorf("storage: set schema version: %w", err)
+		}
 	case version > schemaVersion:
 		return fmt.Errorf("storage: database schema %d is newer than this binary (%d)", version, schemaVersion)
+	}
+	return nil
+}
+
+func (d *DB) migrateV1(ctx context.Context) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("storage: begin migration: %w", err)
+	}
+	defer tx.Rollback()
+	statements := []string{
+		`ALTER TABLE devices ADD COLUMN encryption_public_key BLOB NOT NULL DEFAULT x''`,
+		`ALTER TABLE devices ADD COLUMN encryption_private_key BLOB NOT NULL DEFAULT x''`,
+		`ALTER TABLE devices ADD COLUMN role TEXT NOT NULL DEFAULT 'node'`,
+		`ALTER TABLE devices ADD COLUMN revoked_at INTEGER`,
+		`ALTER TABLE devices ADD COLUMN last_seen_at INTEGER`,
+		`ALTER TABLE rooms ADD COLUMN topic TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE rooms ADD COLUMN home_server_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE rooms ADD COLUMN home_address TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE rooms ADD COLUMN archived_at INTEGER`,
+		`ALTER TABLE events ADD COLUMN author_device TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE events ADD COLUMN prev_hash TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE events ADD COLUMN signature TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE events ADD COLUMN epoch INTEGER NOT NULL DEFAULT 1`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("storage: migrate v1: %w", err)
+		}
+	}
+	for _, statement := range []string{
+		`CREATE TABLE IF NOT EXISTS room_members (
+			room_id TEXT NOT NULL REFERENCES rooms(id), account_id TEXT NOT NULL,
+			device_id TEXT NOT NULL DEFAULT '', display_name TEXT NOT NULL DEFAULT '',
+			role TEXT NOT NULL DEFAULT 'member', status TEXT NOT NULL DEFAULT 'active',
+			account_public_key BLOB NOT NULL DEFAULT x'', encryption_public_key BLOB NOT NULL DEFAULT x'',
+			joined_at INTEGER NOT NULL, left_at INTEGER, PRIMARY KEY (room_id, account_id))`,
+		`CREATE INDEX IF NOT EXISTS room_members_account ON room_members(account_id)`,
+		`CREATE TABLE IF NOT EXISTS room_devices (
+			room_id TEXT NOT NULL REFERENCES rooms(id), device_id TEXT NOT NULL,
+			account_id TEXT NOT NULL, public_key BLOB NOT NULL,
+			encryption_public_key BLOB NOT NULL DEFAULT x'', joined_at INTEGER NOT NULL,
+			revoked_at INTEGER, PRIMARY KEY (room_id, device_id))`,
+		`CREATE TABLE IF NOT EXISTS room_epochs (
+			room_id TEXT NOT NULL REFERENCES rooms(id), epoch INTEGER NOT NULL,
+			key_sealed TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (room_id, epoch))`,
+		`CREATE TABLE IF NOT EXISTS room_member_keys (
+			room_id TEXT NOT NULL REFERENCES rooms(id), epoch INTEGER NOT NULL,
+			device_id TEXT NOT NULL, wrapped_key BLOB NOT NULL, created_at INTEGER NOT NULL,
+			PRIMARY KEY (room_id, epoch, device_id))`,
+		`CREATE TABLE IF NOT EXISTS agents (
+			id TEXT PRIMARY KEY, account_id TEXT NOT NULL, name TEXT NOT NULL,
+			runtime TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'idle',
+			permissions TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL,
+			last_seen_at INTEGER, revoked_at INTEGER)`,
+		`CREATE INDEX IF NOT EXISTS agents_account ON agents(account_id)`,
+		`CREATE TABLE IF NOT EXISTS agent_rooms (
+			agent_id TEXT NOT NULL REFERENCES agents(id), room_id TEXT NOT NULL REFERENCES rooms(id),
+			joined_at INTEGER NOT NULL, PRIMARY KEY (agent_id, room_id))`,
+		`CREATE TABLE IF NOT EXISTS approvals (
+			id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id), agent_id TEXT NOT NULL,
+			requested_by TEXT NOT NULL, action TEXT NOT NULL, action_digest TEXT NOT NULL,
+			description TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', expires_at INTEGER NOT NULL,
+			decided_by TEXT, decided_at INTEGER, consumed_at INTEGER, created_at INTEGER NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS approvals_room_status ON approvals(room_id, status)`,
+		`CREATE TABLE IF NOT EXISTS tool_receipts (
+			id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id), agent_id TEXT NOT NULL,
+			approval_id TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL, tool TEXT NOT NULL,
+			input TEXT NOT NULL DEFAULT '{}', output TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL, created_at INTEGER NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS tool_receipts_room ON tool_receipts(room_id, created_at)`,
+		`CREATE TABLE IF NOT EXISTS attachments (
+			id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id),
+			event_id TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, mime TEXT NOT NULL,
+			size INTEGER NOT NULL, sha256 TEXT NOT NULL, path TEXT NOT NULL,
+			key_sealed TEXT NOT NULL, created_at INTEGER NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS read_cursors (
+			room_id TEXT NOT NULL REFERENCES rooms(id), device_id TEXT NOT NULL,
+			last_seq INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL,
+			PRIMARY KEY (room_id, device_id))`,
+		`CREATE TABLE IF NOT EXISTS outbox (
+			id TEXT PRIMARY KEY, target TEXT NOT NULL, kind TEXT NOT NULL, payload BLOB NOT NULL,
+			attempts INTEGER NOT NULL DEFAULT 0, next_attempt INTEGER NOT NULL, created_at INTEGER NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS peers (
+			server_id TEXT PRIMARY KEY, code TEXT NOT NULL DEFAULT '', address TEXT NOT NULL,
+			public_key BLOB NOT NULL DEFAULT x'', last_seen INTEGER NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS invites (
+			id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id),
+			secret_hash TEXT NOT NULL UNIQUE, created_by TEXT NOT NULL,
+			history TEXT NOT NULL DEFAULT 'none', expires_at INTEGER NOT NULL,
+			used_at INTEGER, created_at INTEGER NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS policies (
+			id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id),
+			agent_id TEXT NOT NULL DEFAULT '', rules TEXT NOT NULL,
+			created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("storage: migrate v1 schema: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storage: commit migration: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) migrateV2(ctx context.Context) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("storage: begin v2 migration: %w", err)
+	}
+	defer tx.Rollback()
+	// A fresh v2 database already has the epoch column; ignore duplicate-column
+	// errors so this migration is idempotent.
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE events ADD COLUMN epoch INTEGER NOT NULL DEFAULT 1`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("storage: migrate v2: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storage: commit v2 migration: %w", err)
 	}
 	return nil
 }
@@ -130,18 +264,69 @@ func (d *DB) GetAccount(ctx context.Context) (*account.Account, error) {
 // GetDevice returns the first device for an account.
 func (d *DB) GetDevice(ctx context.Context, accountID string) (*account.Device, error) {
 	row := d.db.QueryRowContext(ctx, `
-		SELECT id, account_id, name, public_key, private_key, certificate, created_at
+		SELECT id, account_id, name, public_key, private_key, encryption_public_key,
+		       encryption_private_key, certificate, role, revoked_at, last_seen_at, created_at
 		FROM devices WHERE account_id = ? ORDER BY created_at LIMIT 1`, accountID)
-	var dev account.Device
-	var created int64
-	if err := row.Scan(&dev.ID, &dev.AccountID, &dev.Name, &dev.PublicKey, &dev.PrivateKey, &dev.Certificate, &created); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, account.ErrNotFound
-		}
-		return nil, fmt.Errorf("storage: get device: %w", err)
+	return scanDevice(row)
+}
+
+// GetDeviceByID returns one device.
+func (d *DB) GetDeviceByID(ctx context.Context, deviceID string) (*account.Device, error) {
+	row := d.db.QueryRowContext(ctx, `
+		SELECT id, account_id, name, public_key, private_key, encryption_public_key,
+		       encryption_private_key, certificate, role, revoked_at, last_seen_at, created_at
+		FROM devices WHERE id = ?`, deviceID)
+	return scanDevice(row)
+}
+
+// ListDevices returns all devices for an account, oldest first.
+func (d *DB) ListDevices(ctx context.Context, accountID string) ([]account.Device, error) {
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT id, account_id, name, public_key, private_key, encryption_public_key,
+		       encryption_private_key, certificate, role, revoked_at, last_seen_at, created_at
+		FROM devices WHERE account_id = ? ORDER BY created_at`, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("storage: list devices: %w", err)
 	}
-	dev.CreatedAt = fromMillis(created)
-	return &dev, nil
+	defer rows.Close()
+	var out []account.Device
+	for rows.Next() {
+		device, err := scanDevice(rows)
+		if err != nil {
+			return nil, fmt.Errorf("storage: scan device: %w", err)
+		}
+		out = append(out, *device)
+	}
+	return out, rows.Err()
+}
+
+// AddDevice inserts a device certificate.
+func (d *DB) AddDevice(ctx context.Context, dev *account.Device) error {
+	_, err := d.db.ExecContext(ctx, `
+		INSERT INTO devices (id, account_id, name, public_key, private_key, encryption_public_key,
+			encryption_private_key, certificate, role, revoked_at, last_seen_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		dev.ID, dev.AccountID, dev.Name, dev.PublicKey, dev.PrivateKey, dev.EncryptionPublicKey,
+		dev.EncryptionPrivateKey, dev.Certificate, dev.Role, nullableMillis(dev.RevokedAt),
+		nullableMillis(dev.LastSeenAt), toMillis(dev.CreatedAt))
+	if err != nil {
+		if isUniqueViolation(err) {
+			return account.ErrAlreadyExists
+		}
+		return fmt.Errorf("storage: add device: %w", err)
+	}
+	return nil
+}
+
+// UpdateDevice updates mutable device fields.
+func (d *DB) UpdateDevice(ctx context.Context, dev *account.Device) error {
+	_, err := d.db.ExecContext(ctx, `
+		UPDATE devices SET name = ?, role = ?, revoked_at = ?, last_seen_at = ? WHERE id = ?`,
+		dev.Name, dev.Role, nullableMillis(dev.RevokedAt), nullableMillis(dev.LastSeenAt), dev.ID)
+	if err != nil {
+		return fmt.Errorf("storage: update device: %w", err)
+	}
+	return nil
 }
 
 // CreateAccount inserts a server (if new), an account, and its first device.
@@ -168,9 +353,12 @@ func (d *DB) CreateAccount(ctx context.Context, server *account.Server, acct *ac
 		return fmt.Errorf("storage: insert account: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO devices (id, account_id, name, public_key, private_key, certificate, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		dev.ID, dev.AccountID, dev.Name, dev.PublicKey, dev.PrivateKey, dev.Certificate, toMillis(dev.CreatedAt)); err != nil {
+		INSERT INTO devices (id, account_id, name, public_key, private_key, encryption_public_key,
+			encryption_private_key, certificate, role, revoked_at, last_seen_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		dev.ID, dev.AccountID, dev.Name, dev.PublicKey, dev.PrivateKey, dev.EncryptionPublicKey,
+		dev.EncryptionPrivateKey, dev.Certificate, dev.Role, nullableMillis(dev.RevokedAt),
+		nullableMillis(dev.LastSeenAt), toMillis(dev.CreatedAt)); err != nil {
 		return fmt.Errorf("storage: insert device: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -192,8 +380,9 @@ func (d *DB) AccountCodeExists(ctx context.Context, serverID, code string) (bool
 	return n > 0, nil
 }
 
-// CreateRoom inserts a room and its first event in one transaction.
-func (d *DB) CreateRoom(ctx context.Context, r *room.Room, event *room.Event) error {
+// CreateRoom inserts a room, its first event, and the creator's membership in
+// one transaction.
+func (d *DB) CreateRoom(ctx context.Context, r *room.Room, event *room.Event, member *room.Member, device *room.RoomDevice, epoch *room.RoomEpoch, keys []room.RoomMemberKey) error {
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("storage: begin room: %w", err)
@@ -201,13 +390,31 @@ func (d *DB) CreateRoom(ctx context.Context, r *room.Room, event *room.Event) er
 	defer tx.Rollback()
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO rooms (id, name, home_node, created_by, epoch, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)`,
-		r.ID, r.Name, r.HomeNode, r.CreatedBy, r.Epoch, toMillis(r.CreatedAt)); err != nil {
+		INSERT INTO rooms (id, name, topic, home_node, home_server_id, home_address, created_by,
+			epoch, created_at, archived_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.Name, r.Topic, r.HomeNode, r.HomeServerID, r.HomeAddress, r.CreatedBy,
+		r.Epoch, toMillis(r.CreatedAt), nullableMillis(r.ArchivedAt)); err != nil {
 		return fmt.Errorf("storage: insert room: %w", err)
 	}
 	if err := insertEvent(ctx, tx, event); err != nil {
 		return err
+	}
+	if err := insertMember(ctx, tx, member); err != nil {
+		return err
+	}
+	if err := insertRoomDevice(ctx, tx, device); err != nil {
+		return err
+	}
+	if epoch != nil {
+		if err := insertRoomEpoch(ctx, tx, epoch); err != nil {
+			return err
+		}
+	}
+	for i := range keys {
+		if err := insertRoomMemberKey(ctx, tx, &keys[i]); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("storage: commit room: %w", err)
@@ -218,22 +425,20 @@ func (d *DB) CreateRoom(ctx context.Context, r *room.Room, event *room.Event) er
 // ListRooms returns rooms newest first.
 func (d *DB) ListRooms(ctx context.Context) ([]room.Room, error) {
 	rows, err := d.db.QueryContext(ctx, `
-		SELECT id, name, home_node, created_by, epoch, created_at
+		SELECT id, name, topic, home_node, home_server_id, home_address, created_by, epoch,
+		       created_at, archived_at
 		FROM rooms ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("storage: list rooms: %w", err)
 	}
 	defer rows.Close()
-
 	var out []room.Room
 	for rows.Next() {
-		var r room.Room
-		var created int64
-		if err := rows.Scan(&r.ID, &r.Name, &r.HomeNode, &r.CreatedBy, &r.Epoch, &created); err != nil {
+		r, err := scanRoom(rows)
+		if err != nil {
 			return nil, fmt.Errorf("storage: scan room: %w", err)
 		}
-		r.CreatedAt = fromMillis(created)
-		out = append(out, r)
+		out = append(out, *r)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("storage: list rooms: %w", err)
@@ -244,24 +449,36 @@ func (d *DB) ListRooms(ctx context.Context) ([]room.Room, error) {
 // GetRoom returns one room.
 func (d *DB) GetRoom(ctx context.Context, id string) (*room.Room, error) {
 	row := d.db.QueryRowContext(ctx, `
-		SELECT id, name, home_node, created_by, epoch, created_at
+		SELECT id, name, topic, home_node, home_server_id, home_address, created_by, epoch,
+		       created_at, archived_at
 		FROM rooms WHERE id = ?`, id)
-	var r room.Room
-	var created int64
-	if err := row.Scan(&r.ID, &r.Name, &r.HomeNode, &r.CreatedBy, &r.Epoch, &created); err != nil {
+	r, err := scanRoom(row)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, room.ErrNotFound
 		}
 		return nil, fmt.Errorf("storage: get room: %w", err)
 	}
-	r.CreatedAt = fromMillis(created)
-	return &r, nil
+	return r, nil
+}
+
+// UpdateRoom updates mutable room settings.
+func (d *DB) UpdateRoom(ctx context.Context, r *room.Room) error {
+	_, err := d.db.ExecContext(ctx, `
+		UPDATE rooms SET name = ?, topic = ?, epoch = ?, home_server_id = ?, home_address = ?,
+			archived_at = ? WHERE id = ?`,
+		r.Name, r.Topic, r.Epoch, r.HomeServerID, r.HomeAddress, nullableMillis(r.ArchivedAt), r.ID)
+	if err != nil {
+		return fmt.Errorf("storage: update room: %w", err)
+	}
+	return nil
 }
 
 // LastEvent returns the highest-sequence event in a room.
 func (d *DB) LastEvent(ctx context.Context, roomID string) (*room.Event, error) {
 	row := d.db.QueryRowContext(ctx, `
-		SELECT id, room_id, seq, type, author_id, payload, created_at, prev_id, hash
+		SELECT id, room_id, seq, epoch, type, author_id, author_device, payload, created_at,
+		       prev_id, prev_hash, hash, signature
 		FROM events WHERE room_id = ? ORDER BY seq DESC LIMIT 1`, roomID)
 	event, err := scanEvent(row)
 	if err != nil {
@@ -269,6 +486,22 @@ func (d *DB) LastEvent(ctx context.Context, roomID string) (*room.Event, error) 
 			return nil, room.ErrNotFound
 		}
 		return nil, fmt.Errorf("storage: last event: %w", err)
+	}
+	return event, nil
+}
+
+// GetEvent returns one event by ID.
+func (d *DB) GetEvent(ctx context.Context, eventID string) (*room.Event, error) {
+	row := d.db.QueryRowContext(ctx, `
+		SELECT id, room_id, seq, epoch, type, author_id, author_device, payload, created_at,
+		       prev_id, prev_hash, hash, signature
+		FROM events WHERE id = ?`, eventID)
+	event, err := scanEvent(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, room.ErrMessageNotFound
+		}
+		return nil, fmt.Errorf("storage: get event: %w", err)
 	}
 	return event, nil
 }
@@ -292,14 +525,14 @@ func (d *DB) AppendEvent(ctx context.Context, event *room.Event) error {
 // ListEvents returns events after a sequence, oldest first.
 func (d *DB) ListEvents(ctx context.Context, roomID string, after int64, limit int) ([]room.Event, error) {
 	rows, err := d.db.QueryContext(ctx, `
-		SELECT id, room_id, seq, type, author_id, payload, created_at, prev_id, hash
+		SELECT id, room_id, seq, epoch, type, author_id, author_device, payload, created_at,
+		       prev_id, prev_hash, hash, signature
 		FROM events WHERE room_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?`,
 		roomID, after, limit)
 	if err != nil {
 		return nil, fmt.Errorf("storage: list events: %w", err)
 	}
 	defer rows.Close()
-
 	var out []room.Event
 	for rows.Next() {
 		event, err := scanEvent(rows)
@@ -314,16 +547,228 @@ func (d *DB) ListEvents(ctx context.Context, roomID string, after int64, limit i
 	return out, nil
 }
 
+// GetMember returns a room membership.
+func (d *DB) GetMember(ctx context.Context, roomID, accountID string) (*room.Member, error) {
+	row := d.db.QueryRowContext(ctx, `
+		SELECT room_id, account_id, device_id, display_name, role, status,
+		       account_public_key, encryption_public_key, joined_at, left_at
+		FROM room_members WHERE room_id = ? AND account_id = ?`, roomID, accountID)
+	return scanMember(row)
+}
+
+// ListMembers returns room members.
+func (d *DB) ListMembers(ctx context.Context, roomID string) ([]room.Member, error) {
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT room_id, account_id, device_id, display_name, role, status,
+		       account_public_key, encryption_public_key, joined_at, left_at
+		FROM room_members WHERE room_id = ? ORDER BY joined_at`, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("storage: list members: %w", err)
+	}
+	defer rows.Close()
+	var out []room.Member
+	for rows.Next() {
+		member, err := scanMember(rows)
+		if err != nil {
+			return nil, fmt.Errorf("storage: scan member: %w", err)
+		}
+		out = append(out, *member)
+	}
+	return out, rows.Err()
+}
+
+// AddMember inserts a room member.
+func (d *DB) AddMember(ctx context.Context, member *room.Member) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("storage: begin member: %w", err)
+	}
+	defer tx.Rollback()
+	if err := insertMember(ctx, tx, member); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storage: commit member: %w", err)
+	}
+	return nil
+}
+
+// UpdateMember updates membership state.
+func (d *DB) UpdateMember(ctx context.Context, member *room.Member) error {
+	_, err := d.db.ExecContext(ctx, `
+		UPDATE room_members SET device_id = ?, display_name = ?, role = ?, status = ?,
+			account_public_key = ?, encryption_public_key = ?, left_at = ?
+		WHERE room_id = ? AND account_id = ?`,
+		member.DeviceID, member.DisplayName, member.Role, member.Status,
+		member.AccountPublicKey, member.EncryptionPublicKey, nullableMillis(member.LeftAt),
+		member.RoomID, member.AccountID)
+	if err != nil {
+		return fmt.Errorf("storage: update member: %w", err)
+	}
+	return nil
+}
+
+// GetRoomDevice returns a trusted device for a room.
+func (d *DB) GetRoomDevice(ctx context.Context, roomID, deviceID string) (*room.RoomDevice, error) {
+	row := d.db.QueryRowContext(ctx, `
+		SELECT room_id, device_id, account_id, public_key, encryption_public_key, joined_at, revoked_at
+		FROM room_devices WHERE room_id = ? AND device_id = ?`, roomID, deviceID)
+	return scanRoomDevice(row)
+}
+
+// ListRoomDevices returns devices trusted in a room.
+func (d *DB) ListRoomDevices(ctx context.Context, roomID string) ([]room.RoomDevice, error) {
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT room_id, device_id, account_id, public_key, encryption_public_key, joined_at, revoked_at
+		FROM room_devices WHERE room_id = ? ORDER BY joined_at`, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("storage: list room devices: %w", err)
+	}
+	defer rows.Close()
+	var out []room.RoomDevice
+	for rows.Next() {
+		device, err := scanRoomDevice(rows)
+		if err != nil {
+			return nil, fmt.Errorf("storage: scan room device: %w", err)
+		}
+		out = append(out, *device)
+	}
+	return out, rows.Err()
+}
+
+// AddRoomDevice inserts a trusted room device.
+func (d *DB) AddRoomDevice(ctx context.Context, device *room.RoomDevice) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("storage: begin room device: %w", err)
+	}
+	defer tx.Rollback()
+	if err := insertRoomDevice(ctx, tx, device); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storage: commit room device: %w", err)
+	}
+	return nil
+}
+
+// CreateInvite stores an invitation secret hash.
+func (d *DB) CreateInvite(ctx context.Context, invite *room.Invite, secretHash string) error {
+	_, err := d.db.ExecContext(ctx, `
+		INSERT INTO invites (id, room_id, secret_hash, created_by, history, expires_at, used_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		invite.ID, invite.RoomID, secretHash, invite.CreatedBy, invite.History,
+		toMillis(invite.ExpiresAt), nullableMillis(invite.UsedAt), toMillis(invite.CreatedAt))
+	if err != nil {
+		return fmt.Errorf("storage: create invite: %w", err)
+	}
+	return nil
+}
+
+// GetInviteByHash returns an invitation by its secret hash.
+func (d *DB) GetInviteByHash(ctx context.Context, secretHash string) (*room.Invite, error) {
+	row := d.db.QueryRowContext(ctx, `
+		SELECT id, room_id, created_by, history, expires_at, used_at, created_at
+		FROM invites WHERE secret_hash = ?`, secretHash)
+	var invite room.Invite
+	var expires, created int64
+	var used sql.NullInt64
+	if err := row.Scan(&invite.ID, &invite.RoomID, &invite.CreatedBy, &invite.History,
+		&expires, &used, &created); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, room.ErrNotFound
+		}
+		return nil, fmt.Errorf("storage: get invite: %w", err)
+	}
+	invite.ExpiresAt = fromMillis(expires)
+	invite.CreatedAt = fromMillis(created)
+	if used.Valid {
+		t := fromMillis(used.Int64)
+		invite.UsedAt = &t
+	}
+	return &invite, nil
+}
+
+// MarkInviteUsed marks an invitation as redeemed.
+func (d *DB) MarkInviteUsed(ctx context.Context, id string, at time.Time) error {
+	result, err := d.db.ExecContext(ctx, `UPDATE invites SET used_at = ? WHERE id = ? AND used_at IS NULL`, toMillis(at), id)
+	if err != nil {
+		return fmt.Errorf("storage: mark invite used: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return room.ErrInviteUsed
+	}
+	return nil
+}
+
+// SetReadCursor records a device's last-read sequence.
+func (d *DB) SetReadCursor(ctx context.Context, roomID, deviceID string, seq int64) error {
+	_, err := d.db.ExecContext(ctx, `
+		INSERT INTO read_cursors (room_id, device_id, last_seq, updated_at) VALUES (?, ?, ?, ?)
+		ON CONFLICT(room_id, device_id) DO UPDATE SET last_seq = excluded.last_seq, updated_at = excluded.updated_at`,
+		roomID, deviceID, seq, time.Now().UTC().UnixMilli())
+	if err != nil {
+		return fmt.Errorf("storage: set read cursor: %w", err)
+	}
+	return nil
+}
+
+// GetReadCursor returns a device's last-read sequence.
+func (d *DB) GetReadCursor(ctx context.Context, roomID, deviceID string) (int64, error) {
+	var seq int64
+	err := d.db.QueryRowContext(ctx, `SELECT last_seq FROM read_cursors WHERE room_id = ? AND device_id = ?`,
+		roomID, deviceID).Scan(&seq)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, room.ErrNotFound
+		}
+		return 0, fmt.Errorf("storage: get read cursor: %w", err)
+	}
+	return seq, nil
+}
+
 func insertEvent(ctx context.Context, tx *sql.Tx, event *room.Event) error {
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO events (id, room_id, seq, type, author_id, payload, created_at, prev_id, hash)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		event.ID, event.RoomID, event.Seq, event.Type, event.AuthorID, event.Payload,
-		toMillis(event.CreatedAt), event.PrevID, event.Hash); err != nil {
+		INSERT INTO events (id, room_id, seq, epoch, type, author_id, author_device, payload, created_at,
+			prev_id, prev_hash, hash, signature)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		event.ID, event.RoomID, event.Seq, event.Epoch, event.Type, event.AuthorID, event.AuthorDevice,
+		event.Payload, toMillis(event.CreatedAt), event.PrevID, event.PrevHash,
+		event.Hash, event.Signature); err != nil {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("storage: event sequence conflict: %w", err)
 		}
 		return fmt.Errorf("storage: insert event: %w", err)
+	}
+	return nil
+}
+
+func insertMember(ctx context.Context, tx *sql.Tx, member *room.Member) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO room_members (room_id, account_id, device_id, display_name, role, status,
+			account_public_key, encryption_public_key, joined_at, left_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		member.RoomID, member.AccountID, member.DeviceID, member.DisplayName, member.Role, member.Status,
+		nonNilBytes(member.AccountPublicKey), nonNilBytes(member.EncryptionPublicKey), toMillis(member.JoinedAt), nullableMillis(member.LeftAt))
+	if err != nil {
+		return fmt.Errorf("storage: insert member: %w", err)
+	}
+	return nil
+}
+
+func insertRoomDevice(ctx context.Context, tx *sql.Tx, device *room.RoomDevice) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO room_devices (room_id, device_id, account_id, public_key, encryption_public_key,
+			joined_at, revoked_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		device.RoomID, device.DeviceID, device.AccountID, nonNilBytes(device.PublicKey),
+		nonNilBytes(device.EncryptionPublicKey), toMillis(device.JoinedAt), nullableMillis(device.RevokedAt))
+	if err != nil {
+		return fmt.Errorf("storage: insert room device: %w", err)
 	}
 	return nil
 }
@@ -335,21 +780,111 @@ type rowScanner interface {
 func scanEvent(row rowScanner) (*room.Event, error) {
 	var event room.Event
 	var created int64
-	if err := row.Scan(&event.ID, &event.RoomID, &event.Seq, &event.Type, &event.AuthorID,
-		&event.Payload, &created, &event.PrevID, &event.Hash); err != nil {
+	if err := row.Scan(&event.ID, &event.RoomID, &event.Seq, &event.Epoch, &event.Type, &event.AuthorID,
+		&event.AuthorDevice, &event.Payload, &created, &event.PrevID, &event.PrevHash,
+		&event.Hash, &event.Signature); err != nil {
 		return nil, err
 	}
 	event.CreatedAt = fromMillis(created)
 	return &event, nil
 }
 
-func toMillis(t time.Time) int64 {
-	return t.UTC().UnixMilli()
+func scanRoom(row rowScanner) (*room.Room, error) {
+	var r room.Room
+	var created int64
+	var archived sql.NullInt64
+	if err := row.Scan(&r.ID, &r.Name, &r.Topic, &r.HomeNode, &r.HomeServerID, &r.HomeAddress,
+		&r.CreatedBy, &r.Epoch, &created, &archived); err != nil {
+		return nil, err
+	}
+	r.CreatedAt = fromMillis(created)
+	if archived.Valid {
+		t := fromMillis(archived.Int64)
+		r.ArchivedAt = &t
+	}
+	return &r, nil
 }
 
-func fromMillis(ms int64) time.Time {
-	return time.UnixMilli(ms).UTC()
+func scanMember(row rowScanner) (*room.Member, error) {
+	var member room.Member
+	var joined int64
+	var left sql.NullInt64
+	if err := row.Scan(&member.RoomID, &member.AccountID, &member.DeviceID, &member.DisplayName,
+		&member.Role, &member.Status, &member.AccountPublicKey, &member.EncryptionPublicKey,
+		&joined, &left); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, room.ErrNotFound
+		}
+		return nil, err
+	}
+	member.JoinedAt = fromMillis(joined)
+	if left.Valid {
+		t := fromMillis(left.Int64)
+		member.LeftAt = &t
+	}
+	return &member, nil
 }
+
+func scanRoomDevice(row rowScanner) (*room.RoomDevice, error) {
+	var device room.RoomDevice
+	var joined int64
+	var revoked sql.NullInt64
+	if err := row.Scan(&device.RoomID, &device.DeviceID, &device.AccountID, &device.PublicKey,
+		&device.EncryptionPublicKey, &joined, &revoked); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, room.ErrNotFound
+		}
+		return nil, err
+	}
+	device.JoinedAt = fromMillis(joined)
+	if revoked.Valid {
+		t := fromMillis(revoked.Int64)
+		device.RevokedAt = &t
+	}
+	return &device, nil
+}
+
+func scanDevice(row rowScanner) (*account.Device, error) {
+	var dev account.Device
+	var revoked, lastSeen sql.NullInt64
+	var created int64
+	if err := row.Scan(&dev.ID, &dev.AccountID, &dev.Name, &dev.PublicKey, &dev.PrivateKey,
+		&dev.EncryptionPublicKey, &dev.EncryptionPrivateKey, &dev.Certificate, &dev.Role,
+		&revoked, &lastSeen, &created); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, account.ErrNotFound
+		}
+		return nil, err
+	}
+	dev.CreatedAt = fromMillis(created)
+	if revoked.Valid {
+		t := fromMillis(revoked.Int64)
+		dev.RevokedAt = &t
+	}
+	if lastSeen.Valid {
+		t := fromMillis(lastSeen.Int64)
+		dev.LastSeenAt = &t
+	}
+	return &dev, nil
+}
+
+func toMillis(t time.Time) int64 { return t.UTC().UnixMilli() }
+
+func nonNilBytes(b []byte) []byte {
+	if b == nil {
+		return []byte{}
+	}
+	return b
+}
+
+func nullableMillis(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return toMillis(*t)
+}
+
+func fromMillis(ms int64) time.Time { return time.UnixMilli(ms).UTC() }
 
 func isUniqueViolation(err error) bool {
 	if err == nil {

@@ -61,6 +61,21 @@ func (c *Client) Post(ctx context.Context, path string, in, out any) error {
 	return c.do(ctx, http.MethodPost, path, in, out)
 }
 
+// Patch performs a PATCH request with a JSON body.
+func (c *Client) Patch(ctx context.Context, path string, in, out any) error {
+	return c.do(ctx, http.MethodPatch, path, in, out)
+}
+
+// Delete performs a DELETE request.
+func (c *Client) Delete(ctx context.Context, path string, out any) error {
+	return c.do(ctx, http.MethodDelete, path, nil, out)
+}
+
+// Do performs a request with an arbitrary method and JSON body.
+func (c *Client) Do(ctx context.Context, method, path string, in, out any) error {
+	return c.do(ctx, method, path, in, out)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
 	var body io.Reader
 	if in != nil {

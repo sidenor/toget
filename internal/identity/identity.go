@@ -3,6 +3,7 @@
 package identity
 
 import (
+	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -233,6 +234,15 @@ func NewDeviceKey() (ed25519.PublicKey, ed25519.PrivateKey, error) {
 	return pub, priv, nil
 }
 
+// NewEncryptionKey creates an X25519 key pair for wrapping room keys.
+func NewEncryptionKey() ([]byte, []byte, error) {
+	priv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate encryption key: %w", err)
+	}
+	return priv.PublicKey().Bytes(), priv.Bytes(), nil
+}
+
 // EncodePublicKey encodes an Ed25519 public key for manifests and certificates.
 func EncodePublicKey(pub ed25519.PublicKey) string {
 	return "ed25519:" + base64.RawStdEncoding.EncodeToString(pub)
@@ -256,48 +266,80 @@ func DecodePublicKey(encoded string) (ed25519.PublicKey, error) {
 
 // DeviceCertificate binds a device key to an account.
 type DeviceCertificate struct {
-	DeviceID     string    `json:"device_id"`
-	AccountID    string    `json:"account_id"`
-	DevicePubKey string    `json:"device_pubkey"`
-	IssuedAt     time.Time `json:"issued_at"`
-	ExpiresAt    time.Time `json:"expires_at"`
-	Signature    string    `json:"signature"`
+	DeviceID            string    `json:"device_id"`
+	AccountID           string    `json:"account_id"`
+	DevicePubKey        string    `json:"device_pubkey"`
+	EncryptionPublicKey string    `json:"encryption_pubkey,omitempty"`
+	IssuedAt            time.Time `json:"issued_at"`
+	ExpiresAt           time.Time `json:"expires_at"`
+	Signature           string    `json:"signature"`
 }
 
 type deviceCertificatePayload struct {
-	DeviceID     string    `json:"device_id"`
-	AccountID    string    `json:"account_id"`
-	DevicePubKey string    `json:"device_pubkey"`
-	IssuedAt     time.Time `json:"issued_at"`
-	ExpiresAt    time.Time `json:"expires_at"`
+	DeviceID            string    `json:"device_id"`
+	AccountID           string    `json:"account_id"`
+	DevicePubKey        string    `json:"device_pubkey"`
+	EncryptionPublicKey string    `json:"encryption_pubkey,omitempty"`
+	IssuedAt            time.Time `json:"issued_at"`
+	ExpiresAt           time.Time `json:"expires_at"`
 }
 
 // SignDeviceCertificate creates a device certificate signed by the account key.
-func SignDeviceCertificate(deviceID, accountID string, devicePub ed25519.PublicKey, accountPriv ed25519.PrivateKey, now time.Time) ([]byte, error) {
+func SignDeviceCertificate(deviceID, accountID string, devicePub ed25519.PublicKey, encryptionPub []byte, accountPriv ed25519.PrivateKey, now time.Time) ([]byte, error) {
 	payload := deviceCertificatePayload{
-		DeviceID:     deviceID,
-		AccountID:    accountID,
-		DevicePubKey: EncodePublicKey(devicePub),
-		IssuedAt:     now.UTC().Truncate(time.Second),
-		ExpiresAt:    now.UTC().AddDate(1, 0, 0).Truncate(time.Second),
+		DeviceID:            deviceID,
+		AccountID:           accountID,
+		DevicePubKey:        EncodePublicKey(devicePub),
+		EncryptionPublicKey: EncodeEncryptionPublicKey(encryptionPub),
+		IssuedAt:            now.UTC().Truncate(time.Second),
+		ExpiresAt:           now.UTC().AddDate(1, 0, 0).Truncate(time.Second),
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("encode device certificate: %w", err)
 	}
 	cert := DeviceCertificate{
-		DeviceID:     payload.DeviceID,
-		AccountID:    payload.AccountID,
-		DevicePubKey: payload.DevicePubKey,
-		IssuedAt:     payload.IssuedAt,
-		ExpiresAt:    payload.ExpiresAt,
-		Signature:    base64.RawStdEncoding.EncodeToString(ed25519.Sign(accountPriv, data)),
+		DeviceID:            payload.DeviceID,
+		AccountID:           payload.AccountID,
+		DevicePubKey:        payload.DevicePubKey,
+		EncryptionPublicKey: payload.EncryptionPublicKey,
+		IssuedAt:            payload.IssuedAt,
+		ExpiresAt:           payload.ExpiresAt,
+		Signature:           base64.RawStdEncoding.EncodeToString(ed25519.Sign(accountPriv, data)),
 	}
 	out, err := json.Marshal(cert)
 	if err != nil {
 		return nil, fmt.Errorf("encode signed device certificate: %w", err)
 	}
 	return out, nil
+}
+
+// EncodeEncryptionPublicKey encodes an X25519 public key.
+func EncodeEncryptionPublicKey(pub []byte) string {
+	if len(pub) == 0 {
+		return ""
+	}
+	return "x25519:" + base64.RawStdEncoding.EncodeToString(pub)
+}
+
+// DecodeEncryptionPublicKey decodes a key produced by
+// EncodeEncryptionPublicKey.
+func DecodeEncryptionPublicKey(encoded string) ([]byte, error) {
+	const prefix = "x25519:"
+	if encoded == "" {
+		return nil, nil
+	}
+	if len(encoded) <= len(prefix) || encoded[:len(prefix)] != prefix {
+		return nil, errors.New("unsupported encryption key format")
+	}
+	raw, err := base64.RawStdEncoding.DecodeString(encoded[len(prefix):])
+	if err != nil {
+		return nil, fmt.Errorf("decode encryption key: %w", err)
+	}
+	if len(raw) != 32 {
+		return nil, fmt.Errorf("encryption key has %d bytes, want 32", len(raw))
+	}
+	return raw, nil
 }
 
 // VerifyDeviceCertificate verifies a certificate against an account key.
@@ -311,11 +353,12 @@ func VerifyDeviceCertificate(data []byte, accountPub ed25519.PublicKey) (*Device
 		return nil, fmt.Errorf("decode device certificate signature: %w", err)
 	}
 	payload := deviceCertificatePayload{
-		DeviceID:     cert.DeviceID,
-		AccountID:    cert.AccountID,
-		DevicePubKey: cert.DevicePubKey,
-		IssuedAt:     cert.IssuedAt,
-		ExpiresAt:    cert.ExpiresAt,
+		DeviceID:            cert.DeviceID,
+		AccountID:           cert.AccountID,
+		DevicePubKey:        cert.DevicePubKey,
+		EncryptionPublicKey: cert.EncryptionPublicKey,
+		IssuedAt:            cert.IssuedAt,
+		ExpiresAt:           cert.ExpiresAt,
 	}
 	canonical, err := json.Marshal(payload)
 	if err != nil {

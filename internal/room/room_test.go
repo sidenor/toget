@@ -7,13 +7,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sidenor/toget/internal/identity"
 	"github.com/sidenor/toget/internal/room"
 	"github.com/sidenor/toget/internal/storage"
 	"github.com/sidenor/toget/internal/vault"
 )
 
-func newService(t *testing.T) *room.Service {
+func newService(t *testing.T) (*room.Service, *storage.DB) {
 	t.Helper()
 	dir := t.TempDir()
 	v, err := vault.LoadOrCreate(filepath.Join(dir, "vault.key"))
@@ -25,29 +27,53 @@ func newService(t *testing.T) *room.Service {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	return room.New(db, v)
+	return room.New(db, v), db
+}
+
+func actor(t *testing.T, accountID, deviceID, name string) room.Actor {
+	t.Helper()
+	_, priv, err := identity.NewDeviceKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountPub, _, err := identity.NewAccountKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptionPub, _, err := identity.NewEncryptionKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return room.Actor{
+		AccountID: accountID, DeviceID: deviceID, DisplayName: name,
+		SigningKey: priv, AccountPublicKey: accountPub, EncryptionPublicKey: encryptionPub,
+	}
 }
 
 func TestRoomLifecycle(t *testing.T) {
 	ctx := context.Background()
-	svc := newService(t)
+	svc, _ := newService(t)
+	a := actor(t, "12345678123456", "device-1", "Aiden")
 
-	created, createdEvent, err := svc.CreateRoom(ctx, "General", "12345678123456", "device-1")
+	created, createdEvent, err := svc.CreateRoom(ctx, "General", "Daily work", a)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.Name != "General" || created.CreatedBy != "12345678123456" || created.HomeNode != "device-1" {
+	if created.Name != "General" || created.CreatedBy != a.AccountID || created.HomeNode != a.DeviceID {
 		t.Fatalf("unexpected room: %#v", created)
 	}
 	if createdEvent.Seq != 1 || createdEvent.Type != room.EventRoomCreated {
 		t.Fatalf("unexpected first event: %#v", createdEvent)
 	}
+	if createdEvent.Signature == "" {
+		t.Fatal("first event is not signed")
+	}
 
-	first, err := svc.PostMessage(ctx, created.ID, "12345678123456", "hello")
+	first, err := svc.PostMessage(ctx, created.ID, a, room.MessagePostedPayload{Text: "hello"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := svc.PostMessage(ctx, created.ID, "12345678123456", "again")
+	second, err := svc.PostMessage(ctx, created.ID, a, room.MessagePostedPayload{Text: "again"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,6 +82,9 @@ func TestRoomLifecycle(t *testing.T) {
 	}
 	if first.PrevID != createdEvent.ID || second.PrevID != first.ID {
 		t.Fatalf("hash chain links are wrong: %q, %q", first.PrevID, second.PrevID)
+	}
+	if first.PrevHash != createdEvent.Hash || second.PrevHash != first.Hash {
+		t.Fatalf("hash links are wrong: %q, %q", first.PrevHash, second.PrevHash)
 	}
 
 	events, err := svc.ListEvents(ctx, created.ID, 0, 0)
@@ -90,33 +119,181 @@ func TestRoomLifecycle(t *testing.T) {
 	if len(rooms) != 1 || rooms[0].ID != created.ID {
 		t.Fatalf("unexpected rooms: %#v", rooms)
 	}
+	members, err := svc.ListMembers(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(members) != 1 || members[0].Role != "owner" {
+		t.Fatalf("unexpected members: %#v", members)
+	}
+	devices, err := svc.ListDevices(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 1 || devices[0].DeviceID != a.DeviceID {
+		t.Fatalf("unexpected devices: %#v", devices)
+	}
 }
 
 func TestRoomValidation(t *testing.T) {
 	ctx := context.Background()
-	svc := newService(t)
+	svc, _ := newService(t)
+	a := actor(t, "author", "device", "Author")
 
-	if _, _, err := svc.CreateRoom(ctx, "  ", "author", "device"); !errors.Is(err, room.ErrInvalidName) {
+	if _, _, err := svc.CreateRoom(ctx, "  ", "", a); !errors.Is(err, room.ErrInvalidName) {
 		t.Fatalf("blank name error = %v", err)
 	}
-	if _, _, err := svc.CreateRoom(ctx, strings.Repeat("x", room.MaxNameLength+1), "author", "device"); !errors.Is(err, room.ErrInvalidName) {
+	if _, _, err := svc.CreateRoom(ctx, strings.Repeat("x", room.MaxNameLength+1), "", a); !errors.Is(err, room.ErrInvalidName) {
 		t.Fatalf("long name error = %v", err)
 	}
-	created, _, err := svc.CreateRoom(ctx, "General", "author", "device")
+	if _, _, err := svc.CreateRoom(ctx, "General", strings.Repeat("x", room.MaxTopicLength+1), a); !errors.Is(err, room.ErrInvalidTopic) {
+		t.Fatalf("long topic error = %v", err)
+	}
+	created, _, err := svc.CreateRoom(ctx, "General", "", a)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.PostMessage(ctx, created.ID, "author", "  "); !errors.Is(err, room.ErrEmptyMessage) {
+	if _, err := svc.PostMessage(ctx, created.ID, a, room.MessagePostedPayload{Text: "  "}); !errors.Is(err, room.ErrEmptyMessage) {
 		t.Fatalf("empty message error = %v", err)
 	}
-	if _, err := svc.PostMessage(ctx, created.ID, "author", strings.Repeat("x", room.MaxMessageLength+1)); !errors.Is(err, room.ErrMessageTooLong) {
+	if _, err := svc.PostMessage(ctx, created.ID, a, room.MessagePostedPayload{Text: strings.Repeat("x", room.MaxMessageLength+1)}); !errors.Is(err, room.ErrMessageTooLong) {
 		t.Fatalf("long message error = %v", err)
 	}
-	if _, err := svc.PostMessage(ctx, "missing", "author", "hello"); !errors.Is(err, room.ErrNotFound) {
+	if _, err := svc.PostMessage(ctx, "missing", a, room.MessagePostedPayload{Text: "hello"}); !errors.Is(err, room.ErrNotFound) {
 		t.Fatalf("missing room error = %v", err)
 	}
 	if _, err := svc.ListEvents(ctx, "missing", 0, 0); !errors.Is(err, room.ErrNotFound) {
 		t.Fatalf("missing room list error = %v", err)
+	}
+	other := actor(t, "other-account", "other-device", "Other")
+	if _, err := svc.PostMessage(ctx, created.ID, other, room.MessagePostedPayload{Text: "hi"}); !errors.Is(err, room.ErrNotMember) {
+		t.Fatalf("non-member post error = %v", err)
+	}
+}
+
+func TestInviteRedeemAndLeave(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newService(t)
+	owner := actor(t, "owner-account", "owner-device", "Owner")
+	guest := actor(t, "guest-account", "guest-device", "Guest")
+
+	created, _, err := svc.CreateRoom(ctx, "Shared", "", owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invite, event, err := svc.CreateInvite(ctx, created.ID, owner, room.HistoryRecent, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invite.Secret == "" || event.Type != room.EventMemberInvited {
+		t.Fatalf("unexpected invite: %#v", invite)
+	}
+	if _, _, _, err := svc.RedeemInvite(ctx, invite.Secret, guest); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := svc.RedeemInvite(ctx, invite.Secret, guest); !errors.Is(err, room.ErrInviteUsed) {
+		t.Fatalf("second redemption error = %v", err)
+	}
+	members, err := svc.ListMembers(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(members) != 2 {
+		t.Fatalf("members = %d, want 2", len(members))
+	}
+	if _, err := svc.PostMessage(ctx, created.ID, guest, room.MessagePostedPayload{Text: "hello from guest"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Leave(ctx, created.ID, guest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.PostMessage(ctx, created.ID, guest, room.MessagePostedPayload{Text: "after leave"}); !errors.Is(err, room.ErrNotMember) {
+		t.Fatalf("post after leave error = %v", err)
+	}
+}
+
+func TestEditMessage(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newService(t)
+	a := actor(t, "account", "device", "Aiden")
+	created, _, err := svc.CreateRoom(ctx, "General", "", a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	posted, err := svc.PostMessage(ctx, created.ID, a, room.MessagePostedPayload{Text: "typo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited, err := svc.EditMessage(ctx, created.ID, a, posted.ID, "fixed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if edited.Type != room.EventMessageEdited || edited.Seq != 3 {
+		t.Fatalf("unexpected edit event: %#v", edited)
+	}
+	if _, err := svc.EditMessage(ctx, created.ID, a, "missing", "fixed"); !errors.Is(err, room.ErrMessageNotFound) {
+		t.Fatalf("missing edit error = %v", err)
+	}
+}
+
+func TestAuditExportVerifiesAndDetectsTamper(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newService(t)
+	a := actor(t, "account", "device", "Aiden")
+	created, _, err := svc.CreateRoom(ctx, "General", "", a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.PostMessage(ctx, created.ID, a, room.MessagePostedPayload{Text: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	audit, err := svc.ExportAudit(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := room.VerifyAudit(audit); err != nil {
+		t.Fatal(err)
+	}
+	audit.Events[1].Payload = json.RawMessage(`{"text":"tampered"}`)
+	if err := room.VerifyAudit(audit); !errors.Is(err, room.ErrCorruptEvent) {
+		t.Fatalf("tampered audit error = %v", err)
+	}
+}
+
+func TestSearchAndReadCursor(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newService(t)
+	a := actor(t, "account", "device", "Aiden")
+	first, _, err := svc.CreateRoom(ctx, "General", "", a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := svc.CreateRoom(ctx, "Random", "", a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.PostMessage(ctx, first.ID, a, room.MessagePostedPayload{Text: "needle in a haystack"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.PostMessage(ctx, second.ID, a, room.MessagePostedPayload{Text: "nothing here"}); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := svc.Search(ctx, "NEEDLE", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].RoomID != first.ID {
+		t.Fatalf("unexpected search hits: %#v", hits)
+	}
+	if err := svc.SetReadCursor(ctx, first.ID, a.DeviceID, 2); err != nil {
+		t.Fatal(err)
+	}
+	unread, err := svc.Unread(ctx, first.ID, a.DeviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unread != 0 {
+		t.Fatalf("unread = %d, want 0", unread)
 	}
 }
 
@@ -147,7 +324,8 @@ func TestCorruptEventIsDetected(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	svc := room.New(db, v)
-	created, _, err := svc.CreateRoom(ctx, "General", "author", "device")
+	a := actor(t, "account", "device", "Aiden")
+	created, _, err := svc.CreateRoom(ctx, "General", "", a)
 	if err != nil {
 		t.Fatal(err)
 	}
