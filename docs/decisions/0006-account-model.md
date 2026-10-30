@@ -25,7 +25,7 @@ Earlier drafts assumed email or OAuth identities and a single server. That made 
 ## Consequences
 
 - A user can share a short numeric ID that works across official and self-hosted accounts.
-- The server code is self-certifying: a directory cannot impersonate a host.
+- The server code is bound to the host key: a directory cannot forge the host's manifest. But an 8-digit code can be ground, so first contact should pin the full `server_id` (QR code or cached card) when impersonation matters.
 - Two hosts can claim the same 8-digit code; the full `server_id` and manifest signature, not the digits, decide identity.
 - Self-hosting keeps the same identity and protocol; there is no separate "self-hosted edition".
 - The official service can assign account codes without being able to read content.

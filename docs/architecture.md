@@ -171,7 +171,7 @@ The daemon is the local runtime on a persistent device. It:
 
 - Maps a server code to a signed server manifest (`server_id`, endpoints, public keys, protocol version).
 - Optional: clients can use cached cards, QR codes, peer exchange, or a manual address.
-- Cannot impersonate a server: the manifest is signed by the server root key, and the client verifies that `server_id` matches the fingerprint of `root_pubkey`.
+- Cannot forge a server's manifest: it is signed by the server root key, and `server_id` must match the fingerprint of `root_pubkey`. It can still serve a different manifest with the same 8-digit code, because the code is short enough to grind; clients that need stronger assurance pin the full `server_id` from a QR code or cached card.
 
 ### Official identity and update service
 

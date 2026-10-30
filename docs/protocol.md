@@ -34,7 +34,7 @@ Clients parse the account ID by its total length, so more digits can be added la
 3. It verifies the manifest signature with the server root key and checks that `server_code == hash(root_pubkey || nonce)`.
 4. It connects to one of the advertised endpoints, directly or through a relay.
 
-The directory is a convenience, not a root of trust. A wrong or malicious directory cannot impersonate a server, because the manifest is self-certifying.
+The directory is a convenience, not a root of trust. It cannot forge a server's manifest, but the 8-digit code is short enough to grind; pin the full `server_id` from a QR code or cached card when first-contact impersonation matters.
 
 ### Server manifest
 
