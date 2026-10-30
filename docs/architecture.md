@@ -69,6 +69,8 @@ A public account ID is 14 decimal digits, displayed as `48392017-174628`:
 - **6 digits — account code.** Assigned by the account host; unique on that host.
 - Capacity: 100 million server codes × 1 million accounts per host = 10^14 accounts. If it ever runs out, the protocol can extend to more digits; clients parse by length.
 
+**Uniqueness.** The 6-digit account code is unique on its account host. The 8-digit server code is a truncated hash, so it is not mathematically unique: with many hosts, two hosts can land on the same code. When that happens, the hosts compare their full server IDs (the fingerprint of their root public keys); the lexicographically smaller one keeps the code, and the other increments its nonce, recomputes the code, and re-signs its manifest. The rule is verifiable by clients and needs no central arbiter. A host that already issued account IDs signs redirects from the old prefix to the new one for a transition period. Collisions are rare in practice, but the design does not pretend the digits are a global primary key.
+
 The ID is a lookup key, not a secret and not a password. The cryptographic identity is the host's Ed25519 key and the account's own keys.
 
 ### Account host
@@ -169,7 +171,7 @@ The daemon is the local runtime on a persistent device. It:
 
 - Maps a server code to a signed server manifest (`server_id`, endpoints, public keys, protocol version).
 - Optional: clients can use cached cards, QR codes, peer exchange, or a manual address.
-- Cannot impersonate a server: the manifest is signed by the server root key, and the client verifies `server_id = hash(root_pubkey)`.
+- Cannot impersonate a server: the manifest is signed by the server root key, and the client verifies that `server_id` matches the fingerprint of `root_pubkey`.
 
 ### Official identity and update service
 

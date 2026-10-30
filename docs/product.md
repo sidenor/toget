@@ -86,6 +86,8 @@ Toget uses a **14-digit numeric account ID**, displayed as `48392017-174628`:
 - **6 digits = account code.** Assigned by the account host. It is unique on that host.
 - The ID is a lookup address, not a password. The cryptographic identity is the host's Ed25519 key and the account's own keys.
 
+IDs are not unique by construction. The account code is unique on its host, but the server code is a shortened hash. If two hosts collide, the one with the smaller full server ID keeps the code, and the other re-signs with a new nonce and redirects its old IDs for a transition period. The digits are an address; the keys are the identity.
+
 At registration, the user chooses where the account lives:
 
 | Hosting | Account host | Login availability | Data control |

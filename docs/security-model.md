@@ -213,6 +213,7 @@ Controls:
 - Manifests are self-certifying: the client checks `server_code == hash(root_pubkey || nonce)`.
 - A manifest that does not match is rejected, even if it is signed by the directory.
 - Cached cards and QR codes bypass the directory entirely.
+- The 8-digit code is only about 27 bits. An attacker can grind a key pair until the short code matches a target. The code is a routing hint, not an authentication factor; clients verify the full `server_id` fingerprint when the threat model requires it, and always verify the manifest signature.
 
 ### Local attackers and shared machines
 

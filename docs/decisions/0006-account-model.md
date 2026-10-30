@@ -20,11 +20,13 @@ Earlier drafts assumed email or OAuth identities and a single server. That made 
 5. **Login always reaches the account host**, directly or through a relay. There is no "logged in, but the data is elsewhere" state.
 6. **The account host is the source of truth for account records and membership**, not necessarily the only place history is stored.
 7. **The ID is a lookup key, not a secret.** Cryptographic identity is the account key and the host's signed manifest.
+8. **Server codes can collide, and the collision is resolved deterministically.** The 8-digit code is a truncated hash, not an allocation. The host with the lexicographically smaller full `server_id` keeps the code; the other increments its nonce, recomputes the code, and re-signs its manifest. Existing IDs get signed redirects for a transition period.
 
 ## Consequences
 
 - A user can share a short numeric ID that works across official and self-hosted accounts.
 - The server code is self-certifying: a directory cannot impersonate a host.
+- Two hosts can claim the same 8-digit code; the full `server_id` and manifest signature, not the digits, decide identity.
 - Self-hosting keeps the same identity and protocol; there is no separate "self-hosted edition".
 - The official service can assign account codes without being able to read content.
 - Device enrollment, revocation, and multi-device key wrapping become core protocol features.

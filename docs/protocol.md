@@ -17,12 +17,15 @@ End-to-end encryption sits above the node protocol: relays and hosts forward cip
 | ID | Format | Notes |
 | --- | --- | --- |
 | Account ID | 14 decimal digits: 8-digit server code + 6-digit account code | Displayed `48392017-174628`. A lookup key, not a secret. |
-| Server ID | The same 8-digit code | `decimal(SHA-256(server_pubkey \|\| server_nonce)) mod 100_000_000`, zero-padded. |
+| Server code | 8 decimal digits | `decimal(SHA-256(server_pubkey \|\| server_nonce)) mod 100_000_000`, zero-padded; the prefix of account IDs. |
+| Server ID | Full fingerprint of the root public key | `tog1:s:<base32(SHA-256(root_pubkey))>`; the canonical server identity and the value used for collision resolution and pinning. |
 | Device ID | 128-bit random, displayed as base32 | Stable for the life of the device. |
 | Room ID | 128-bit random, displayed as base32 | Opaque to relays. |
 | Message / event ID | UUIDv7 or 128-bit random + timestamp | Unique per producer; used for deduplication. |
 
 Clients parse the account ID by its total length, so more digits can be added later without a new format.
+
+**Collision rule.** The server code is a truncated hash, not an allocation. If two manifests claim the same code, the server with the lexicographically smaller `server_id` keeps it; the other increments `server_nonce`, recomputes the code, and re-signs its manifest. A server that already issued IDs signs redirects from the old prefix for a transition period. Directories and clients can verify the rule; no central arbiter is required.
 
 ## Discovery
 
@@ -37,9 +40,10 @@ The directory is a convenience, not a root of trust. A wrong or malicious direct
 
 ```json
 {
+  "server_id": "tog1:s:JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
   "server_code": "48392017",
   "root_pubkey": "ed25519:...",
-  "nonce": "base64:...",
+  "server_nonce": "base64:...",
   "endpoints": [
     {"transport": "quic", "addr": "[2001:db8::1]:7717"},
     {"transport": "wss", "addr": "wss://node.example.com/toget"}
@@ -51,6 +55,8 @@ The directory is a convenience, not a root of trust. A wrong or malicious direct
   "signature": "ed25519:..."
 }
 ```
+
+`server_code` is the 8-digit short code derived from `root_pubkey` and `server_nonce`. `server_id` is the full fingerprint of `root_pubkey` and is the canonical identity used for collision resolution and pinning.
 
 Manifests are short-lived and refreshable. A server can rotate endpoints without changing its code, because the code is derived from the root key and the nonce, not from the address.
 
