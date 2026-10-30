@@ -54,6 +54,9 @@ var (
 	// ErrKeyUnavailable means this node does not hold the room key for an
 	// event's epoch, usually because it joined without prior history.
 	ErrKeyUnavailable = errors.New("room key unavailable")
+	// ErrRemoteReadOnly means the room is hosted by another node. Messages
+	// are forwarded to the home node; local-only mutations are not allowed.
+	ErrRemoteReadOnly = errors.New("room is hosted by another node")
 )
 
 const (
@@ -275,6 +278,7 @@ type Invite struct {
 	ID        string     `json:"id"`
 	RoomID    string     `json:"room_id"`
 	Secret    string     `json:"secret,omitempty"`
+	Code      string     `json:"code,omitempty"`
 	CreatedBy string     `json:"created_by"`
 	History   string     `json:"history"`
 	ExpiresAt time.Time  `json:"expires_at"`
@@ -292,20 +296,25 @@ const (
 // Store persists rooms, membership, and events.
 type Store interface {
 	CreateRoom(ctx context.Context, room *Room, event *Event, member *Member, device *RoomDevice, epoch *RoomEpoch, keys []RoomMemberKey) error
+	ImportRoom(ctx context.Context, room *Room, members []Member, devices []RoomDevice, epochs []RoomEpoch, keys []RoomMemberKey, events []Event) error
+	ImportEvents(ctx context.Context, events []Event) error
 	ListRooms(ctx context.Context) ([]Room, error)
 	GetRoom(ctx context.Context, id string) (*Room, error)
 	UpdateRoom(ctx context.Context, room *Room) error
 	LastEvent(ctx context.Context, roomID string) (*Event, error)
 	AppendEvent(ctx context.Context, event *Event) error
 	ListEvents(ctx context.Context, roomID string, after int64, limit int) ([]Event, error)
+	FirstEventSeqForEpoch(ctx context.Context, roomID string, epoch int) (int64, error)
 	GetEvent(ctx context.Context, eventID string) (*Event, error)
 	GetMember(ctx context.Context, roomID, accountID string) (*Member, error)
 	ListMembers(ctx context.Context, roomID string) ([]Member, error)
 	AddMember(ctx context.Context, member *Member) error
 	UpdateMember(ctx context.Context, member *Member) error
+	UpsertMember(ctx context.Context, member *Member) error
 	GetRoomDevice(ctx context.Context, roomID, deviceID string) (*RoomDevice, error)
 	ListRoomDevices(ctx context.Context, roomID string) ([]RoomDevice, error)
 	AddRoomDevice(ctx context.Context, device *RoomDevice) error
+	UpsertRoomDevice(ctx context.Context, device *RoomDevice) error
 	CreateInvite(ctx context.Context, invite *Invite, secretHash string) error
 	GetInviteByHash(ctx context.Context, secretHash string) (*Invite, error)
 	MarkInviteUsed(ctx context.Context, id string, at time.Time) error
@@ -326,15 +335,30 @@ type Store interface {
 
 // Service owns room rules.
 type Service struct {
-	store   Store
-	vault   *vault.Vault
-	now     func() time.Time
-	mu      sync.Mutex
-	dataDir string
+	store      Store
+	vault      *vault.Vault
+	now        func() time.Time
+	mu         sync.Mutex
+	dataDir    string
+	writeGuard func(ctx context.Context, roomID, eventType string) error
 }
 
 // Option configures a room service.
 type Option func(*Service)
+
+// WithWriteGuard installs a hook that can reject local writes to rooms this
+// node does not host. Remote messages do not pass through Append, so a guard
+// only blocks operations that would fork the home node's log.
+func WithWriteGuard(guard func(ctx context.Context, roomID, eventType string) error) Option {
+	return func(s *Service) { s.writeGuard = guard }
+}
+
+func (s *Service) checkWritable(ctx context.Context, roomID, eventType string) error {
+	if s.writeGuard == nil {
+		return nil
+	}
+	return s.writeGuard(ctx, roomID, eventType)
+}
 
 // New creates a room service.
 func New(store Store, v *vault.Vault, opts ...Option) *Service {
@@ -520,6 +544,9 @@ func (s *Service) Append(ctx context.Context, roomID string, actor Actor, eventT
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := s.checkWritable(ctx, roomID, eventType); err != nil {
+		return nil, err
+	}
 	if err := s.RequireMember(ctx, roomID, actor); err != nil {
 		return nil, err
 	}
@@ -636,6 +663,11 @@ func (s *Service) ListMembers(ctx context.Context, roomID string) ([]Member, err
 		return nil, err
 	}
 	return s.store.ListMembers(ctx, roomID)
+}
+
+// GetDevice returns one trusted device in a room.
+func (s *Service) GetDevice(ctx context.Context, roomID, deviceID string) (*RoomDevice, error) {
+	return s.store.GetRoomDevice(ctx, roomID, deviceID)
 }
 
 // ListDevices returns the device keys trusted for a room.
@@ -775,6 +807,9 @@ func (s *Service) CreateInvite(ctx context.Context, roomID string, actor Actor, 
 	if ttl <= 0 {
 		ttl = 7 * 24 * time.Hour
 	}
+	if err := s.checkWritable(ctx, roomID, EventMemberInvited); err != nil {
+		return nil, nil, err
+	}
 	if err := s.requireMember(ctx, roomID, actor); err != nil {
 		return nil, nil, err
 	}
@@ -804,96 +839,6 @@ func (s *Service) CreateInvite(ctx context.Context, roomID string, actor Actor, 
 		return nil, nil, err
 	}
 	return invite, event, nil
-}
-
-// RedeemInvite joins a room using an invitation secret.
-func (s *Service) RedeemInvite(ctx context.Context, secret string, actor Actor) (*Room, *Member, *Event, error) {
-	if !actor.Valid() {
-		return nil, nil, nil, ErrForbidden
-	}
-	secret = strings.TrimSpace(secret)
-	if len(secret) < 16 {
-		return nil, nil, nil, ErrInviteSecret
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	invite, err := s.store.GetInviteByHash(ctx, HashInviteSecret(secret))
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return nil, nil, nil, ErrInviteInvalid
-		}
-		return nil, nil, nil, err
-	}
-	now := s.now().UTC().Truncate(time.Millisecond)
-	if invite.UsedAt != nil {
-		return nil, nil, nil, ErrInviteUsed
-	}
-	if !now.Before(invite.ExpiresAt) {
-		return nil, nil, nil, ErrInviteExpired
-	}
-	room, err := s.store.GetRoom(ctx, invite.RoomID)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	existing, err := s.store.GetMember(ctx, room.ID, actor.AccountID)
-	if err == nil && existing.Status == "active" {
-		return nil, nil, nil, ErrMemberExists
-	}
-	if err != nil && !errors.Is(err, ErrNotFound) {
-		return nil, nil, nil, err
-	}
-
-	member := &Member{
-		RoomID:              room.ID,
-		AccountID:           actor.AccountID,
-		DeviceID:            actor.DeviceID,
-		DisplayName:         actor.DisplayName,
-		Role:                "member",
-		Status:              "active",
-		AccountPublicKey:    actor.AccountPublicKey,
-		EncryptionPublicKey: actor.EncryptionPublicKey,
-		JoinedAt:            now,
-	}
-	device := &RoomDevice{
-		RoomID:              room.ID,
-		DeviceID:            actor.DeviceID,
-		AccountID:           actor.AccountID,
-		PublicKey:           actor.SigningKey.Public().(ed25519.PublicKey),
-		EncryptionPublicKey: actor.EncryptionPublicKey,
-		JoinedAt:            now,
-	}
-	if err := s.store.AddMember(ctx, member); err != nil {
-		return nil, nil, nil, err
-	}
-	if err := s.store.AddRoomDevice(ctx, device); err != nil {
-		return nil, nil, nil, err
-	}
-	if err := s.store.MarkInviteUsed(ctx, invite.ID, now); err != nil {
-		return nil, nil, nil, err
-	}
-	if invite.History != HistoryNone {
-		if err := s.shareHistoryLocked(ctx, room.ID, actor.DeviceID, actor.EncryptionPublicKey, invite.History); err != nil {
-			return nil, nil, nil, err
-		}
-	}
-	if _, err := s.rotateEpochLocked(ctx, room.ID); err != nil {
-		return nil, nil, nil, err
-	}
-	room, err = s.store.GetRoom(ctx, room.ID)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	event, err := s.appendUnchecked(ctx, room.ID, actor, EventMemberJoined, MemberJoinedPayload{
-		AccountID:   actor.AccountID,
-		DisplayName: actor.DisplayName,
-		Role:        "member",
-		History:     invite.History,
-	}, now)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	return room, member, event, nil
 }
 
 // Leave marks the caller's membership as left.
@@ -1423,6 +1368,27 @@ func (s *Service) shareHistoryLocked(ctx context.Context, roomID, deviceID strin
 		}
 	}
 	return nil
+}
+
+// sharedHistoryRangeLocked reports which existing sequences a history choice
+// exposes. "recent" starts at the first event of the current epoch; an epoch
+// with no events yet yields an empty range above the current head.
+func (s *Service) sharedHistoryRangeLocked(ctx context.Context, roomID, history string, currentEpoch int) (int64, int64, error) {
+	last, err := s.store.LastEvent(ctx, roomID)
+	if err != nil {
+		return 0, 0, err
+	}
+	if history == HistoryAll {
+		return 1, last.Seq, nil
+	}
+	first, err := s.store.FirstEventSeqForEpoch(ctx, roomID, currentEpoch)
+	if errors.Is(err, ErrNotFound) {
+		return last.Seq + 1, last.Seq, nil
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	return first, last.Seq, nil
 }
 
 // ComputeEventHash returns the canonical hash of an event's immutable fields.

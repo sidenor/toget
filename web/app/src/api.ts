@@ -9,6 +9,7 @@ import type {
   Device,
   Invite,
   Member,
+  NodeInfo,
   Room,
   RoomDevice,
   RoomEvent,
@@ -101,7 +102,11 @@ export const api = {
   createInvite: (roomID: string, history: string) =>
     request<{ invite: Invite; event: RoomEvent }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/invites`, json({ history })),
   redeemInvite: (secret: string) =>
-    request<{ room: Room; member: Member; event: RoomEvent }>("/api/v1/invites/redeem", json({ secret })),
+    request<{ room: Room; member: Member; event?: RoomEvent | null }>("/api/v1/invites/redeem", json({ secret })),
+  node: () => request<{ enabled: boolean; info?: NodeInfo }>("/api/v1/node"),
+  syncAllRooms: () => request<{ ok: boolean }>("/api/v1/node/sync", { method: "POST" }),
+  syncRoom: (roomID: string) =>
+    request<{ imported: number }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/sync`, { method: "POST" }),
   leaveRoom: (roomID: string) =>
     request<RoomEvent>(`/api/v1/rooms/${encodeURIComponent(roomID)}/leave`, { method: "POST" }),
   unread: (roomID: string) =>

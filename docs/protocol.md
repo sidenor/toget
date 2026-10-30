@@ -1,16 +1,46 @@
 # Protocol (Draft)
 
-> Status: design draft. Nothing here is frozen. The versioning rules are the part we intend to keep stable.
+> Status: design draft plus a working LAN implementation. Nothing here is
+> frozen. The versioning rules are the part we intend to keep stable.
 
 Toget has one protocol with three planes:
 
 | Plane | Transport | Encoding | Used by |
 | --- | --- | --- | --- |
-| **Node protocol** | QUIC on `7717`, WSS/TCP `443` fallback | Protobuf | Nodes, relays, account hosts, client devices |
+| **Node protocol** | HTTPS on `7717` with a pinned self-signed certificate (QUIC is planned) | JSON envelopes | Nodes on the same LAN |
 | **Local API** | HTTP on `127.0.0.1:7718` or a Unix socket | JSON (OpenAPI) | Local web UI, CLI, Agents on the same machine |
-| **Directory API** | HTTPS on `443` | JSON + signed manifests | Clients resolving a server code |
+| **Directory API** | HTTPS on `443` | JSON + signed manifests (design only) | Clients resolving a server code |
 
 End-to-end encryption sits above the node protocol: relays and hosts forward ciphertext, not content.
+
+## What is implemented today
+
+The LAN path is real and covered by tests in `internal/node` and
+`internal/room`:
+
+1. A host creates a room and a single-use invite. The local API returns a
+   portable code: `toget-invite:v1:` followed by base64url JSON carrying the
+   secret, node URL, server ID, room ID, and room name. The URL fragment pins
+   the SHA-256 fingerprint of the node's persistent Ed25519 TLS certificate.
+2. The joining node verifies the pin, posts a signed redeem request with its
+   account and device public keys and device certificate, and receives a join
+   bundle: room metadata, members, devices, wrapped room-epoch keys, and the
+   events the inviter chose to share.
+3. Requests are signed with the device key over the method, request URI,
+   timestamp, nonce, and body hash. The node allows five minutes of clock
+   skew and keeps a ten-minute nonce cache.
+4. A remote sender prepares a sealed, signed event at the next sequence,
+   posts it to the home node, and installs the accepted event locally. A
+   sequence conflict returns `409` with the current head and the sender
+   retries once after syncing.
+5. Remote rooms are read-only locally except for sending messages. Local-only
+   mutations are rejected so the home node remains the single log writer.
+
+Still design-only: QUIC, Protobuf framing, relays, the directory, NAT
+traversal, multi-device account sync, attachment upload into remote rooms,
+and remote room administration. The rest of this document describes the
+target design; sections marked “implemented today” above use HTTPS + JSON
+rather than the future framing.
 
 ## Identifiers
 
@@ -62,11 +92,41 @@ Manifests are short-lived and refreshable. A server can rotate endpoints without
 
 ## Transport and handshake
 
-- **Primary:** QUIC with TLS 1.3, ALPN `toget/1`. One control stream for session messages, one stream per request, and datagrams reserved for presence and typing.
-- **Fallback:** WSS over TCP `443`, binary frames carrying the same Protobuf messages. Used when UDP is blocked or the network only allows HTTPS.
-- **Direct first:** IPv6, UPnP/NAT-PMP/PCP, and QUIC hole punching are attempted before a relay is used.
+**Implemented today (LAN):** TLS 1.3 over TCP on `7717`, with a persistent
+Ed25519 self-signed certificate. Peers do not use the public CA system; the
+invite code carries an exact SHA-256 certificate pin in the URL fragment, and
+the client aborts if the presented certificate does not match. The node
+serves:
 
-Handshake:
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/toget/v1/health` | Liveness |
+| `GET` | `/toget/v1/info` | Signed node manifest |
+| `GET` | `/toget/v1/manifest` | Same manifest, explicit name |
+| `POST` | `/toget/v1/invites/redeem` | Redeem an invite, return a join bundle |
+| `POST` | `/toget/v1/rooms/sync` | Pull events after a cursor |
+| `POST` | `/toget/v1/rooms/events` | Submit a sealed event for home-node ordering |
+
+Every request except health carries `X-Toget-Timestamp`, `X-Toget-Nonce`,
+`X-Toget-Signature`, `X-Toget-Account`, and `X-Toget-Device`. The signature
+is Ed25519 over:
+
+```text
+toget-node-request-v1
+METHOD
+RequestURI
+timestamp
+nonce
+hex(sha256(body))
+```
+
+**Target transport:** QUIC with TLS 1.3, ALPN `toget/1`. One control stream
+for session messages, one stream per request, and datagrams reserved for
+presence and typing. WSS over TCP `443` is the fallback for networks that
+block UDP. IPv6, UPnP/NAT-PMP/PCP, and QUIC hole punching are attempted
+before a relay is used.
+
+Target handshake:
 
 1. TLS 1.3 with certificate verification. The server also proves possession of the root key by signing the handshake transcript.
 2. `hello` carries the protocol version, supported capabilities, device ID, and device certificate.
@@ -178,6 +238,14 @@ The outer envelope deliberately does not carry the room ID, the sender's account
 
 ### Encryption
 
+**Implemented today:** payloads are sealed with the room epoch key using
+XChaCha20-Poly1305. A room key is wrapped per device with an ephemeral X25519
+key, HKDF-SHA256, and XChaCha20-Poly1305. The wrapped-key AAD binds
+`toget:room-key-wrap:v1`, room ID, epoch, and device ID. The vault seals the
+local copy of each epoch key. Unshared epochs are transferred as opaque chain
+anchors so sequence numbers and hashes stay verifiable without revealing
+history.
+
 - The inner message is encrypted with the room epoch key using XChaCha20-Poly1305 (or AES-256-GCM where hardware acceleration matters).
 - The room epoch key is 256 bits, generated by the room creator's endpoint and re-generated on every membership change.
 - The epoch key is wrapped to each member endpoint with HPKE (RFC 9180, X25519 + HKDF-SHA256 + ChaCha20-Poly1305).
@@ -220,10 +288,14 @@ Each event carries the room sequence assigned by the home node. Clients treat th
 The inviter chooses one of:
 
 - **No history (default).** The new member sees messages from the join event onward.
-- **Recent window.** The last 7 or 30 days.
-- **Everything.** The full history the inviter can see.
+- **Recent.** The current epoch only; older epochs remain opaque.
+- **Everything.** Every epoch the room still has keys for.
 
-The home node re-encrypts the selected events for the new member's device keys (or grants the relevant old epoch keys) and stamps a `room.history_attached` event. A system notice tells the room what was attached. If the new member is a shared Agent, the notice also warns that its owner will be able to see the attached history.
+**Implemented today:** history is shared at epoch granularity. The join
+bundle wraps the selected epoch keys to the new device and includes sealed
+events for all epochs; unshared epochs travel as opaque chain anchors. A
+`room.history_attached` event and a system notice record what was shared.
+Time-window selection (for example “last 7 days”) is design-only.
 
 The inviter can only attach history they can see. Inviting is not a way to forward messages the inviter could not access.
 

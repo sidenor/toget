@@ -1,6 +1,12 @@
 # Technology Stack (Draft)
 
-> Status: proposed direction. Exact versions will be pinned in `.mise.toml`, `go.mod`, and `pnpm-lock.yaml` when the scaffold lands.
+> Status: proposed direction. Exact versions are pinned in `.mise.toml`, `go.mod`, and `pnpm-lock.yaml`.
+>
+> **Current implementation note:** the LAN node uses Go's standard `net/http`
+> over TLS 1.3 with a pinned self-signed Ed25519 certificate and JSON
+> payloads (`internal/node`), not QUIC or Protobuf yet. Go, SQLite, React,
+> TypeScript, and Vite match this document. QUIC/WSS and Protobuf remain the
+> target for relay-scale transport.
 
 ## Decision summary
 

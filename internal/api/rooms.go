@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sidenor/toget/internal/node"
 	"github.com/sidenor/toget/internal/room"
 )
 
@@ -52,6 +53,11 @@ func (s *Server) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeRoomError(w, err)
 		return
+	}
+	if s.node != nil {
+		if updated, err := s.node.EnsureRoomHome(r.Context(), created.ID); err == nil {
+			created = updated
+		}
 	}
 	writeJSON(w, http.StatusCreated, roomEventResponse{Room: created, Event: event})
 }
@@ -163,10 +169,16 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_format", "format must be plain or markdown")
 		return
 	}
-	event, err := s.rooms.PostMessage(r.Context(), r.PathValue("id"), actor, room.MessagePostedPayload{
+	body := room.MessagePostedPayload{
 		Text: req.Text, Format: format, Attachments: req.Attachments,
 		Mentions: req.Mentions, ReplyTo: req.ReplyTo,
-	})
+	}
+	var event *room.Event
+	if s.node != nil {
+		event, err = s.node.PostRemoteMessage(r.Context(), r.PathValue("id"), actor, body)
+	} else {
+		event, err = s.rooms.PostMessage(r.Context(), r.PathValue("id"), actor, body)
+	}
 	if err != nil {
 		writeRoomError(w, err)
 		return
@@ -237,6 +249,13 @@ func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 		writeRoomError(w, err)
 		return
 	}
+	if s.node != nil {
+		if record, err := s.rooms.GetRoom(r.Context(), r.PathValue("id")); err == nil {
+			if code, err := s.node.InviteCode(r.Context(), record.ID, invite.Secret, record.Name); err == nil {
+				invite.Code = code
+			}
+		}
+	}
 	writeJSON(w, http.StatusCreated, map[string]any{"invite": invite, "event": event})
 }
 
@@ -255,7 +274,12 @@ func (s *Server) handleRedeemInvite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	joinedRoom, member, event, err := s.rooms.RedeemInvite(r.Context(), req.Secret, actor)
+	secret := strings.TrimSpace(req.Secret)
+	if s.node != nil && node.IsInviteCode(secret) {
+		s.redeemRemoteInvite(w, r, secret)
+		return
+	}
+	joinedRoom, member, event, err := s.rooms.RedeemInvite(r.Context(), secret, actor)
 	if err != nil {
 		if errors.Is(err, room.ErrMemberExists) {
 			writeError(w, http.StatusConflict, "already_member", "this account is already in the room")

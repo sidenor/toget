@@ -21,6 +21,7 @@ import (
 	"github.com/sidenor/toget/internal/agent"
 	"github.com/sidenor/toget/internal/approval"
 	"github.com/sidenor/toget/internal/identity"
+	"github.com/sidenor/toget/internal/node"
 	"github.com/sidenor/toget/internal/room"
 	"github.com/sidenor/toget/internal/session"
 	"github.com/sidenor/toget/internal/tool"
@@ -39,6 +40,7 @@ type Options struct {
 	Agents    *agent.Service
 	Approvals *approval.Service
 	Tools     *tool.Service
+	Node      *node.Service
 	Session   *session.Manager
 	Version   version.Info
 	Token     string
@@ -54,6 +56,7 @@ type Server struct {
 	agents    *agent.Service
 	approvals *approval.Service
 	tools     *tool.Service
+	node      *node.Service
 	session   *session.Manager
 	version   version.Info
 	token     string
@@ -79,6 +82,7 @@ func New(opts Options) *Server {
 		agents:    opts.Agents,
 		approvals: opts.Approvals,
 		tools:     opts.Tools,
+		node:      opts.Node,
 		session:   sessions,
 		version:   opts.Version,
 		token:     opts.Token,
@@ -108,6 +112,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/devices/{id}", s.data(s.handleRevokeDevice))
 
 	// Rooms, membership, messages, search, and audit.
+	mux.HandleFunc("GET /api/v1/node", s.data(s.handleNodeInfo))
+	mux.HandleFunc("POST /api/v1/node/sync", s.data(s.handleNodeSync))
+	mux.HandleFunc("POST /api/v1/rooms/{id}/sync", s.data(s.handleRoomSync))
 	mux.HandleFunc("GET /api/v1/rooms", s.data(s.handleListRooms))
 	mux.HandleFunc("POST /api/v1/rooms", s.data(s.handleCreateRoom))
 	mux.HandleFunc("GET /api/v1/rooms/{id}", s.data(s.handleGetRoom))
@@ -262,6 +269,9 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.session.Unlock()
+	if s.node != nil {
+		s.node.EnsureAllRooms(r.Context())
+	}
 	writeJSON(w, http.StatusCreated, accountView(snapshot.Account, snapshot.Device))
 }
 
@@ -555,6 +565,12 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 
+	// Set the type before handing the file to ServeContent: the embedded FS
+	// exposes io.ReadSeeker, and ServeContent would otherwise infer the type
+	// itself (or sniff it) before our switch ran.
+	if contentType := uiContentType(name); contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
 	if seeker, ok := f.(io.ReadSeeker); ok {
 		http.ServeContent(w, r, name, time.Time{}, seeker)
 		return
@@ -564,21 +580,31 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not read web UI", http.StatusInternalServerError)
 		return
 	}
+	_, _ = w.Write(data)
+}
+
+func uiContentType(name string) string {
 	switch path.Ext(name) {
 	case ".html":
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		return "text/html; charset=utf-8"
 	case ".js", ".mjs":
-		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		return "text/javascript; charset=utf-8"
 	case ".css":
-		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		return "text/css; charset=utf-8"
 	case ".webmanifest":
-		w.Header().Set("Content-Type", "application/manifest+json")
+		return "application/manifest+json"
+	case ".json":
+		return "application/json"
 	case ".png":
-		w.Header().Set("Content-Type", "image/png")
+		return "image/png"
 	case ".svg":
-		w.Header().Set("Content-Type", "image/svg+xml")
+		return "image/svg+xml"
+	case ".ico":
+		return "image/x-icon"
+	case ".txt":
+		return "text/plain; charset=utf-8"
 	}
-	_, _ = w.Write(data)
+	return ""
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
@@ -649,6 +675,10 @@ func writeRoomError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "attachment_used", "attachment is already attached to a message")
 	case errors.Is(err, room.ErrAttachmentsDisabled):
 		writeError(w, http.StatusServiceUnavailable, "attachments_disabled", "attachment storage is not configured")
+	case errors.Is(err, room.ErrRemoteReadOnly):
+		writeError(w, http.StatusConflict, "remote_room", "this room is hosted by another node; make that change there")
+	case errors.Is(err, room.ErrKeyUnavailable):
+		writeError(w, http.StatusForbidden, "key_unavailable", "this node does not have the key for that history")
 	case errors.Is(err, room.ErrCorruptEvent):
 		writeError(w, http.StatusInternalServerError, "corrupt_event", "an event failed its integrity check")
 	default:

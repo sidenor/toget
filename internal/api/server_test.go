@@ -107,6 +107,35 @@ func decode[T any](t *testing.T, data []byte) T {
 	return value
 }
 
+func TestNodeDisabledAPI(t *testing.T) {
+	node := newTestNode(t, nil)
+	resp, body := node.request(t, http.MethodPost, "/api/v1/account", testToken,
+		`{"name":"Aiden","password":"testpass123","device_name":"test"}`, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create account = %d %s", resp.StatusCode, body)
+	}
+
+	resp, body = node.request(t, http.MethodGet, "/api/v1/node", testToken, "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("node info = %d %s", resp.StatusCode, body)
+	}
+	info := decode[struct {
+		Enabled bool `json:"enabled"`
+	}](t, body)
+	if info.Enabled {
+		t.Fatalf("node info = %s, want disabled", body)
+	}
+
+	resp, _ = node.request(t, http.MethodPost, "/api/v1/node/sync", testToken, "", nil)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("node sync = %d, want 503", resp.StatusCode)
+	}
+	resp, _ = node.request(t, http.MethodPost, "/api/v1/rooms/anything/sync", testToken, "", nil)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("room sync = %d, want 503", resp.StatusCode)
+	}
+}
+
 func TestHealthAndAuth(t *testing.T) {
 	node := newTestNode(t, nil)
 
@@ -268,8 +297,10 @@ func TestAccountRoomMessageFlow(t *testing.T) {
 
 func TestWebUISetsCookie(t *testing.T) {
 	ui := fstest.MapFS{
-		"index.html":    &fstest.MapFile{Data: []byte("<!doctype html><title>Toget</title>")},
-		"assets/app.js": &fstest.MapFile{Data: []byte("console.log('toget')")},
+		"index.html":           &fstest.MapFile{Data: []byte("<!doctype html><title>Toget</title>")},
+		"assets/app.js":        &fstest.MapFile{Data: []byte("console.log('toget')")},
+		"manifest.webmanifest": &fstest.MapFile{Data: []byte(`{"name":"Toget"}`)},
+		"icons/icon-192.png":   &fstest.MapFile{Data: []byte("\x89PNG\r\n\x1a\n")},
 	}
 	node := newTestNode(t, ui)
 
@@ -312,6 +343,28 @@ func TestWebUISetsCookie(t *testing.T) {
 	}
 	if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Fatalf("X-Content-Type-Options = %q", got)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/javascript") {
+		t.Fatalf("asset Content-Type = %q", got)
+	}
+	if got := resp.Header.Get("Content-Security-Policy"); !strings.Contains(got, "frame-ancestors 'none'") {
+		t.Fatalf("CSP = %q", got)
+	}
+
+	resp, _ = node.request(t, http.MethodGet, "/manifest.webmanifest", "", "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("manifest = %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/manifest+json") {
+		t.Fatalf("manifest Content-Type = %q", got)
+	}
+
+	resp, _ = node.request(t, http.MethodGet, "/icons/icon-192.png", "", "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("icon = %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "image/png") {
+		t.Fatalf("icon Content-Type = %q", got)
 	}
 
 	resp, _ = node.request(t, http.MethodGet, "/assets/missing.js", "", "", nil)

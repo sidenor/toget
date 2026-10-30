@@ -51,10 +51,23 @@ export type Room = {
   name: string;
   topic?: string;
   home_node: string;
+  home_server_id?: string;
+  home_address?: string;
   created_by: string;
   epoch: number;
   created_at: string;
   archived_at?: string;
+};
+
+export type NodeInfo = {
+  server_id: string;
+  server_code: string;
+  account_id: string;
+  device_id: string;
+  endpoint: string;
+  url: string;
+  tls_fingerprint: string;
+  protocol: number;
 };
 
 export type RoomEvent = {
@@ -96,6 +109,7 @@ export type Invite = {
   id: string;
   room_id: string;
   secret?: string;
+  code?: string;
   created_by: string;
   history: string;
   expires_at: string;

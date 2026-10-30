@@ -54,6 +54,32 @@ The official service has no universal key and no backdoor. There is no "complian
 - **Official-hosted with an official Agent:** the user explicitly authorizes a scope (a room, a data set, a time window). Only that scope is readable, the authorization is visible in the room, and it can be revoked.
 - **Mixed rooms:** each participant's hosting choice determines who can read. A self-hosted participant's server sees its own copy; an official-hosted participant's devices see theirs; the official service sees ciphertext for the parts it hosts.
 
+### Implemented LAN boundary
+
+Two Toget nodes on the same LAN currently talk over HTTPS on `7717`:
+
+- The node generates a persistent Ed25519 self-signed certificate. The
+  invite code pins its SHA-256 fingerprint, so an active attacker without the
+  node's private key cannot impersonate the host.
+- Every request is signed by the sender's device key over the method, URI,
+  timestamp, nonce, and body hash. The verifier rejects timestamps outside a
+  five-minute window and replayed nonces within ten minutes.
+- Invite redemption verifies the joining device certificate with the account
+  public key before creating membership. Room-key bundles are sealed to the
+  joining device's encryption key.
+- Room payloads remain sealed with the room epoch key; the node transport
+  does not unwrap them.
+- A remote room is read-only locally except for sending messages. The home
+  node remains the only log writer, preventing a local mutation from forking
+  the append-only hash chain.
+
+Residual risks: the host sees IP addresses, account and device IDs in request
+headers, room IDs, and timing. The invite code is a bearer secret shown once;
+anyone who obtains it before redemption can join. The certificate is pinned
+but not publicly audited. There is no relay or multi-hop privacy yet, and
+remote attachments and remote administration are unsupported rather than
+securely implemented.
+
 ## Adversaries and threats
 
 ### Malicious or compromised relay

@@ -11,7 +11,16 @@ info:
     web UI is loaded. Browser requests with an `Origin` header are checked
     against the loopback origin allowlist.
 
-    This contract is additive within `/api/v1`.
+    Most routes require an unlocked local session. `GET /api/v1/session` and
+    `POST /api/v1/session` are available while locked so a client can present
+    the unlock screen; all data routes answer `423 locked` until the account
+    password has been verified. Unlocking lasts for 12 hours and is extended
+    by activity.
+
+    This contract is additive within `/api/v1`. The LAN transport between
+    nodes is a separate signed HTTPS protocol, documented in
+    `docs/protocol.md`; `GET /api/v1/node` exposes this node's public LAN
+    identity for local clients.
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -20,8 +29,19 @@ servers:
     description: Default local node
 tags:
   - name: system
+  - name: session
   - name: account
+  - name: devices
+  - name: node
   - name: rooms
+  - name: messages
+  - name: membership
+  - name: attachments
+  - name: agents
+  - name: approvals
+  - name: tools
+  - name: audit
+  - name: search
 security:
   - bearerAuth: []
   - cookieAuth: []
@@ -41,11 +61,70 @@ paths:
               schema:
                 type: string
                 const: "ok\n"
+
+  /api/v1/session:
+    get:
+      tags: [session]
+      operationId: getSession
+      summary: Read the local unlock state
+      description: Available while the node is locked.
+      responses:
+        "200":
+          description: Session state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+    post:
+      tags: [session]
+      operationId: unlock
+      summary: Unlock this node with the account password
+      description: |
+        Available while locked. Failed attempts are rate-limited per client
+        address. A successful unlock keeps the session open for 12 hours.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UnlockRequest"
+      responses:
+        "200":
+          description: The node is unlocked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/InvalidCredentials"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+    delete:
+      tags: [session]
+      operationId: lock
+      summary: Lock this node immediately
+      responses:
+        "204":
+          description: The session is locked.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+
   /api/v1/status:
     get:
       tags: [system]
       operationId: getStatus
       summary: Node, version, account, and room summary
+      description: Available while locked; counts are only populated when unlocked.
       responses:
         "200":
           description: Current node status.
@@ -57,6 +136,7 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/OriginDenied"
+
   /api/v1/account:
     get:
       tags: [account]
@@ -77,6 +157,9 @@ paths:
       tags: [account]
       operationId: createAccount
       summary: Create the account for this node
+      description: |
+        The account ID is derived from this node's server identity. Creating
+        the account also unlocks the session.
       requestBody:
         required: true
         content:
@@ -96,11 +179,114 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "409":
           $ref: "#/components/responses/AccountExists"
+
+  /api/v1/devices:
+    get:
+      tags: [devices]
+      operationId: listDevices
+      summary: List devices enrolled in this account
+      responses:
+        "200":
+          description: Devices belonging to this account.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/devices/{id}:
+    delete:
+      tags: [devices]
+      operationId: revokeDevice
+      summary: Revoke a device
+      description: The current device cannot revoke itself.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: The device is revoked.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The current device cannot revoke itself.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/node:
+    get:
+      tags: [node]
+      operationId: getNodeInfo
+      summary: Read the LAN node identity
+      description: |
+        Returns `enabled: false` when this process was started with the LAN
+        transport disabled. `info.url` is the pinned HTTPS base URL peers use;
+        `info.tls_fingerprint` is the SHA-256 fingerprint of the node
+        certificate.
+      responses:
+        "200":
+          description: Node transport status and public identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeInfoResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/node/sync:
+    post:
+      tags: [node]
+      operationId: syncNode
+      summary: Start a sync pass for every remote room
+      description: Returns immediately; rooms are synchronized in the background.
+      responses:
+        "200":
+          description: The sync pass was scheduled.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
   /api/v1/rooms:
     get:
       tags: [rooms]
       operationId: listRooms
       summary: List rooms, newest first
+      parameters:
+        - name: include_archived
+          in: query
+          description: Set to `1` to include archived rooms.
+          schema:
+            type: string
+            enum: ["0", "1"]
+            default: "0"
       responses:
         "200":
           description: Rooms visible to this account.
@@ -110,10 +296,15 @@ paths:
                 $ref: "#/components/schemas/RoomList"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "423":
+          $ref: "#/components/responses/Locked"
     post:
       tags: [rooms]
       operationId: createRoom
       summary: Create a room and its first event
+      description: |
+        When the LAN node is running, new local rooms are assigned this node
+        as their home server and get a portable LAN address.
       requestBody:
         required: true
         content:
@@ -126,13 +317,16 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CreateRoomResponse"
+                $ref: "#/components/schemas/RoomWithEvent"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/AccountNotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
   /api/v1/rooms/{id}:
     get:
       tags: [rooms]
@@ -151,6 +345,99 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/RoomNotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+    patch:
+      tags: [rooms]
+      operationId: updateRoom
+      summary: Rename a room or change its topic
+      description: Only active room owners can change room settings.
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRoomRequest"
+      responses:
+        "200":
+          description: The updated room and `room.settings_changed` event.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoomWithEvent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "409":
+          $ref: "#/components/responses/RemoteReadOnly"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/rooms/{id}/archive:
+    post:
+      tags: [rooms]
+      operationId: archiveRoom
+      summary: Archive a room
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      responses:
+        "200":
+          description: The archived room and `room.archived` event.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoomWithEvent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "409":
+          $ref: "#/components/responses/RemoteReadOnly"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/rooms/{id}/sync:
+    post:
+      tags: [node]
+      operationId: syncRoom
+      summary: Synchronize one remote room from its home node
+      description: |
+        Fetches events after the local head, verifies and imports them, and
+        returns the number of newly imported events. Rooms hosted by this node
+        return zero.
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      responses:
+        "200":
+          description: Sync result.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [imported]
+                properties:
+                  imported:
+                    type: integer
+                    minimum: 0
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
   /api/v1/rooms/{id}/events:
     get:
       tags: [rooms]
@@ -174,6 +461,11 @@ paths:
             minimum: 0
             maximum: 1000
             default: 200
+        - name: type
+          in: query
+          description: Return only events of this type (for example `message.posted`).
+          schema:
+            type: string
       responses:
         "200":
           description: Events in sequence order.
@@ -185,13 +477,20 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/RoomNotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
         "500":
           $ref: "#/components/responses/CorruptEvent"
+
   /api/v1/rooms/{id}/messages:
     post:
-      tags: [rooms]
+      tags: [messages]
       operationId: postMessage
       summary: Append a message to a room
+      description: |
+        In a room hosted by another LAN node, the message is sealed locally,
+        proposed to the home node, verified there, then installed locally in
+        canonical order. Attachments in remote rooms are not supported yet.
       parameters:
         - $ref: "#/components/parameters/RoomID"
       requestBody:
@@ -211,10 +510,1022 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/RoomNotFound"
+        "409":
+          $ref: "#/components/responses/RemoteReadOnly"
         "413":
           $ref: "#/components/responses/MessageTooLong"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /api/v1/rooms/{id}/messages/{eventID}:
+    patch:
+      tags: [messages]
+      operationId: editMessage
+      summary: Append an edit for a message
+      description: Events are append-only; an edit adds a `message.edited` event.
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+        - $ref: "#/components/parameters/EventID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EditMessageRequest"
+      responses:
+        "201":
+          description: The appended `message.edited` event.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoomEvent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "409":
+          $ref: "#/components/responses/RemoteReadOnly"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/rooms/{id}/members:
+    get:
+      tags: [membership]
+      operationId: listMembers
+      summary: List humans and Agents in a room
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      responses:
+        "200":
+          description: Room members.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/rooms/{id}/devices:
+    get:
+      tags: [membership]
+      operationId: listRoomDevices
+      summary: List devices that can sign events in a room
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      responses:
+        "200":
+          description: Room devices.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoomDeviceList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/rooms/{id}/invites:
+    post:
+      tags: [membership]
+      operationId: createInvite
+      summary: Create a single-use invitation
+      description: |
+        The invite secret and, when the LAN node is running, a portable
+        `toget-invite:v1:` code are returned exactly once. The code packages
+        the secret, home URL, server ID, and room identity so another node on
+        the LAN can join without a shared directory. Only the room's home node
+        can issue invites.
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateInviteRequest"
+      responses:
+        "201":
+          description: The invitation and `room.member_invited` event.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InviteWithEvent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "409":
+          $ref: "#/components/responses/RemoteReadOnly"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/invites/redeem:
+    post:
+      tags: [membership]
+      operationId: redeemInvite
+      summary: Join a room with an invite secret or portable LAN code
+      description: |
+        A plain secret joins a room hosted on this node. A
+        `toget-invite:v1:` code contacts the advertised home node over pinned
+        HTTPS, authenticates as this account and device, redeems the secret,
+        imports the signed join bundle, and imports the events permitted by
+        the invite's history policy. For remote joins `event` is `null`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RedeemInviteRequest"
+      responses:
+        "200":
+          description: The joined room, local member row when available, and join event.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RedeemInviteResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: This account is already a member.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /api/v1/rooms/{id}/leave:
+    post:
+      tags: [membership]
+      operationId: leaveRoom
+      summary: Leave a room
+      description: Not available for rooms hosted by another node yet.
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      responses:
+        "200":
+          description: The appended `room.member_left` event.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoomEvent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "409":
+          $ref: "#/components/responses/RemoteReadOnly"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/rooms/{id}/audit:
+    get:
+      tags: [audit]
+      operationId: exportAudit
+      summary: Export the signed event chain of a room
+      description: |
+        The bundle contains the room, members, devices, every visible event, the
+        head hash, and the generation time. `verified` reports whether the hash
+        chain and signatures validate locally.
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      responses:
+        "200":
+          description: Audit bundle and local verification result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditExport"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/audit/verify:
+    post:
+      tags: [audit]
+      operationId: verifyAudit
+      summary: Verify an audit bundle offline
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Audit"
+      responses:
+        "200":
+          description: The bundle is valid.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [verified, head, events]
+                properties:
+                  verified:
+                    type: boolean
+                    const: true
+                  head:
+                    type: string
+                  events:
+                    type: integer
+                    minimum: 0
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "422":
+          description: The hash chain or a signature is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/search:
+    get:
+      tags: [search]
+      operationId: searchAllRooms
+      summary: Search decrypted local history across all rooms
+      parameters:
+        - $ref: "#/components/parameters/SearchQuery"
+        - $ref: "#/components/parameters/SearchLimit"
+      responses:
+        "200":
+          description: Matching events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/rooms/{id}/search:
+    get:
+      tags: [search]
+      operationId: searchRoom
+      summary: Search decrypted local history in one room
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+        - $ref: "#/components/parameters/SearchQuery"
+        - $ref: "#/components/parameters/SearchLimit"
+      responses:
+        "200":
+          description: Matching events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/rooms/{id}/read:
+    get:
+      tags: [rooms]
+      operationId: getReadCursor
+      summary: Read this device's read position in a room
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      responses:
+        "200":
+          description: The read cursor.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadCursor"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+    post:
+      tags: [rooms]
+      operationId: setReadCursor
+      summary: Set this device's read position in a room
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReadCursorRequest"
+      responses:
+        "200":
+          description: The stored read cursor.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/rooms/{id}/unread:
+    get:
+      tags: [rooms]
+      operationId: getUnread
+      summary: Count events after this device's read cursor
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      responses:
+        "200":
+          description: Unread count.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [unread]
+                properties:
+                  unread:
+                    type: integer
+                    minimum: 0
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/rooms/{id}/attachments:
+    get:
+      tags: [attachments]
+      operationId: listAttachments
+      summary: List attachments uploaded to a room
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      responses:
+        "200":
+          description: Room attachments.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttachmentList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+    post:
+      tags: [attachments]
+      operationId: uploadAttachment
+      summary: Upload an attachment encrypted under the room epoch key
+      description: |
+        The request body is the raw file (up to 25 MiB). The node stores the
+        ciphertext and returns metadata. Attach the returned ID to a message
+        with `attachments`. Remote rooms do not support attachments yet.
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+        - name: name
+          in: query
+          description: Original filename. Falls back to `X-Toget-Filename`.
+          schema:
+            type: string
+        - name: mime
+          in: query
+          description: MIME type. Falls back to `Content-Type`.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "201":
+          description: Stored attachment metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Attachment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "409":
+          $ref: "#/components/responses/RemoteReadOnly"
+        "413":
+          $ref: "#/components/responses/AttachmentTooLarge"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/attachments/{id}:
+    get:
+      tags: [attachments]
+      operationId: getAttachment
+      summary: Read attachment metadata
+      parameters:
+        - $ref: "#/components/parameters/AttachmentID"
+      responses:
+        "200":
+          description: Attachment metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Attachment"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/attachments/{id}/content:
+    get:
+      tags: [attachments]
+      operationId: getAttachmentContent
+      summary: Download and decrypt an attachment
+      parameters:
+        - $ref: "#/components/parameters/AttachmentID"
+      responses:
+        "200":
+          description: |
+            The decrypted bytes with the stored MIME type, a sanitized
+            `Content-Disposition`, `X-Content-Type-Options: nosniff`, and a
+            sandboxing CSP.
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+            X-Content-Type-Options:
+              schema:
+                type: string
+                const: nosniff
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/agents:
+    get:
+      tags: [agents]
+      operationId: listAgents
+      summary: List Agents owned by this account
+      responses:
+        "200":
+          description: Owned Agents.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "423":
+          $ref: "#/components/responses/Locked"
+    post:
+      tags: [agents]
+      operationId: createAgent
+      summary: Register a local Agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAgentRequest"
+      responses:
+        "201":
+          description: The registered Agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/agents/{id}:
+    get:
+      tags: [agents]
+      operationId: getAgent
+      summary: Read one owned Agent
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+      responses:
+        "200":
+          description: The Agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+    patch:
+      tags: [agents]
+      operationId: updateAgent
+      summary: Update an Agent's presence
+      description: |
+        Optionally posts an `agent.status` event to a room. Allowed statuses
+        are `idle`, `running`, `waiting_approval`, and `offline`.
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAgentRequest"
+      responses:
+        "200":
+          description: The updated Agent and optional status event.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentWithEvent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/agents/{id}/revoke:
+    post:
+      tags: [agents]
+      operationId: revokeAgent
+      summary: Revoke an Agent
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+      responses:
+        "204":
+          description: The Agent is revoked.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/agents/{id}/rooms:
+    get:
+      tags: [agents]
+      operationId: listAgentRooms
+      summary: List rooms an Agent belongs to
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+      responses:
+        "200":
+          description: Room references.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [rooms]
+                properties:
+                  rooms:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AgentRoomRef"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/rooms/{id}/agents:
+    get:
+      tags: [agents]
+      operationId: listRoomAgents
+      summary: List Agents that belong to a room
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      responses:
+        "200":
+          description: Room Agents.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+    post:
+      tags: [agents]
+      operationId: joinRoomAgent
+      summary: Add an owned Agent to a room
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JoinAgentRequest"
+      responses:
+        "201":
+          description: The Agent and `agent.joined` event.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentWithEvent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "409":
+          $ref: "#/components/responses/RemoteReadOnly"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/rooms/{id}/agents/{agentID}:
+    delete:
+      tags: [agents]
+      operationId: leaveRoomAgent
+      summary: Remove an owned Agent from a room
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+        - name: agentID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The `agent.left` event.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoomEvent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "409":
+          $ref: "#/components/responses/RemoteReadOnly"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/rooms/{id}/approvals:
+    get:
+      tags: [approvals]
+      operationId: listApprovals
+      summary: List approvals in a room
+      description: Expired approvals are transitioned before listing.
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+        - name: status
+          in: query
+          description: Filter by approval status.
+          schema:
+            type: string
+            enum: [pending, granted, rejected, expired]
+      responses:
+        "200":
+          description: Approvals.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+    post:
+      tags: [approvals]
+      operationId: requestApproval
+      summary: Request approval for an exact action
+      description: |
+        The action is canonicalized and hashed. The digest is the only thing a
+        consumer may later redeem, so changing any field requires a new
+        approval. Defaults to a 15-minute TTL and caps at 24 hours.
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RequestApprovalRequest"
+      responses:
+        "201":
+          description: The pending approval and `approval.requested` event.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalWithEvent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/approvals/{id}:
+    get:
+      tags: [approvals]
+      operationId: getApproval
+      summary: Read one approval
+      parameters:
+        - $ref: "#/components/parameters/ApprovalID"
+      responses:
+        "200":
+          description: The approval.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Approval"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/approvals/{id}/decide:
+    post:
+      tags: [approvals]
+      operationId: decideApproval
+      summary: Grant or reject a pending approval
+      parameters:
+        - $ref: "#/components/parameters/ApprovalID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecideApprovalRequest"
+      responses:
+        "200":
+          description: The decided approval and `approval.granted` or `approval.rejected` event.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalWithEvent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The approval is no longer pending.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/approvals/{id}/consume:
+    post:
+      tags: [approvals]
+      operationId: consumeApproval
+      summary: Redeem a granted approval exactly once
+      description: The supplied digest must equal the stored action digest.
+      parameters:
+        - $ref: "#/components/parameters/ApprovalID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConsumeApprovalRequest"
+      responses:
+        "200":
+          description: The consumed approval and `approval.consumed` event.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalWithEvent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The approval is not granted, already used, expired, or the digest does not match.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/rooms/{id}/tools:
+    get:
+      tags: [tools]
+      operationId: listToolReceipts
+      summary: List tool receipts in a room
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+        - name: limit
+          in: query
+          description: Maximum number of receipts. The node caps this at 500.
+          schema:
+            type: integer
+            minimum: 0
+            default: 100
+      responses:
+        "200":
+          description: Tool receipts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolReceiptList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+    post:
+      tags: [tools]
+      operationId: requestToolCall
+      summary: Record a tool call before it runs
+      description: |
+        `read` tool calls are allowed directly. `write`, `external`, `shell`,
+        and `native` calls require a granted, unconsumed approval whose action
+        digest binds this exact call.
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RequestToolCall"
+      responses:
+        "201":
+          description: The tool receipt and `tool.requested` event.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolReceiptWithEvent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "409":
+          description: The approval is missing, expired, already used, or does not match the call.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/tools/{id}:
+    get:
+      tags: [tools]
+      operationId: getToolReceipt
+      summary: Read one tool receipt
+      parameters:
+        - $ref: "#/components/parameters/ToolID"
+      responses:
+        "200":
+          description: The tool receipt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolReceipt"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+    patch:
+      tags: [tools]
+      operationId: completeToolCall
+      summary: Complete a tool receipt
+      description: Records the output and marks the call succeeded or failed.
+      parameters:
+        - $ref: "#/components/parameters/ToolID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompleteToolCallRequest"
+      responses:
+        "200":
+          description: The completed receipt and `tool.result` or `tool.failed` event.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolReceiptWithEvent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The receipt was already completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "423":
+          $ref: "#/components/responses/Locked"
 
 components:
   securitySchemes:
@@ -227,6 +1538,7 @@ components:
       in: cookie
       name: toget_token
       description: HttpOnly, SameSite=Strict cookie set when the web UI loads.
+
   parameters:
     RoomID:
       name: id
@@ -237,6 +1549,58 @@ components:
         type: string
         minLength: 1
         maxLength: 128
+    EventID:
+      name: eventID
+      in: path
+      required: true
+      description: Event ID of the message being edited.
+      schema:
+        type: string
+    AttachmentID:
+      name: id
+      in: path
+      required: true
+      description: Attachment ID.
+      schema:
+        type: string
+    AgentID:
+      name: id
+      in: path
+      required: true
+      description: Agent ID.
+      schema:
+        type: string
+    ApprovalID:
+      name: id
+      in: path
+      required: true
+      description: Approval ID.
+      schema:
+        type: string
+    ToolID:
+      name: id
+      in: path
+      required: true
+      description: Tool receipt ID.
+      schema:
+        type: string
+    SearchQuery:
+      name: q
+      in: query
+      required: true
+      description: Case-insensitive substring matched against decrypted local events.
+      schema:
+        type: string
+        minLength: 1
+    SearchLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+
   responses:
     BadRequest:
       description: The request body or parameters are invalid.
@@ -251,6 +1615,12 @@ components:
           schema:
             type: string
             example: Bearer realm="toget"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InvalidCredentials:
+      description: The account password is incorrect.
       content:
         application/json:
           schema:
@@ -273,8 +1643,32 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    Locked:
+      description: The local session is locked. Unlock with `POST /api/v1/session`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: The requested object does not exist or is not visible to this account.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     RoomNotFound:
       description: The room does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: This account or device is not allowed to perform the operation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RemoteReadOnly:
+      description: The room is hosted by another node; this mutation is a home-node decision.
       content:
         application/json:
           schema:
@@ -285,12 +1679,37 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    AttachmentTooLarge:
+      description: The attachment exceeds the 25 MiB per-file limit.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     CorruptEvent:
       description: An event failed its integrity check.
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    RateLimited:
+      description: Too many failed unlock attempts; wait before retrying.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unavailable:
+      description: The requested local subsystem is not configured or not ready.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BadGateway:
+      description: A LAN peer could not be reached or returned an invalid response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
   schemas:
     Error:
       type: object
@@ -310,6 +1729,7 @@ components:
             message:
               type: string
               description: Human-readable explanation.
+
     VersionInfo:
       type: object
       additionalProperties: false
@@ -332,6 +1752,39 @@ components:
           type: string
         arch:
           type: string
+
+    Device:
+      type: object
+      additionalProperties: false
+      required: [id, name, role, fingerprint, current, created_at]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+          examples: [primary]
+        fingerprint:
+          type: string
+          description: Base64url SHA-256 fingerprint of the device signing key.
+        current:
+          type: boolean
+          description: True for the device making this request.
+        last_seen_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        revoked_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
     Account:
       type: object
       additionalProperties: false
@@ -339,7 +1792,7 @@ components:
       properties:
         id:
           type: string
-          description: 14 decimal digits: 8-digit server code plus 6-digit account code.
+          description: "14 decimal digits: 8-digit server code plus 6-digit account code."
           pattern: "^[0-9]{14}$"
           examples: ["68173501840479"]
         name:
@@ -354,10 +1807,23 @@ components:
         created_at:
           type: string
           format: date-time
+        device:
+          $ref: "#/components/schemas/Device"
+
+    DeviceList:
+      type: object
+      additionalProperties: false
+      required: [devices]
+      properties:
+        devices:
+          type: array
+          items:
+            $ref: "#/components/schemas/Device"
+
     Status:
       type: object
       additionalProperties: false
-      required: [version, account, rooms, listen]
+      required: [version, account, rooms, agents, pending_approvals, listen, locked]
       properties:
         version:
           $ref: "#/components/schemas/VersionInfo"
@@ -368,9 +1834,45 @@ components:
         rooms:
           type: integer
           minimum: 0
+        agents:
+          type: integer
+          minimum: 0
+        pending_approvals:
+          type: integer
+          minimum: 0
         listen:
           type: string
           examples: ["127.0.0.1:7718"]
+        locked:
+          type: boolean
+
+    Session:
+      type: object
+      additionalProperties: false
+      required: [has_account, locked, ttl_seconds]
+      properties:
+        has_account:
+          type: boolean
+        locked:
+          type: boolean
+        expires_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        ttl_seconds:
+          type: integer
+          examples: [43200]
+
+    UnlockRequest:
+      type: object
+      additionalProperties: false
+      required: [password]
+      properties:
+        password:
+          type: string
+          format: password
+
     Room:
       type: object
       additionalProperties: false
@@ -382,9 +1884,17 @@ components:
           type: string
           minLength: 1
           maxLength: 80
+        topic:
+          type: string
         home_node:
           type: string
           description: Device ID of the node that orders this room's log.
+        home_server_id:
+          type: string
+          description: Server ID of the home node. Empty until the room is assigned.
+        home_address:
+          type: string
+          description: Pinned HTTPS base URL of the home node, when known.
         created_by:
           type: string
           description: Account ID of the creator.
@@ -394,10 +1904,16 @@ components:
         created_at:
           type: string
           format: date-time
+        archived_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+
     RoomEvent:
       type: object
       additionalProperties: false
-      required: [id, room_id, seq, type, author_id, payload, created_at, hash]
+      required: [id, room_id, seq, epoch, type, author_id, payload, created_at, hash]
       properties:
         id:
           type: string
@@ -407,22 +1923,118 @@ components:
           type: integer
           format: int64
           minimum: 1
+        epoch:
+          type: integer
+          minimum: 1
+          description: Room key epoch used to seal the payload.
         type:
           type: string
           examples: ["message.posted"]
         author_id:
           type: string
+        author_device:
+          type: string
         payload:
           type: object
           additionalProperties: true
+          description: Decrypted event payload. Shape depends on `type`.
         created_at:
           type: string
           format: date-time
         prev_id:
           type: string
+        prev_hash:
+          type: string
         hash:
           type: string
           description: SHA-256 hash chain value over the event fields and payload.
+        signature:
+          type: string
+          description: Base64url Ed25519 signature by the author device.
+
+    RoomMember:
+      type: object
+      additionalProperties: false
+      required: [room_id, account_id, display_name, role, status, joined_at]
+      properties:
+        room_id:
+          type: string
+        account_id:
+          type: string
+        device_id:
+          type: string
+        display_name:
+          type: string
+        role:
+          type: string
+          enum: [owner, member]
+        status:
+          type: string
+          enum: [active, left]
+        joined_at:
+          type: string
+          format: date-time
+        left_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+
+    RoomDevice:
+      type: object
+      additionalProperties: false
+      required: [room_id, device_id, account_id, joined_at]
+      properties:
+        room_id:
+          type: string
+        device_id:
+          type: string
+        account_id:
+          type: string
+        joined_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+
+    Invite:
+      type: object
+      additionalProperties: false
+      required: [id, room_id, created_by, history, expires_at, created_at]
+      properties:
+        id:
+          type: string
+        room_id:
+          type: string
+        secret:
+          type: string
+          description: Opaque single-use secret. Returned only at creation.
+        code:
+          type: string
+          description: Portable `toget-invite:v1:` LAN code. Returned only at creation.
+        created_by:
+          type: string
+        history:
+          type: string
+          enum: [none, recent, all]
+          description: |
+            `none` shares nothing before the join; `recent` shares only the
+            current key epoch; `all` shares every epoch.
+        expires_at:
+          type: string
+          format: date-time
+        used_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
     RoomList:
       type: object
       additionalProperties: false
@@ -432,6 +2044,17 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Room"
+
+    RoomWithEvent:
+      type: object
+      additionalProperties: false
+      required: [room]
+      properties:
+        room:
+          $ref: "#/components/schemas/Room"
+        event:
+          $ref: "#/components/schemas/RoomEvent"
+
     EventList:
       type: object
       additionalProperties: false
@@ -441,6 +2064,526 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RoomEvent"
+
+    MemberList:
+      type: object
+      additionalProperties: false
+      required: [members]
+      properties:
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/RoomMember"
+
+    RoomDeviceList:
+      type: object
+      additionalProperties: false
+      required: [devices]
+      properties:
+        devices:
+          type: array
+          items:
+            $ref: "#/components/schemas/RoomDevice"
+
+    InviteWithEvent:
+      type: object
+      additionalProperties: false
+      required: [invite]
+      properties:
+        invite:
+          $ref: "#/components/schemas/Invite"
+        event:
+          $ref: "#/components/schemas/RoomEvent"
+
+    RedeemInviteRequest:
+      type: object
+      additionalProperties: false
+      required: [secret]
+      properties:
+        secret:
+          type: string
+          description: Raw invite secret or a `toget-invite:v1:` portable code.
+
+    RedeemInviteResponse:
+      type: object
+      additionalProperties: false
+      required: [room]
+      properties:
+        room:
+          $ref: "#/components/schemas/Room"
+        member:
+          oneOf:
+            - $ref: "#/components/schemas/RoomMember"
+            - type: "null"
+        event:
+          oneOf:
+            - $ref: "#/components/schemas/RoomEvent"
+            - type: "null"
+
+    SearchHit:
+      type: object
+      additionalProperties: false
+      required: [room_id, room_name, event_id, seq, type, text, author_id, created_at]
+      properties:
+        room_id:
+          type: string
+        room_name:
+          type: string
+        event_id:
+          type: string
+        seq:
+          type: integer
+          format: int64
+        type:
+          type: string
+        text:
+          type: string
+        author_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    SearchResponse:
+      type: object
+      additionalProperties: false
+      required: [hits]
+      properties:
+        hits:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchHit"
+
+    ReadCursor:
+      type: object
+      additionalProperties: false
+      required: [seq, device_id]
+      properties:
+        seq:
+          type: integer
+          format: int64
+          minimum: 0
+        device_id:
+          type: string
+
+    ReadCursorRequest:
+      type: object
+      additionalProperties: false
+      required: [seq]
+      properties:
+        seq:
+          type: integer
+          format: int64
+          minimum: 0
+
+    Attachment:
+      type: object
+      additionalProperties: false
+      required: [id, room_id, name, mime, size, sha256, created_at]
+      properties:
+        id:
+          type: string
+        room_id:
+          type: string
+        event_id:
+          type: string
+          description: Message event this attachment is linked to, once posted.
+        name:
+          type: string
+        mime:
+          type: string
+        size:
+          type: integer
+          format: int64
+          minimum: 0
+        sha256:
+          type: string
+          description: SHA-256 of the plaintext.
+        created_at:
+          type: string
+          format: date-time
+
+    AttachmentList:
+      type: object
+      additionalProperties: false
+      required: [attachments]
+      properties:
+        attachments:
+          type: array
+          items:
+            $ref: "#/components/schemas/Attachment"
+
+    Audit:
+      type: object
+      additionalProperties: false
+      required: [room, members, devices, events, head, generated_at]
+      properties:
+        room:
+          $ref: "#/components/schemas/Room"
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/RoomMember"
+        devices:
+          type: array
+          items:
+            $ref: "#/components/schemas/RoomDevice"
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/RoomEvent"
+        head:
+          type: string
+        generated_at:
+          type: string
+          format: date-time
+
+    AuditExport:
+      type: object
+      additionalProperties: false
+      required: [audit, verified]
+      properties:
+        audit:
+          $ref: "#/components/schemas/Audit"
+        verified:
+          type: boolean
+
+    Agent:
+      type: object
+      additionalProperties: false
+      required: [id, account_id, name, runtime, status, permissions, created_at]
+      properties:
+        id:
+          type: string
+        account_id:
+          type: string
+        name:
+          type: string
+        runtime:
+          type: string
+          examples: [claude-code]
+        status:
+          type: string
+          enum: [idle, running, waiting_approval, offline, revoked]
+        permissions:
+          type: object
+          additionalProperties: true
+          description: Declared scope such as shell, write, and external permissions.
+        created_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        revoked_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+
+    AgentRoomRef:
+      type: object
+      additionalProperties: false
+      required: [room_id, joined_at]
+      properties:
+        room_id:
+          type: string
+        joined_at:
+          type: string
+          format: date-time
+
+    AgentList:
+      type: object
+      additionalProperties: false
+      required: [agents]
+      properties:
+        agents:
+          type: array
+          items:
+            $ref: "#/components/schemas/Agent"
+
+    AgentWithEvent:
+      type: object
+      additionalProperties: false
+      required: [agent]
+      properties:
+        agent:
+          $ref: "#/components/schemas/Agent"
+        event:
+          $ref: "#/components/schemas/RoomEvent"
+
+    CreateAgentRequest:
+      type: object
+      additionalProperties: false
+      required: [name, runtime]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        runtime:
+          type: string
+          minLength: 1
+          maxLength: 64
+        permissions:
+          type: object
+          additionalProperties: true
+
+    UpdateAgentRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [idle, running, waiting_approval, offline]
+        detail:
+          type: string
+        room_id:
+          type: string
+          description: When set, append an `agent.status` event to this room.
+
+    JoinAgentRequest:
+      type: object
+      additionalProperties: false
+      required: [agent_id]
+      properties:
+        agent_id:
+          type: string
+
+    ApprovalAction:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          examples: [tool.call]
+        tool:
+          type: string
+        target:
+          type: string
+        recipient:
+          type: string
+        amount:
+          type: string
+        currency:
+          type: string
+        parameters:
+          type: object
+          additionalProperties: true
+
+    Approval:
+      type: object
+      additionalProperties: false
+      required: [id, room_id, agent_id, requested_by, action, action_digest, description, status, expires_at, created_at]
+      properties:
+        id:
+          type: string
+        room_id:
+          type: string
+        agent_id:
+          type: string
+        requested_by:
+          type: string
+        action:
+          $ref: "#/components/schemas/ApprovalAction"
+        action_digest:
+          type: string
+          description: SHA-256 of the canonical action; must be supplied when consuming.
+        description:
+          type: string
+        status:
+          type: string
+          enum: [pending, granted, rejected, expired]
+        expires_at:
+          type: string
+          format: date-time
+        decided_by:
+          type: string
+        decided_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        consumed_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    ApprovalList:
+      type: object
+      additionalProperties: false
+      required: [approvals]
+      properties:
+        approvals:
+          type: array
+          items:
+            $ref: "#/components/schemas/Approval"
+
+    ApprovalWithEvent:
+      type: object
+      additionalProperties: false
+      required: [approval]
+      properties:
+        approval:
+          $ref: "#/components/schemas/Approval"
+        event:
+          $ref: "#/components/schemas/RoomEvent"
+
+    RequestApprovalRequest:
+      type: object
+      additionalProperties: false
+      required: [agent_id, action]
+      properties:
+        agent_id:
+          type: string
+        action:
+          $ref: "#/components/schemas/ApprovalAction"
+        ttl_seconds:
+          type: integer
+          minimum: 0
+          maximum: 86400
+          description: Defaults to 900 seconds.
+
+    DecideApprovalRequest:
+      type: object
+      additionalProperties: false
+      required: [decision]
+      properties:
+        decision:
+          type: string
+          enum: [granted, rejected]
+
+    ConsumeApprovalRequest:
+      type: object
+      additionalProperties: false
+      required: [digest]
+      properties:
+        digest:
+          type: string
+
+    ToolReceipt:
+      type: object
+      additionalProperties: false
+      required: [id, room_id, agent_id, kind, tool, input, status, created_at]
+      properties:
+        id:
+          type: string
+        room_id:
+          type: string
+        agent_id:
+          type: string
+        approval_id:
+          type: string
+        kind:
+          type: string
+          enum: [read, write, external, shell, native]
+        tool:
+          type: string
+        input:
+          description: Tool-specific JSON input.
+        output:
+          type: string
+        status:
+          type: string
+          enum: [requested, succeeded, failed]
+        created_at:
+          type: string
+          format: date-time
+
+    ToolReceiptList:
+      type: object
+      additionalProperties: false
+      required: [receipts]
+      properties:
+        receipts:
+          type: array
+          items:
+            $ref: "#/components/schemas/ToolReceipt"
+
+    ToolReceiptWithEvent:
+      type: object
+      additionalProperties: false
+      required: [receipt]
+      properties:
+        receipt:
+          $ref: "#/components/schemas/ToolReceipt"
+        event:
+          $ref: "#/components/schemas/RoomEvent"
+
+    RequestToolCall:
+      type: object
+      additionalProperties: false
+      required: [agent_id, kind, tool, input]
+      properties:
+        agent_id:
+          type: string
+        kind:
+          type: string
+          enum: [read, write, external, shell, native]
+        tool:
+          type: string
+        input:
+          description: Tool-specific JSON input.
+        approval_id:
+          type: string
+          description: Required for every kind except `read`.
+
+    CompleteToolCallRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        output:
+          type: string
+        success:
+          type: boolean
+          default: true
+
+    NodeInfo:
+      type: object
+      additionalProperties: false
+      required: [server_id, server_code, account_id, device_id, endpoint, url, tls_fingerprint, protocol]
+      properties:
+        server_id:
+          type: string
+        server_code:
+          type: string
+        account_id:
+          type: string
+        device_id:
+          type: string
+        endpoint:
+          type: string
+          description: Host and port peers connect to.
+          examples: ["192.168.1.20:7717"]
+        url:
+          type: string
+          description: HTTPS base URL peers use.
+          examples: ["https://192.168.1.20:7717"]
+        tls_fingerprint:
+          type: string
+          description: Hex SHA-256 fingerprint of the node's self-signed certificate.
+          pattern: "^[0-9a-f]{64}$"
+        protocol:
+          type: integer
+
+    NodeInfoResponse:
+      type: object
+      additionalProperties: false
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+        info:
+          $ref: "#/components/schemas/NodeInfo"
+
     CreateAccountRequest:
       type: object
       additionalProperties: false
@@ -460,6 +2603,7 @@ components:
           minLength: 1
           maxLength: 64
           description: Defaults to the machine hostname.
+
     CreateRoomRequest:
       type: object
       additionalProperties: false
@@ -469,16 +2613,50 @@ components:
           type: string
           minLength: 1
           maxLength: 80
-    CreateRoomResponse:
+        topic:
+          type: string
+          maxLength: 280
+
+    UpdateRoomRequest:
       type: object
       additionalProperties: false
-      required: [room, event]
       properties:
-        room:
-          $ref: "#/components/schemas/Room"
-        event:
-          $ref: "#/components/schemas/RoomEvent"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        topic:
+          type: string
+          maxLength: 280
+
     PostMessageRequest:
+      type: object
+      additionalProperties: false
+      required: [text]
+      properties:
+        text:
+          type: string
+          maxLength: 65536
+        format:
+          type: string
+          enum: [plain, markdown]
+          default: plain
+        attachments:
+          type: array
+          maxItems: 10
+          items:
+            type: string
+          description: Attachment IDs uploaded to this room. Local rooms only.
+        mentions:
+          type: array
+          items:
+            type: string
+          description: Agent IDs mentioned in this message.
+        reply_to:
+          type: string
+          description: Event ID being replied to.
+
+    EditMessageRequest:
       type: object
       additionalProperties: false
       required: [text]
@@ -487,3 +2665,16 @@ components:
           type: string
           minLength: 1
           maxLength: 65536
+
+    CreateInviteRequest:
+      type: object
+      additionalProperties: false
+      required: [history]
+      properties:
+        history:
+          type: string
+          enum: [none, recent, all]
+        ttl_seconds:
+          type: integer
+          minimum: 0
+          description: Defaults to 7 days when zero.

@@ -1,0 +1,811 @@
+package node
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/tls"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/sidenor/toget/internal/account"
+	"github.com/sidenor/toget/internal/config"
+	"github.com/sidenor/toget/internal/identity"
+	"github.com/sidenor/toget/internal/room"
+)
+
+const (
+	maxRedeemBody = 2 << 20
+	maxSyncBody   = 1 << 20
+	maxEventBody  = 2 << 20
+	defaultSync   = 3 * time.Second
+)
+
+// Options configures the LAN node transport.
+type Options struct {
+	Accounts     *account.Service
+	Rooms        *room.Service
+	Paths        config.Paths
+	Listen       string
+	Advertise    string
+	SyncInterval time.Duration
+	Logger       *slog.Logger
+}
+
+// Info is the local node's public transport identity.
+type Info struct {
+	ServerID       string `json:"server_id"`
+	ServerCode     string `json:"server_code"`
+	AccountID      string `json:"account_id"`
+	DeviceID       string `json:"device_id"`
+	Endpoint       string `json:"endpoint"`
+	URL            string `json:"url"`
+	TLSFingerprint string `json:"tls_fingerprint"`
+	Protocol       int    `json:"protocol"`
+}
+
+// Service serves the pinned HTTPS node API and synchronizes remote rooms.
+type Service struct {
+	accounts  *account.Service
+	rooms     *room.Service
+	paths     config.Paths
+	listen    string
+	advertise string
+	logger    *slog.Logger
+	syncEvery time.Duration
+
+	mu          sync.RWMutex
+	url         string
+	endpoint    string
+	fingerprint string
+	server      *http.Server
+	listener    net.Listener
+	started     bool
+	closeOnce   sync.Once
+	cancel      context.CancelFunc
+
+	nonces *NonceCache
+	syncMu sync.Mutex
+}
+
+// New creates a node service. A listen address of "off" disables it and
+// returns a nil service.
+func New(opts Options) (*Service, error) {
+	listen := strings.TrimSpace(opts.Listen)
+	if listen == "" {
+		listen = config.DefaultNodeListen
+	}
+	if listen == config.NodeListenOff {
+		return nil, nil
+	}
+	if opts.Accounts == nil || opts.Rooms == nil {
+		return nil, errors.New("node: account and room services are required")
+	}
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	interval := opts.SyncInterval
+	if interval <= 0 {
+		interval = defaultSync
+	}
+	return &Service{
+		accounts: opts.Accounts, rooms: opts.Rooms, paths: opts.Paths,
+		listen: listen, advertise: strings.TrimSpace(opts.Advertise),
+		logger: logger, syncEvery: interval,
+		nonces: NewNonceCache(),
+	}, nil
+}
+
+// Start binds the node listener and begins serving and polling.
+func (s *Service) Start(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	if s.started {
+		s.mu.Unlock()
+		return errors.New("node: already started")
+	}
+	s.mu.Unlock()
+
+	host, _, err := net.SplitHostPort(s.listen)
+	if err != nil {
+		return fmt.Errorf("node: invalid listen address: %w", err)
+	}
+	hosts := []string{host, s.advertise, OutboundIP()}
+	material, err := LoadOrCreateTLS(
+		filepath.Join(s.paths.Home, "node-tls-cert.pem"),
+		filepath.Join(s.paths.Home, "node-tls-key.pem"),
+		hosts,
+	)
+	if err != nil {
+		return err
+	}
+	rawListener, err := net.Listen("tcp", s.listen)
+	if err != nil {
+		return fmt.Errorf("node: listen: %w", err)
+	}
+	hostPort, err := AdvertiseHostPort(rawListener.Addr().String(), s.advertise)
+	if err != nil {
+		rawListener.Close()
+		return err
+	}
+	endpoint := "https://" + hostPort
+
+	s.mu.Lock()
+	s.listener = tls.NewListener(rawListener, &tls.Config{
+		Certificates: []tls.Certificate{material.Certificate},
+		MinVersion:   tls.VersionTLS13,
+	})
+	s.fingerprint = material.Fingerprint
+	s.endpoint = endpoint
+	s.url = NodeURL(endpoint, material.Fingerprint)
+	s.server = &http.Server{
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       45 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    64 << 10,
+	}
+	listener := s.listener
+	server := s.server
+	s.started = true
+	s.mu.Unlock()
+
+	runCtx, cancel := context.WithCancel(ctx)
+	s.mu.Lock()
+	s.cancel = cancel
+	s.mu.Unlock()
+
+	go func() {
+		err := server.Serve(listener)
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			s.logger.Error("node listener stopped", "error", err)
+		}
+	}()
+	go s.syncLoop(runCtx)
+	go func() {
+		<-runCtx.Done()
+		shutdownCtx, done := context.WithTimeout(context.Background(), 5*time.Second)
+		defer done()
+		_ = server.Shutdown(shutdownCtx)
+	}()
+	go func() {
+		if err := s.EnsureAllRooms(ctx); err != nil {
+			s.logger.Warn("could not attach room home addresses", "error", err)
+		}
+	}()
+	s.logger.Info("node transport listening", "url", s.URL())
+	return nil
+}
+
+// Close stops the node transport.
+func (s *Service) Close() error {
+	if s == nil {
+		return nil
+	}
+	var err error
+	s.closeOnce.Do(func() {
+		s.mu.RLock()
+		cancel := s.cancel
+		server := s.server
+		s.mu.RUnlock()
+		if cancel != nil {
+			cancel()
+		}
+		if server != nil {
+			ctx, done := context.WithTimeout(context.Background(), 5*time.Second)
+			defer done()
+			err = server.Shutdown(ctx)
+		}
+	})
+	return err
+}
+
+// URL returns the pinned home URL shown in invitations.
+func (s *Service) URL() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.url
+}
+
+// Fingerprint returns the TLS certificate pin.
+func (s *Service) Fingerprint() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.fingerprint
+}
+
+// ServerID returns this node's stable account server ID.
+func (s *Service) ServerID(ctx context.Context) (string, error) {
+	if s == nil {
+		return "", errors.New("node transport is disabled")
+	}
+	snapshot, err := s.accounts.Get(ctx)
+	if err != nil {
+		return "", err
+	}
+	return snapshot.Account.ServerID, nil
+}
+
+// Info returns the public node identity.
+func (s *Service) Info(ctx context.Context) (*Info, error) {
+	if s == nil {
+		return nil, errors.New("node transport is disabled")
+	}
+	snapshot, err := s.accounts.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	endpoint, url, fingerprint := s.endpoint, s.url, s.fingerprint
+	s.mu.RUnlock()
+	return &Info{
+		ServerID: snapshot.Account.ServerID, ServerCode: snapshot.Account.Code,
+		AccountID: snapshot.Account.ID, DeviceID: snapshot.Device.ID,
+		Endpoint: endpoint, URL: url, TLSFingerprint: fingerprint, Protocol: Protocol,
+	}, nil
+}
+
+func (s *Service) manifest(ctx context.Context) (*Manifest, error) {
+	if s == nil {
+		return nil, errors.New("node transport is disabled")
+	}
+	snapshot, err := s.accounts.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	serverKey, err := s.accounts.UnsealServerKey(snapshot.Server)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	endpoint, fingerprint := s.endpoint, s.fingerprint
+	s.mu.RUnlock()
+	now := time.Now().UTC().Truncate(time.Second)
+	manifest := &Manifest{
+		ServerID: snapshot.Account.ServerID, ServerCode: snapshot.Account.Code,
+		AccountID: snapshot.Account.ID, Endpoint: endpoint, TLSFingerprint: fingerprint,
+		IssuedAt: now, ExpiresAt: now.Add(24 * time.Hour),
+	}
+	if err := signManifest(manifest, serverKey); err != nil {
+		return nil, err
+	}
+	return manifest, nil
+}
+
+// Handler returns the node HTTP handler.
+func (s *Service) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /toget/v1/health", s.handleHealth)
+	mux.HandleFunc("GET /toget/v1/info", s.handleInfo)
+	mux.HandleFunc("GET /toget/v1/manifest", s.handleInfo)
+	mux.HandleFunc("POST /toget/v1/invites/redeem", s.handleRedeem)
+	mux.HandleFunc("POST /toget/v1/rooms/sync", s.handleSync)
+	mux.HandleFunc("POST /toget/v1/rooms/events", s.handleEvent)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		writeNodeError(w, http.StatusNotFound, "not_found", "unknown node endpoint")
+	})
+	return s.secure(mux)
+}
+
+func (s *Service) secure(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "no-store")
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				s.logger.Error("node handler panic", "error", recovered)
+				writeNodeError(w, http.StatusInternalServerError, "internal", "internal node error")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Service) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(w, "ok\n")
+}
+
+func (s *Service) handleInfo(w http.ResponseWriter, r *http.Request) {
+	manifest, err := s.manifest(r.Context())
+	if err != nil {
+		writeNodeError(w, http.StatusServiceUnavailable, "not_ready", "node identity is not ready")
+		return
+	}
+	writeJSON(w, http.StatusOK, manifest)
+}
+
+func (s *Service) handleRedeem(w http.ResponseWriter, r *http.Request) {
+	body, err := readNodeBody(w, r, maxRedeemBody)
+	if err != nil {
+		writeNodeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	var req RedeemRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeNodeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	if err := VerifyRequest(r, body, ed25519.PublicKey(req.Joiner.SigningPublicKey), s.nonces, time.Now()); err != nil {
+		writeNodeError(w, http.StatusUnauthorized, "unauthorized", "invite request signature is invalid")
+		return
+	}
+	actor, err := s.localActor(r.Context())
+	if err != nil {
+		writeNodeError(w, http.StatusServiceUnavailable, "not_ready", "home node identity is not ready")
+		return
+	}
+	joinedRoom, _, _, invite, err := s.rooms.RedeemInviteFor(r.Context(), req.Secret, req.Joiner, actor)
+	if err != nil {
+		s.writeRoomError(w, err, 0)
+		return
+	}
+	if _, err := s.EnsureRoomHome(r.Context(), joinedRoom.ID); err != nil {
+		s.logger.Warn("could not record room home address", "room", joinedRoom.ID, "error", err)
+	}
+	bundle, err := s.rooms.ExportJoinBundle(r.Context(), joinedRoom.ID, req.Joiner.DeviceID, invite.History)
+	if err != nil {
+		s.writeRoomError(w, err, 0)
+		return
+	}
+	bundle.InviteID = invite.ID
+	bundle.History = invite.History
+	writeJSON(w, http.StatusOK, bundle)
+}
+
+func (s *Service) handleSync(w http.ResponseWriter, r *http.Request) {
+	body, err := readNodeBody(w, r, maxSyncBody)
+	if err != nil {
+		writeNodeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	var req syncRequest
+	if err := json.Unmarshal(body, &req); err != nil || req.RoomID == "" || req.After < 0 {
+		writeNodeError(w, http.StatusBadRequest, "invalid_request", "room_id and after are required")
+		return
+	}
+	device, err := s.requestDevice(r, req.RoomID)
+	if err != nil {
+		writeNodeError(w, http.StatusForbidden, "forbidden", "device is not trusted in this room")
+		return
+	}
+	if !ConstantTimeEqual(r.Header.Get(HeaderAccount), device.AccountID) {
+		writeNodeError(w, http.StatusForbidden, "forbidden", "account does not match the device")
+		return
+	}
+	if err := VerifyRequest(r, body, device.PublicKey, s.nonces, time.Now()); err != nil {
+		writeNodeError(w, http.StatusUnauthorized, "unauthorized", "sync request signature is invalid")
+		return
+	}
+	bundle, err := s.rooms.ExportSync(r.Context(), req.RoomID, device.DeviceID, req.After, 0)
+	if err != nil {
+		s.writeRoomError(w, err, 0)
+		return
+	}
+	writeJSON(w, http.StatusOK, bundle)
+}
+
+func (s *Service) handleEvent(w http.ResponseWriter, r *http.Request) {
+	body, err := readNodeBody(w, r, maxEventBody)
+	if err != nil {
+		writeNodeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	var req struct {
+		Event room.WireEvent `json:"event"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.Event.RoomID == "" || req.Event.ID == "" {
+		writeNodeError(w, http.StatusBadRequest, "invalid_request", "event is required")
+		return
+	}
+	event := req.Event.ToEvent()
+	if event.AuthorDevice != r.Header.Get(HeaderDevice) || event.AuthorID != r.Header.Get(HeaderAccount) {
+		writeNodeError(w, http.StatusForbidden, "forbidden", "event author does not match the request identity")
+		return
+	}
+	device, err := s.requestDevice(r, event.RoomID)
+	if err != nil {
+		writeNodeError(w, http.StatusForbidden, "forbidden", "device is not trusted in this room")
+		return
+	}
+	if !ConstantTimeEqual(device.AccountID, event.AuthorID) {
+		writeNodeError(w, http.StatusForbidden, "forbidden", "event author is not the request device")
+		return
+	}
+	if err := VerifyRequest(r, body, device.PublicKey, s.nonces, time.Now()); err != nil {
+		writeNodeError(w, http.StatusUnauthorized, "unauthorized", "event request signature is invalid")
+		return
+	}
+	if err := s.rooms.AcceptRemoteEvent(r.Context(), &event); err != nil {
+		head, _ := s.rooms.LastSeq(r.Context(), event.RoomID)
+		if errors.Is(err, room.ErrInvalidEvent) {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": map[string]string{"code": "conflict", "message": "event does not continue the room log"},
+				"head":  head,
+			})
+			return
+		}
+		s.writeRoomError(w, err, head)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": event.ID, "seq": event.Seq})
+}
+
+func (s *Service) requestDevice(r *http.Request, roomID string) (*room.RoomDevice, error) {
+	deviceID := r.Header.Get(HeaderDevice)
+	if deviceID == "" {
+		return nil, errors.New("missing device header")
+	}
+	return s.rooms.GetDevice(r.Context(), roomID, deviceID)
+}
+
+func (s *Service) writeRoomError(w http.ResponseWriter, err error, head int64) {
+	switch {
+	case errors.Is(err, room.ErrInviteInvalid), errors.Is(err, room.ErrNotFound):
+		writeNodeError(w, http.StatusNotFound, "not_found", "room or invite was not found")
+	case errors.Is(err, room.ErrInviteExpired):
+		writeNodeError(w, http.StatusGone, "invite_expired", "invite has expired")
+	case errors.Is(err, room.ErrInviteUsed):
+		writeNodeError(w, http.StatusConflict, "invite_used", "invite has already been used")
+	case errors.Is(err, room.ErrMemberExists):
+		writeNodeError(w, http.StatusConflict, "already_member", "account is already a room member")
+	case errors.Is(err, room.ErrNotMember), errors.Is(err, room.ErrForbidden):
+		writeNodeError(w, http.StatusForbidden, "forbidden", "room action is not allowed")
+	case errors.Is(err, room.ErrInviteSecret), errors.Is(err, room.ErrInvalidEvent):
+		writeNodeError(w, http.StatusBadRequest, "invalid_request", "room request is invalid")
+	case errors.Is(err, room.ErrRemoteReadOnly):
+		writeNodeError(w, http.StatusConflict, "remote_room", "room is hosted by another node")
+	default:
+		s.logger.Warn("node request failed", "error", err)
+		writeNodeError(w, http.StatusInternalServerError, "internal", "room operation failed")
+	}
+	_ = head
+}
+
+func readNodeBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, error) {
+	if r.Body == nil {
+		return nil, errors.New("request body is required")
+	}
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
+	if err != nil {
+		return nil, errors.New("request body is too large or unreadable")
+	}
+	if len(data) == 0 {
+		return nil, errors.New("request body is empty")
+	}
+	return data, nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		status = http.StatusInternalServerError
+		data = []byte(`{"error":{"code":"internal","message":"could not encode response"}}`)
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+	w.WriteHeader(status)
+	_, _ = w.Write(data)
+}
+
+func writeNodeError(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
+}
+
+// localActor builds the home node's own signing identity.
+func (s *Service) localActor(ctx context.Context) (room.Actor, error) {
+	snapshot, err := s.accounts.Get(ctx)
+	if err != nil {
+		return room.Actor{}, err
+	}
+	if snapshot.Device.RevokedAt != nil {
+		return room.Actor{}, errors.New("local device is revoked")
+	}
+	cert, err := identity.VerifyDeviceCertificate([]byte(snapshot.Device.Certificate), snapshot.Account.PublicKey)
+	if err != nil {
+		return room.Actor{}, fmt.Errorf("device certificate: %w", err)
+	}
+	if cert.DeviceID != snapshot.Device.ID || cert.AccountID != snapshot.Account.ID {
+		return room.Actor{}, errors.New("device certificate does not match the local device")
+	}
+	key, err := s.accounts.UnsealDeviceKey(snapshot.Device)
+	if err != nil {
+		return room.Actor{}, err
+	}
+	return room.Actor{
+		AccountID: snapshot.Account.ID, DeviceID: snapshot.Device.ID,
+		DisplayName: snapshot.Account.Name, SigningKey: key,
+		AccountPublicKey:    snapshot.Account.PublicKey,
+		EncryptionPublicKey: snapshot.Device.EncryptionPublicKey,
+	}, nil
+}
+
+func (s *Service) localJoiner(ctx context.Context) (room.RemoteJoiner, *account.Snapshot, error) {
+	snapshot, err := s.accounts.Get(ctx)
+	if err != nil {
+		return room.RemoteJoiner{}, nil, err
+	}
+	return room.RemoteJoiner{
+		AccountID: snapshot.Account.ID, DeviceID: snapshot.Device.ID,
+		DisplayName:         snapshot.Account.Name,
+		AccountPublicKey:    snapshot.Account.PublicKey,
+		SigningPublicKey:    snapshot.Device.PublicKey,
+		EncryptionPublicKey: snapshot.Device.EncryptionPublicKey,
+		DeviceCertificate:   []byte(snapshot.Device.Certificate),
+	}, snapshot, nil
+}
+
+// LocalActor returns the local account's room signing identity.
+func (s *Service) LocalActor(ctx context.Context) (room.Actor, error) {
+	return s.localActor(ctx)
+}
+
+// InviteCode wraps a room invite secret for a peer.
+func (s *Service) InviteCode(ctx context.Context, roomID, secret, roomName string) (string, error) {
+	if s == nil || s.URL() == "" {
+		return "", errors.New("node transport is disabled")
+	}
+	serverID, err := s.ServerID(ctx)
+	if err != nil {
+		return "", err
+	}
+	return EncodeInvite(InviteCode{
+		Protocol: Protocol, Secret: secret, URL: s.URL(),
+		ServerID: serverID, RoomID: roomID, RoomName: roomName,
+	})
+}
+
+// IsRemoteRoom reports whether a room is hosted by another node.
+func (s *Service) IsRemoteRoom(ctx context.Context, roomID string) (bool, error) {
+	if s == nil {
+		return false, nil
+	}
+	record, err := s.rooms.GetRoom(ctx, roomID)
+	if err != nil {
+		return false, err
+	}
+	snapshot, err := s.accounts.Get(ctx)
+	if err != nil {
+		return false, nil
+	}
+	return record.HomeServerID != "" && record.HomeServerID != snapshot.Account.ServerID, nil
+}
+
+// EnsureRoomHome attaches this node's address to a locally hosted room.
+func (s *Service) EnsureRoomHome(ctx context.Context, roomID string) (*room.Room, error) {
+	if s == nil || s.URL() == "" {
+		return nil, errors.New("node transport is disabled")
+	}
+	snapshot, err := s.accounts.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	record, err := s.rooms.GetRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if record.HomeServerID != "" && record.HomeServerID != snapshot.Account.ServerID {
+		return record, nil
+	}
+	if record.HomeNode != snapshot.Device.ID && record.HomeServerID == "" {
+		return record, nil
+	}
+	if record.HomeServerID == snapshot.Account.ServerID && record.HomeAddress == s.URL() {
+		return record, nil
+	}
+	return s.rooms.SetHomeInfo(ctx, roomID, snapshot.Account.ServerID, s.URL())
+}
+
+// EnsureAllRooms backfills home addresses for locally created rooms.
+func (s *Service) EnsureAllRooms(ctx context.Context) error {
+	if s == nil || s.URL() == "" {
+		return nil
+	}
+	rooms, err := s.rooms.ListRooms(ctx)
+	if err != nil {
+		return err
+	}
+	for i := range rooms {
+		if _, err := s.EnsureRoomHome(ctx, rooms[i].ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Join redeems a portable invite code on this node.
+func (s *Service) Join(ctx context.Context, rawCode string) (*room.Room, error) {
+	code, err := DecodeInvite(rawCode)
+	if err != nil {
+		return nil, err
+	}
+	joiner, snapshot, err := s.localJoiner(ctx)
+	if err != nil {
+		return nil, err
+	}
+	deviceKey, err := s.accounts.UnsealDeviceKey(snapshot.Device)
+	if err != nil {
+		return nil, err
+	}
+	client, err := NewClientForURL(code.URL, joiner.AccountID, joiner.DeviceID, deviceKey)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+	bundle, err := client.Redeem(ctx, code.Secret, joiner)
+	if err != nil {
+		return nil, err
+	}
+	if bundle.Room.ID != code.RoomID || bundle.Room.HomeServerID != code.ServerID {
+		return nil, errors.New("invite response does not match the invite code")
+	}
+	encryptionKey, err := s.accounts.UnsealDeviceEncryptionKey(snapshot.Device)
+	if err != nil {
+		return nil, err
+	}
+	joined, err := s.rooms.ImportJoinBundle(ctx, bundle, snapshot.Device.ID, encryptionKey)
+	if err != nil {
+		return nil, err
+	}
+	return joined, nil
+}
+
+// SyncRoom pulls incremental changes for one remote room.
+func (s *Service) SyncRoom(ctx context.Context, roomID string) (int, error) {
+	if s == nil {
+		return 0, nil
+	}
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+
+	remote, err := s.IsRemoteRoom(ctx, roomID)
+	if err != nil || !remote {
+		return 0, err
+	}
+	record, err := s.rooms.GetRoom(ctx, roomID)
+	if err != nil {
+		return 0, err
+	}
+	if record.HomeAddress == "" {
+		return 0, errors.New("remote room has no home address")
+	}
+	snapshot, err := s.accounts.Get(ctx)
+	if err != nil {
+		return 0, err
+	}
+	key, err := s.accounts.UnsealDeviceKey(snapshot.Device)
+	if err != nil {
+		return 0, err
+	}
+	client, err := NewClientForURL(record.HomeAddress, snapshot.Account.ID, snapshot.Device.ID, key)
+	if err != nil {
+		return 0, err
+	}
+	defer client.Close()
+	last, err := s.rooms.LastSeq(ctx, roomID)
+	if err != nil {
+		return 0, err
+	}
+	bundle, err := client.Sync(ctx, roomID, last)
+	if err != nil {
+		return 0, err
+	}
+	if bundle.Room.ID != roomID || bundle.Room.HomeServerID != record.HomeServerID {
+		return 0, errors.New("sync response does not match the room")
+	}
+	encryptionKey, err := s.accounts.UnsealDeviceEncryptionKey(snapshot.Device)
+	if err != nil {
+		return 0, err
+	}
+	return s.rooms.ImportSync(ctx, bundle, snapshot.Device.ID, encryptionKey)
+}
+
+// SyncAll pulls every remote room.
+func (s *Service) SyncAll(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	rooms, err := s.rooms.ListRooms(ctx)
+	if err != nil {
+		s.logger.Warn("sync: list rooms", "error", err)
+		return
+	}
+	for i := range rooms {
+		remote, err := s.IsRemoteRoom(ctx, rooms[i].ID)
+		if err != nil || !remote {
+			continue
+		}
+		if _, err := s.SyncRoom(ctx, rooms[i].ID); err != nil {
+			s.logger.Debug("sync: room failed", "room", rooms[i].ID, "error", err)
+		}
+	}
+}
+
+func (s *Service) syncLoop(ctx context.Context) {
+	ticker := time.NewTicker(s.syncEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.SyncAll(ctx)
+		}
+	}
+}
+
+// PostRemoteMessage forwards a message to its home node and installs the
+// accepted event locally. It retries once after a sequence conflict.
+func (s *Service) PostRemoteMessage(ctx context.Context, roomID string, actor room.Actor, body room.MessagePostedPayload) (*room.Event, error) {
+	remote, err := s.IsRemoteRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if !remote {
+		return s.rooms.PostMessage(ctx, roomID, actor, body)
+	}
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if _, err := s.SyncRoom(ctx, roomID); err != nil {
+			return nil, fmt.Errorf("sync before send: %w", err)
+		}
+		event, err := s.rooms.PrepareMessage(ctx, roomID, actor, body)
+		if err != nil {
+			return nil, err
+		}
+		record, err := s.rooms.GetRoom(ctx, roomID)
+		if err != nil {
+			return nil, err
+		}
+		snapshot, err := s.accounts.Get(ctx)
+		if err != nil {
+			return nil, err
+		}
+		key, err := s.accounts.UnsealDeviceKey(snapshot.Device)
+		if err != nil {
+			return nil, err
+		}
+		client, err := NewClientForURL(record.HomeAddress, snapshot.Account.ID, snapshot.Device.ID, key)
+		if err != nil {
+			return nil, err
+		}
+		err = client.PostEvent(ctx, event)
+		client.Close()
+		if err != nil {
+			lastErr = err
+			var remoteErr *RemoteError
+			if errors.As(err, &remoteErr) && remoteErr.Status == http.StatusConflict {
+				continue
+			}
+			return nil, err
+		}
+		if err := s.rooms.AppendRemote(ctx, event); err != nil {
+			if _, syncErr := s.SyncRoom(ctx, roomID); syncErr == nil {
+				if opened, getErr := s.rooms.GetOpenedEvent(ctx, roomID, event.ID); getErr == nil {
+					return opened, nil
+				}
+			}
+			return nil, err
+		}
+		return s.rooms.GetOpenedEvent(ctx, roomID, event.ID)
+	}
+	return nil, lastErr
+}

@@ -5,7 +5,7 @@ Toget has two contracts, and this directory holds one of them.
 | Contract | Location | Transport | Encoding | Used by |
 | --- | --- | --- | --- | --- |
 | **Local API** | `api/openapi.yaml` | HTTP on `127.0.0.1:7718` or a Unix socket | JSON | Local web UI, CLI, Agents on the same machine |
-| **Node protocol** | `proto/toget/v1/` | QUIC on `7717`, WSS/TCP `443` fallback | Protobuf | Nodes, devices, relays, account hosts |
+| **Node protocol** | `internal/node/` (LAN); `proto/toget/v1/` (target) | HTTPS on `7717` today; QUIC/WSS planned | JSON today; Protobuf planned | Nodes on the same LAN |
 
 The local API is what a user or a local program can inspect and script. The node protocol is what machines speak to each other. They share domain types but not wire formats.
 
@@ -14,12 +14,16 @@ The local API is what a user or a local program can inspect and script. The node
 - `openapi.yaml` is the source of truth.
 - Authentication: a per-session token written to a user-only file, plus `Origin` checks for browser requests.
 - Errors use a compact, stable shape: `{"error": {"code": "...", "message": "..."}}`.
-- Pagination is cursor-based (`after` plus `limit`).
-- Idempotency keys for task creation and approval decisions.
+- Timelines use a sequence cursor (`after` plus `limit`); list endpoints return
+  the current bounded set.
+- Approval consumption is single-use and bound to the exact action digest.
+  Idempotency keys for arbitrary task creation are not implemented yet.
 
-The first implementation covers health, status, account, rooms, events, and
-messages. Agents, approvals, devices, relay settings, and audit endpoints are
-still design-only; they will be added to the same document as they land.
+The implementation covers health, session, account, devices, rooms, events,
+messages, invites, node sync, attachments, search, read cursors, audit,
+Agents, approvals, and tools. `openapi.yaml` documents every route currently
+registered in `internal/api/server.go`. When the two disagree, the route table
+is authoritative; update the YAML in the same change.
 
 Planned generated output (not wired yet):
 

@@ -2,6 +2,14 @@
 
 Toget is one repository containing the node, the official service, the local web UI, the reset page, shared packages, deployment assets, and documentation.
 
+> **Current implementation:** the working tree contains `cmd/toget`,
+> `cmd/toget-official`, `internal/{account,agent,api,approval,backup,config,identity,node,protocol,room,session,storage,tool,ui,vault,version}`,
+> `web/app`, `api/`, `proto/`, and `docs/`. The tree below is the target
+> layout; directories such as `relay`, `transport`, `sync`, `official`,
+> `deploy`, `tests`, and `examples` are planned, not present yet. The LAN node
+> lives in `internal/node`, and remote-room sync/lifecycle code lives in
+> `internal/room/remote.go`.
+
 ## Top-level tree
 
 ```text

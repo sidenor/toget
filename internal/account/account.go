@@ -400,6 +400,18 @@ func parsePasswordHash(encoded string) (uint32, uint32, uint8, []byte, []byte, e
 	return memory, iterations, parallelism, salt, hash, nil
 }
 
+// UnsealServerKey decrypts the node server signing key.
+func (s *Service) UnsealServerKey(server *Server) (ed25519.PrivateKey, error) {
+	raw, err := s.vault.OpenBytes(server.PrivateKey, aadServerKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) != ed25519.PrivateKeySize {
+		return nil, errors.New("server key has the wrong size")
+	}
+	return ed25519.PrivateKey(raw), nil
+}
+
 // UnsealPrivateKey decrypts the account signing key for a trusted local caller.
 func (s *Service) UnsealPrivateKey(account *Account) (ed25519.PrivateKey, error) {
 	raw, err := s.vault.OpenBytes(account.PrivateKey, aadAccountKey)

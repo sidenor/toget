@@ -1,6 +1,11 @@
 # Deployment (Draft)
 
 > Status: design draft. Installation commands and file paths are the intended shape, not final.
+>
+> **Implemented today:** `toget serve` provides the local account, vault,
+> SQLite log, loopback API/UI, and a same-LAN HTTPS node. The official
+> service, relay, public account hosting, NAT traversal, and packaged
+> installers described below are not implemented yet.
 
 Toget is deployed as a **node**: one `toget` binary that can act as a daemon, a self-hosted account host, a relay, or the local CLI. Most users run it on one machine and never think about the rest.
 
@@ -29,10 +34,10 @@ The account host is chosen at registration and cannot be moved silently. Moving 
 
 | Port | Purpose | Exposure |
 | --- | --- | --- |
-| `7717` | Node protocol (QUIC, WSS fallback) | Reachable by peers, or outbound-only through a relay |
-| `7718` | Local API and web UI | `127.0.0.1` or a Unix socket only |
+| `7717` | LAN node protocol (HTTPS with a pinned Ed25519 certificate) | Reachable by peers on the same LAN; `--no-node` or `--node-listen off` disables it |
+| `7718` | Local API and web UI | `127.0.0.1` only |
 
-Do not expose `7718` to the network. The local UI is not designed to be a public web app.
+Do not expose `7718` to the network. The local UI is not designed to be a public web app. `7717` is self-authenticated by the certificate pin carried in invite codes; do not put it behind a TLS-terminating proxy, because that changes the certificate the peer pins.
 
 ## Install
 
@@ -67,7 +72,7 @@ services:
     image: ghcr.io/sidenor/toget:latest
     restart: unless-stopped
     ports:
-      - "7717:7717/udp"
+      - "7717:7717/tcp"
       - "7717:7717/tcp"
     volumes:
       - toget-data:/var/lib/toget

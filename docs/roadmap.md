@@ -12,7 +12,7 @@ Toget is at the very beginning. The order below is chosen so that each milestone
 - [x] Go module, `cmd/toget`, `cmd/toget-official`, health check
 - [x] Protobuf package `toget/v1` with the first messages
 - [x] OpenAPI skeleton for the local API
-- [ ] React app shell with routing and a design-system baseline
+- [x] React app shell with routing and a design-system baseline
 - [x] `Taskfile` with `dev`, `test`, `generate`, `build`
 - [ ] CI: Go tests, web build, lint, cross-platform build
 - [x] ADRs for the account model, endpoint trust, mesh protocol, and versioning
@@ -23,14 +23,14 @@ Toget is at the very beginning. The order below is chosen so that each milestone
 
 **Goal:** prove the local loop without a network.
 
-- Account creation on the local machine (self-hosted mode), 14-digit ID
-- Device identity and the signed server manifest
-- SQLite storage for accounts, rooms, events, and the outbox
-- Local web UI: create a room, send messages, see the timeline
-- CLI: `toget account create`, `toget room create`, `toget send`, `toget messages`
-- Local API with a session token and origin checks
-- Append-only event log with per-room ordering
-- Encrypted local storage at rest
+- [x] Account creation on the local machine (self-hosted mode), 14-digit ID
+- [x] Device identity and the signed server manifest
+- [x] SQLite storage for accounts, rooms, events, and the outbox
+- [x] Local web UI: create a room, send messages, see the timeline
+- [x] CLI: `toget account create`, `toget room create`, `toget send`, `toget messages`
+- [x] Local API with a session token and origin checks
+- [x] Append-only event log with per-room ordering
+- [x] Encrypted local storage at rest
 
 **Done when:** a user can install the binary, create an account, create a room, and exchange messages with themselves on two local clients, entirely offline.
 
@@ -38,14 +38,20 @@ Toget is at the very beginning. The order below is chosen so that each milestone
 
 **Goal:** prove the room and identity model across machines.
 
-- Node-to-node handshake over QUIC on the LAN
-- Device enrollment approved by an existing device
-- Invite a second account into a room; membership event and epoch rotation
-- End-to-end envelope: outer/inner split, HPKE key wrapping, AEAD, AAD binding
-- Room home node: ordering, replication, per-participant copies
-- History sync with cursors and idempotent replay
-- New-member history choice: none / recent / all, with a system notice
-- Direct connection only; discovery by mDNS or a manual address; no relay yet
+- [x] Node-to-node handshake over pinned HTTPS on the LAN (QUIC is still planned)
+- [ ] Device enrollment approved by an existing device
+- [x] Invite a second account into a room; membership event and epoch rotation
+- [x] End-to-end envelope: sealed payloads, X25519 + HKDF key wrapping, AEAD, AAD binding (HPKE migration optional)
+- [x] Room home node: ordering, replication, per-participant copies, single retry on sequence conflict
+- [x] History sync with cursors and idempotent replay
+- [x] New-member history choice: none / recent (current epoch) / all, with a system notice
+- [x] Direct connection only; address and pin carried in the invite code (mDNS and relay pending)
+
+**Status:** the LAN milestone works for message rooms. Remote-room
+attachments, remote leave/archive, device enrollment, mDNS, QUIC, and relay
+fallback are not done. A packet capture still shows metadata (account/device
+IDs in signed request headers) and sealed payloads; it does not show message
+plaintext.
 
 **Done when:** two people on two machines in the same LAN share a room, see each other's messages, and a new member joins without seeing old messages by default. A packet capture on either machine shows no plaintext room content on the wire.
 
@@ -53,15 +59,20 @@ Toget is at the very beginning. The order below is chosen so that each milestone
 
 **Goal:** make the room useful for real work.
 
-- Agent identity and registration on a device
-- Claude Code as the first runtime, driven by `toget` CLI and a skill
-- Session per (Agent, Room) with catch-up on missed messages
-- Mention-based invocation; no invocation without a mention
-- Tool receipts in the timeline: `tool.requested`, `tool.result`, `tool.failed`
-- Permission scopes and approval gates for `external.send`, `money.spend`, `destructive`
-- Action digest binding, expiry, single-use approvals
-- Agent status cards: idle, running, waiting for approval
-- Shared Agent: owner visibility warning on join
+- [x] Agent identity and registration on a device
+- [ ] Claude Code as the first runtime, driven by `toget` CLI and a skill
+- [ ] Session per (Agent, Room) with catch-up on missed messages
+- [ ] Mention-based invocation; no invocation without a mention
+- [x] Tool receipts in the timeline: `tool.requested`, `tool.result`, `tool.failed`
+- [x] Permission scopes and approval gates for external/shell/write/native actions
+- [x] Action digest binding, expiry, single-use approvals
+- [x] Agent status cards: idle, running, waiting for approval
+- [ ] Shared Agent: owner visibility warning on join
+
+**Status:** the control plane exists — Agents can register, join rooms, show
+status, request approvals, and record tool receipts. The runtime loop (wake
+on mention, catch up, execute, stream results) is not implemented; a local
+program drives those APIs today.
 
 **Done when:** a user asks an Agent in a room to do a task, the Agent proposes a risky action, the user approves it in the conversation, and the result appears in the same thread with a complete audit trail.
 

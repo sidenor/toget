@@ -30,11 +30,19 @@ Toget is the room where people and Agents meet instead: one timeline, real ident
 
 Toget is not a model provider, a public social network, or an enterprise admin console. It is a private place for people and their Agents to get work done.
 
-## Try the local loop
+## Try it on one machine or a LAN
 
-Toget currently runs on one machine: create an account, create a room, and
-send messages to yourself through the CLI or the web UI. There is no network
-transport yet, so two machines cannot talk to each other.
+Toget runs as a local node with an encrypted room log. On one machine, create
+an account, create a room, and send messages through the CLI or the web UI.
+
+Two machines on the same LAN can share a room today. Both run `toget serve`;
+the inviter creates an invite code and the other person redeems it. Toget
+connects over pinned HTTPS on port `7717`, so the code carries the node
+address and the certificate fingerprint. History is shared only if the
+inviter chooses it: none, the current epoch, or all epochs.
+
+There is no relay, directory, NAT traversal, or official service yet, so
+machines that cannot reach each other directly cannot share a room.
 
 Requirements: Go 1.27+, Node 24, and pnpm 9. Or install the pinned toolchain
 with `mise install`.
@@ -58,6 +66,25 @@ go run ./cmd/toget room create --name General
 go run ./cmd/toget send "hello from this machine"
 go run ./cmd/toget messages
 ```
+
+To invite a second machine on the same LAN, keep `toget serve` running on both.
+On the inviter's machine:
+
+```bash
+toget room invite <room-id> --history none
+# sends output like: toget-invite:v1:eyJ...
+```
+
+On the other machine:
+
+```bash
+toget join 'toget-invite:v1:eyJ...'
+```
+
+The web UI has the same flow: **Room details → Invite someone** shows the code,
+and **Join with code** in the room sidebar redeems it. If the node advertises
+the wrong interface, set `--node-advertise <host:port>` or
+`node_advertise` in `config.json`. `--no-node` keeps a node local-only.
 
 Data lives in the per-user data directory (`~/.local/share/toget` on Linux,
 `~/Library/Application Support/Toget` on macOS, `%LOCALAPPDATA%\Toget` on
@@ -83,13 +110,19 @@ rejects updates and deletes.
 
 ## Status
 
-**Early implementation — the local loop works.** The M0 scaffold is in place
-and the first M1 slice runs: account and device identity, the 14-digit ID,
-SQLite storage, an encrypted append-only event log, the loopback API, the
-CLI, and the React web UI. The node protocol, LAN transport, end-to-end
-envelope, rooms with more than one member, and Agents are not implemented.
+**Early implementation — local and same-LAN rooms work.** The current build
+has account and device identity, end-to-end encrypted room epochs, an
+encrypted hash-chained event log, attachments, backup and restore, the
+loopback API, the CLI, and a bilingual React web UI. Two nodes on the same
+LAN can join a room with a portable invite code, exchange messages, and sync
+history. Agents can be registered, joined to rooms, and gated through local
+approval and tool-receipt cards.
 
-Many parts are incomplete, and some ideas will be redesigned as we learn.
+Not implemented yet: a hosted relay or directory, NAT traversal, attachment
+upload into remote rooms, remote room leave/archive administration, and a
+built-in model runtime.
+Agents are controlled through the local API; an external runtime has to drive
+them. Many parts will change as we learn.
 That is exactly why the project is open this early. If you care about
 local-first software, privacy, open protocols, or humans and Agents working
 together, you are welcome to help shape it. You do not need to be an expert in
@@ -131,9 +164,13 @@ Toget 是一个开源、本地优先的空间：人和自己的 Agent 在同一�
 
 Toget 不是一个模型供应商，不是公开社交网络，也不是企业管理后台。它是人和自己的 Agent 一起做事的一个私密空间。
 
-### 本地试用
+### 本地或局域网试用
 
-目前可以在单机上跑通第一个闭环：创建账号、创建房间、在命令行或网页里发消息。还没有网络传输，两台机器暂时不能互通。
+Toget 以本地节点的方式运行。单机上可以创建账号、创建房间，在命令行或网页里发消息。
+
+同一局域网内的两台机器现在可以共享房间：两边都运行 `toget serve`，邀请方生成邀请码，另一台用邀请码加入。连接走固定证书指纹的 HTTPS（端口 `7717`），邀请码里带着节点地址和证书指纹。历史是否共享由邀请方决定：不共享、只共享当前一代、或共享全部。
+
+目前还没有中继、目录、NAT 穿透或官方服务，所以两台机器如果无法直接连通，就还不能共享房间。
 
 ```bash
 pnpm install
@@ -141,7 +178,7 @@ pnpm --filter @toget/app build
 go run ./cmd/toget serve
 ```
 
-打开 <http://127.0.0.1:7718> 创建账号即可。也可以让服务在后台运行，再用 CLI：
+打开 <http://127.0.0.1:7718> 创建账号。也可以让服务在后台运行，再用 CLI：
 
 ```bash
 go run ./cmd/toget account create --name Aiden
@@ -149,6 +186,21 @@ go run ./cmd/toget room create --name General
 go run ./cmd/toget send "你好"
 go run ./cmd/toget messages
 ```
+
+局域网邀请：邀请方保持 `toget serve` 运行，然后执行：
+
+```bash
+toget room invite <房间ID> --history none
+# 输出类似：toget-invite:v1:eyJ...
+```
+
+另一台机器执行：
+
+```bash
+toget join 'toget-invite:v1:eyJ...'
+```
+
+网页端同样支持：**房间详情 → 邀请新成员** 会显示邀请码，侧边栏的 **用邀请码加入** 可以兑换。如果节点广播了错误的网卡地址，启动时加 `--node-advertise <host:port>`，或在配置里设置 `node_advertise`；`--no-node` 可以只保留本地节点。
 
 数据默认放在用户数据目录（Linux 为 `~/.local/share/toget`），可用 `TOGET_HOME` 指定。私钥和事件内容在本地加密存储，事件日志只可追加、带哈希链。目前密码只保存为 Argon2id 校验值，用于以后的登录，还不能解锁本地保险库；请依赖系统权限和全盘加密保护数据目录。
 
@@ -164,4 +216,6 @@ go run ./cmd/toget messages
 - [代码结构](docs/repo-layout.md)
 - [路线图](docs/roadmap.md)
 
-**早期实现：本地闭环已经可用。** M0 脚手架已就位，M1 的第一块可以运行：账号与设备身份、14 位 ID、SQLite 存储、加密的只追加事件日志、本地 API、CLI 和 React 网页。节点协议、局域网传输、端到端信封、多人房间和 Agent 还没有实现，很多地方仍会调整。欢迎开 issue 关注、分享场景，或直接参与建设。项目理念见 [docs/philosophy.md](docs/philosophy.md)，参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+**早期实现：本地和同局域网房间已经可用。** 当前版本有账号与设备身份、端到端加密的房间密钥代次、加密的哈希链事件日志、附件、备份恢复、本地 API、CLI 和双语 React 网页。同一局域网内的两个节点可以用邀请码加入房间、互发消息并同步历史。Agent 可以注册、加入房间，并通过本地审批和工具回执卡片受控。
+
+还没有实现：托管中继或目录、NAT 穿透、向远程房间上传附件、远程房间的退出/归档管理、以及内置模型运行时。Agent 通过本地 API 受控，需要外部运行时来驱动。很多地方仍会调整。欢迎开 issue 关注、分享场景，或直接参与建设。项目理念见 [docs/philosophy.md](docs/philosophy.md)，参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。

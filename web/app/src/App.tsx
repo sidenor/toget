@@ -250,6 +250,10 @@ export default function App() {
           const created = await api.createRoom(name);
           setRooms((current) => [created.room, ...current]);
           selectRoom(created.room.id);
+        }} onJoin={async (code) => {
+          const joined = await api.redeemInvite(code);
+          await refreshRooms();
+          selectRoom(joined.room.id);
         }} onError={handleError} t={t} />
 
         <footer className="sidebar-footer">
@@ -535,6 +539,7 @@ function RoomList({
   activeID,
   onSelect,
   onCreate,
+  onJoin,
   onError,
   t,
 }: {
@@ -542,10 +547,11 @@ function RoomList({
   activeID: string | null;
   onSelect: (id: string) => void;
   onCreate: (name: string) => Promise<void>;
+  onJoin: (code: string) => Promise<void>;
   onError: (err: unknown) => void;
   t: (key: string) => string;
 }) {
-  const [adding, setAdding] = useState(false);
+  const [mode, setMode] = useState<"create" | "join" | null>(null);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -554,14 +560,23 @@ function RoomList({
     if (!name.trim()) return;
     setBusy(true);
     try {
-      await onCreate(name.trim());
+      if (mode === "join") {
+        await onJoin(name.trim());
+      } else {
+        await onCreate(name.trim());
+      }
       setName("");
-      setAdding(false);
+      setMode(null);
     } catch (err) {
       onError(err);
     } finally {
       setBusy(false);
     }
+  }
+
+  function closeForm() {
+    setMode(null);
+    setName("");
   }
 
   return (
@@ -579,29 +594,34 @@ function RoomList({
           </span>
         </button>
       ))}
-      {rooms.length === 0 && !adding && <p className="empty-hint">{t("room.empty.subtitle")}</p>}
-      {adding ? (
+      {rooms.length === 0 && !mode && <p className="empty-hint">{t("room.empty.subtitle")}</p>}
+      {mode ? (
         <form className="new-room" onSubmit={submit}>
           <input
             autoFocus
             value={name}
             onChange={(event) => setName(event.target.value)}
-            placeholder={t("sidebar.roomPlaceholder")}
-            maxLength={80}
+            placeholder={mode === "join" ? t("sidebar.joinPlaceholder") : t("sidebar.roomPlaceholder")}
+            maxLength={mode === "join" ? 4096 : 80}
           />
           <div className="new-room-actions">
-            <button type="button" className="button ghost" onClick={() => setAdding(false)}>
+            <button type="button" className="button ghost" onClick={closeForm}>
               {t("common.cancel")}
             </button>
             <button type="submit" className="button primary" disabled={busy || !name.trim()}>
-              {t("common.create")}
+              {mode === "join" ? t("sidebar.join") : t("common.create")}
             </button>
           </div>
         </form>
       ) : (
-        <button className="new-room-button" onClick={() => setAdding(true)}>
-          <span>+</span> {t("sidebar.newRoom")}
-        </button>
+        <>
+          <button className="new-room-button" onClick={() => setMode("create")}>
+            <span>+</span> {t("sidebar.newRoom")}
+          </button>
+          <button className="new-room-button secondary" onClick={() => setMode("join")}>
+            <span>⇥</span> {t("sidebar.joinRoom")}
+          </button>
+        </>
       )}
     </div>
   );
@@ -854,6 +874,7 @@ function Conversation({
       {showInfo && (
         <RoomInfo
           room={room}
+          account={account}
           t={t}
           members={members}
           agents={agents}
@@ -906,6 +927,15 @@ function EventRow({
       return <SystemEvent text={t("event.left", { name: memberNames[String(payload.account_id)] || shortID(String(payload.account_id)) })} />;
     case "room.member_invited":
       return <SystemEvent text={t("event.invited", { history: String(payload.history ?? "none") })} />;
+    case "room.history_attached":
+      return (
+        <SystemEvent
+          text={t("event.historyAttached", {
+            name: memberNames[String(payload.account_id)] || shortID(String(payload.account_id)),
+            choice: String(payload.choice ?? "none"),
+          })}
+        />
+      );
     case "room.epoch_rotated":
       return <SystemEvent text={t("event.epoch", { epoch: Number(payload.epoch ?? event.epoch) })} />;
     case "agent.joined":
@@ -1051,6 +1081,7 @@ function SystemEvent({ text }: { text: string }) {
 
 function RoomInfo({
   room,
+  account,
   t,
   members,
   agents,
@@ -1061,6 +1092,7 @@ function RoomInfo({
   onRoomGone,
 }: {
   room: Room;
+  account: Account;
   t: (key: string, vars?: Record<string, string | number>) => string;
   members: Member[];
   agents: Agent[];
@@ -1073,12 +1105,13 @@ function RoomInfo({
   const [history, setHistory] = useState("none");
   const [invite, setInvite] = useState<string>("");
   const [busy, setBusy] = useState(false);
+  const remote = Boolean(room.home_server_id && room.home_server_id !== account.server_id);
 
   async function createInvite() {
     setBusy(true);
     try {
       const result = await api.createInvite(room.id, history);
-      setInvite(result.invite.secret ?? "");
+      setInvite(result.invite.code || result.invite.secret || "");
       await onChanged();
     } catch (err) {
       onError(err);
@@ -1147,23 +1180,29 @@ function RoomInfo({
         </section>
         <section className="wide-section">
           <h3>{t("roomInfo.invite")}</h3>
-          <div className="invite-controls">
-            <select value={history} onChange={(event) => setHistory(event.target.value)}>
-              <option value="none">{t("roomInfo.none")}</option>
-              <option value="recent">{t("roomInfo.recent")}</option>
-              <option value="all">{t("roomInfo.all")}</option>
-            </select>
-            <button className="button primary" onClick={() => void createInvite()} disabled={busy}>
-              {t("roomInfo.createInvite")}
-            </button>
-          </div>
-          {invite && (
-            <div className="invite-secret">
-              <code>{invite}</code>
-              <CopyButton value={invite} labels={{ copy: t("roomInfo.copy"), copied: t("roomInfo.copied") }} />
-            </div>
+          {remote ? (
+            <p className="muted">{t("roomInfo.remoteNotice")}</p>
+          ) : (
+            <>
+              <div className="invite-controls">
+                <select value={history} onChange={(event) => setHistory(event.target.value)}>
+                  <option value="none">{t("roomInfo.none")}</option>
+                  <option value="recent">{t("roomInfo.recent")}</option>
+                  <option value="all">{t("roomInfo.all")}</option>
+                </select>
+                <button className="button primary" onClick={() => void createInvite()} disabled={busy}>
+                  {t("roomInfo.createInvite")}
+                </button>
+              </div>
+              {invite && (
+                <div className="invite-secret">
+                  <code>{invite}</code>
+                  <CopyButton value={invite} labels={{ copy: t("roomInfo.copy"), copied: t("roomInfo.copied") }} />
+                </div>
+              )}
+              <p className="fine-print">{t("roomInfo.shareHint")}</p>
+            </>
           )}
-          <p className="fine-print">{t("roomInfo.shareHint")}</p>
         </section>
         <section className="wide-section">
           <dl className="facts">
@@ -1175,15 +1214,21 @@ function RoomInfo({
               <dt>{t("roomInfo.role")}</dt>
               <dd>{members.find((member) => member.account_id === room.created_by)?.role ?? "member"}</dd>
             </div>
+            <div>
+              <dt>{t("roomInfo.home")}</dt>
+              <dd>{remote ? t("roomInfo.remote") : t("roomInfo.local")}</dd>
+            </div>
           </dl>
-          <div className="danger-actions">
-            <button className="button ghost" onClick={() => void leave()}>
-              {t("roomInfo.leave")}
-            </button>
-            <button className="button ghost danger" onClick={() => void archive()}>
-              {t("roomInfo.archive")}
-            </button>
-          </div>
+          {!remote && (
+            <div className="danger-actions">
+              <button className="button ghost" onClick={() => void leave()}>
+                {t("roomInfo.leave")}
+              </button>
+              <button className="button ghost danger" onClick={() => void archive()}>
+                {t("roomInfo.archive")}
+              </button>
+            </div>
+          )}
         </section>
       </div>
     </Modal>

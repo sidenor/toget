@@ -59,6 +59,15 @@
 
 Any node can also be its owner's account host. The distinction is a role, not a separate product: the same binary can run a node, host an account, and relay encrypted traffic.
 
+**Implemented today:** one `toget serve` process owns the local account, vault,
+SQLite log, loopback API (`7718`), and a LAN HTTPS listener (`7717`) with a
+pinned self-signed certificate. Two nodes on the same LAN can share a room
+through a single-use invite code; the home node orders events and peers sync
+incrementally. The official service, relays, directory, phone client, and
+multi-device account sync shown above are still design-only. A LAN node can
+only be reached at an address both machines can route to; there is no relay
+fallback yet.
+
 ## Account and device model
 
 ### Account ID

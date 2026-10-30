@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { formatAccountID, formatTime, shortID } from "./format";
 import type { Lang, Translate } from "./i18n";
-import type { Agent, Approval, AuditResponse, Device, Room, SearchHit } from "./types";
+import type { Agent, Approval, AuditResponse, Device, NodeInfo, Room, SearchHit } from "./types";
 import { Badge, Modal, Spinner } from "./ui";
 
 export type CommonProps = {
@@ -552,6 +552,7 @@ export function SettingsView({
   lock,
   account,
   status,
+  onError,
 }: CommonProps & {
   account: { id: string; name: string; server_id: string };
   status: { listen: string; version: { app: string; protocol: number; schema: number } } | null;
@@ -559,6 +560,24 @@ export function SettingsView({
   setLang: (lang: Lang) => void;
   lock: () => Promise<void>;
 }) {
+  const [node, setNode] = useState<{ enabled: boolean; info?: NodeInfo } | null>(null);
+  const [syncing, setSyncing] = useState(false);
+
+  useEffect(() => {
+    api.node().then(setNode).catch(() => setNode({ enabled: false }));
+  }, []);
+
+  async function sync() {
+    setSyncing(true);
+    try {
+      await api.syncAllRooms();
+    } catch (err) {
+      onError(err);
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   return (
     <section className="view">
       <header className="view-header">
@@ -598,6 +617,30 @@ export function SettingsView({
               <dd className="mono">{status?.listen ?? "—"}</dd>
             </div>
           </dl>
+        </article>
+        <article className="panel wide">
+          <h2>{t("settings.lanTitle")}</h2>
+          {node === null ? (
+            <Spinner label={t("common.loading")} />
+          ) : !node.enabled || !node.info ? (
+            <p className="muted">{t("settings.lanDisabled")}</p>
+          ) : (
+            <>
+              <dl className="facts vertical">
+                <div>
+                  <dt>{t("settings.lanURL")}</dt>
+                  <dd className="mono">{node.info.url}</dd>
+                </div>
+                <div>
+                  <dt>{t("settings.lanFingerprint")}</dt>
+                  <dd className="mono fingerprint">{node.info.tls_fingerprint}</dd>
+                </div>
+              </dl>
+              <button className="button ghost" onClick={() => void sync()} disabled={syncing}>
+                {syncing ? t("settings.syncing") : t("settings.syncNow")}
+              </button>
+            </>
+          )}
         </article>
         <article className="panel">
           <h2>{t("settings.language")}</h2>

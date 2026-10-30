@@ -29,6 +29,7 @@ import (
 	"github.com/sidenor/toget/internal/approval"
 	"github.com/sidenor/toget/internal/backup"
 	"github.com/sidenor/toget/internal/config"
+	"github.com/sidenor/toget/internal/node"
 	"github.com/sidenor/toget/internal/room"
 	"github.com/sidenor/toget/internal/session"
 	"github.com/sidenor/toget/internal/storage"
@@ -39,10 +40,13 @@ import (
 )
 
 var (
-	homeFlag    string
-	jsonFlag    bool
-	listenFlag  string
-	stdinReader = bufio.NewReader(os.Stdin)
+	homeFlag          string
+	jsonFlag          bool
+	listenFlag        string
+	nodeListenFlag    string
+	nodeAdvertiseFlag string
+	noNodeFlag        bool
+	stdinReader       = bufio.NewReader(os.Stdin)
 )
 
 func main() {
@@ -70,6 +74,8 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newAccountCommand())
 	root.AddCommand(newDeviceCommand())
 	root.AddCommand(newRoomCommand())
+	root.AddCommand(newJoinCommand())
+	root.AddCommand(newNodeCommand())
 	root.AddCommand(newSendCommand())
 	root.AddCommand(newMessagesCommand())
 	root.AddCommand(newAttachmentCommand())
@@ -208,6 +214,9 @@ func newServeCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&listenFlag, "listen", "", "loopback listen address (default: 127.0.0.1:7718)")
+	cmd.Flags().StringVar(&nodeListenFlag, "node-listen", "", "LAN node listen address (default: 0.0.0.0:7717, \"off\" disables it)")
+	cmd.Flags().StringVar(&nodeAdvertiseFlag, "node-advertise", "", "host:port that peers should use for this node")
+	cmd.Flags().BoolVar(&noNodeFlag, "no-node", false, "disable the LAN node transport")
 	return cmd
 }
 
@@ -218,6 +227,15 @@ func runServe(ctx context.Context) error {
 	}
 	if listenFlag != "" {
 		cfg.Listen = listenFlag
+	}
+	if nodeListenFlag != "" {
+		cfg.NodeListen = nodeListenFlag
+	}
+	if nodeAdvertiseFlag != "" {
+		cfg.NodeAdvertise = nodeAdvertiseFlag
+	}
+	if noNodeFlag {
+		cfg.NodeListen = config.NodeListenOff
 	}
 	if err := validateLoopback(cfg.Listen); err != nil {
 		return err
@@ -238,13 +256,59 @@ func runServe(ctx context.Context) error {
 		return err
 	}
 
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	signalCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	accounts := account.New(db, v)
-	rooms := room.New(db, v, room.WithDataDir(paths.Home))
+	var rooms *room.Service
+	rooms = room.New(db, v, room.WithDataDir(paths.Home), room.WithWriteGuard(
+		func(ctx context.Context, roomID, _ string) error {
+			record, err := rooms.GetRoom(ctx, roomID)
+			if err != nil {
+				return err
+			}
+			snapshot, err := accounts.Get(ctx)
+			if err != nil {
+				return nil
+			}
+			if record.HomeServerID != "" && record.HomeServerID != snapshot.Account.ServerID {
+				return room.ErrRemoteReadOnly
+			}
+			return nil
+		},
+	))
+	var nodeService *node.Service
 	agents := agent.New(db, rooms)
 	approvals := approval.New(db, rooms)
 	tools := tool.New(db, rooms, approvals)
 	sessions := session.New(session.DefaultTTL)
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	nodeService, err = node.New(node.Options{
+		Accounts:  accounts,
+		Rooms:     rooms,
+		Paths:     paths,
+		Listen:    cfg.NodeListen,
+		Advertise: cfg.NodeAdvertise,
+		Logger:    logger,
+	})
+	if err != nil {
+		logger.Warn("LAN node disabled", "error", err)
+		nodeService = nil
+	}
+	nodeReady := false
+	if nodeService != nil {
+		if err := nodeService.Start(signalCtx); err != nil {
+			logger.Warn("LAN node did not start; local mode continues", "error", err)
+		} else {
+			nodeReady = true
+			defer nodeService.Close()
+		}
+	}
+	var apiNode *node.Service
+	if nodeReady {
+		apiNode = nodeService
+	}
 
 	handler := api.New(api.Options{
 		Accounts:  accounts,
@@ -252,6 +316,7 @@ func runServe(ctx context.Context) error {
 		Agents:    agents,
 		Approvals: approvals,
 		Tools:     tools,
+		Node:      apiNode,
 		Session:   sessions,
 		Version:   version.Current(),
 		Token:     token,
@@ -277,6 +342,13 @@ func runServe(ctx context.Context) error {
 	info := version.Current()
 	fmt.Printf("Toget %s\n", info.App)
 	fmt.Printf("Local node: http://%s\n", listener.Addr().String())
+	if nodeReady {
+		fmt.Printf("LAN node:   %s\n", nodeService.URL())
+	} else if cfg.NodeListen == config.NodeListenOff {
+		fmt.Println("LAN node:   disabled")
+	} else {
+		fmt.Printf("LAN node:   unavailable (%s)\n", cfg.NodeListen)
+	}
 	fmt.Printf("Data: %s\n", paths.Home)
 	if snapshot, err := accounts.Get(ctx); err == nil {
 		fmt.Printf("Account: %s · %s\n", snapshot.Account.Name, formatAccountID(snapshot.Account.ID))
@@ -286,8 +358,6 @@ func runServe(ctx context.Context) error {
 	}
 	fmt.Println("Press Ctrl+C to stop.")
 
-	signalCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	go func() {
 		<-signalCtx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -772,8 +842,13 @@ func newRoomInviteCommand() *cobra.Command {
 			if jsonFlag {
 				return printJSON(result.Invite)
 			}
-			fmt.Printf("Share this secret once: %s\nHistory: %s\nExpires: %s\n",
-				result.Invite.Secret, result.Invite.History, result.Invite.ExpiresAt.Local().Format(time.RFC3339))
+			if result.Invite.Code != "" {
+				fmt.Printf("Share this invite code once: %s\nHistory: %s\nExpires: %s\n",
+					result.Invite.Code, result.Invite.History, result.Invite.ExpiresAt.Local().Format(time.RFC3339))
+			} else {
+				fmt.Printf("Share this secret once: %s\nHistory: %s\nExpires: %s\n",
+					result.Invite.Secret, result.Invite.History, result.Invite.ExpiresAt.Local().Format(time.RFC3339))
+			}
 			return nil
 		},
 	}
@@ -784,24 +859,113 @@ func newRoomInviteCommand() *cobra.Command {
 
 func newRoomRedeemCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "redeem <secret>",
-		Short: "Join a room with an invitation secret",
+		Use:     "redeem <secret-or-code>",
+		Aliases: []string{"join"},
+		Short:   "Join a room with an invitation secret or portable code",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return redeemInvite(cmd, args[0])
+		},
+	}
+}
+
+func newJoinCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "join <invite-code>",
+		Short: "Join a room on another node with an invite code",
 		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return redeemInvite(cmd, args[0])
+		},
+	}
+}
+
+func redeemInvite(cmd *cobra.Command, secret string) error {
+	c, _, _, err := localClient()
+	if err != nil {
+		return err
+	}
+	var result struct {
+		Room room.Room `json:"room"`
+	}
+	if err := c.Post(cmd.Context(), "/api/v1/invites/redeem", map[string]string{"secret": secret}, &result); err != nil {
+		return err
+	}
+	if jsonFlag {
+		return printJSON(result.Room)
+	}
+	fmt.Printf("Joined %s (%s)\n", result.Room.Name, result.Room.ID)
+	return nil
+}
+
+func newNodeCommand() *cobra.Command {
+	cmd := &cobra.Command{Use: "node", Short: "Inspect and sync the LAN node transport"}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "info",
+		Short: "Show this node's address, identity, and TLS fingerprint",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, _, _, err := localClient()
 			if err != nil {
 				return err
 			}
 			var result struct {
-				Room room.Room `json:"room"`
+				Enabled bool       `json:"enabled"`
+				Info    *node.Info `json:"info,omitempty"`
 			}
-			if err := c.Post(cmd.Context(), "/api/v1/invites/redeem", map[string]string{"secret": args[0]}, &result); err != nil {
+			if err := c.Get(cmd.Context(), "/api/v1/node", &result); err != nil {
 				return err
 			}
-			fmt.Printf("Joined %s (%s)\n", result.Room.Name, result.Room.ID)
+			if jsonFlag {
+				return printJSON(result)
+			}
+			if !result.Enabled || result.Info == nil {
+				fmt.Println("LAN node transport is disabled.")
+				return nil
+			}
+			fmt.Printf("URL:       %s\n", result.Info.URL)
+			fmt.Printf("Server:    %s\n", result.Info.ServerID)
+			fmt.Printf("Account:   %s\n", result.Info.AccountID)
+			fmt.Printf("Device:    %s\n", result.Info.DeviceID)
+			fmt.Printf("Fingerprint: %s\n", result.Info.TLSFingerprint)
 			return nil
 		},
-	}
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "sync [room-id]",
+		Short: "Pull updates from home nodes",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			if len(args) == 0 {
+				var result struct {
+					OK bool `json:"ok"`
+				}
+				if err := c.Post(cmd.Context(), "/api/v1/node/sync", nil, &result); err != nil {
+					return err
+				}
+				if jsonFlag {
+					return printJSON(result)
+				}
+				fmt.Println("Sync requested for all remote rooms.")
+				return nil
+			}
+			var result struct {
+				Imported int `json:"imported"`
+			}
+			if err := c.Post(cmd.Context(), "/api/v1/rooms/"+args[0]+"/sync", nil, &result); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(result)
+			}
+			fmt.Printf("Imported %d event(s) into %s\n", result.Imported, args[0])
+			return nil
+		},
+	})
+	return cmd
 }
 
 func newRoomLeaveCommand() *cobra.Command {

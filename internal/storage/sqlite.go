@@ -422,6 +422,77 @@ func (d *DB) CreateRoom(ctx context.Context, r *room.Room, event *room.Event, me
 	return nil
 }
 
+// ImportRoom stores a complete room snapshot received from its home node.
+// All rows are written in one transaction so a failed join cannot leave a
+// partially imported room behind.
+func (d *DB) ImportRoom(ctx context.Context, r *room.Room, members []room.Member, devices []room.RoomDevice, epochs []room.RoomEpoch, keys []room.RoomMemberKey, events []room.Event) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("storage: begin import room: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO rooms (id, name, topic, home_node, home_server_id, home_address, created_by,
+			epoch, created_at, archived_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.Name, r.Topic, r.HomeNode, r.HomeServerID, r.HomeAddress, r.CreatedBy,
+		r.Epoch, toMillis(r.CreatedAt), nullableMillis(r.ArchivedAt)); err != nil {
+		return fmt.Errorf("storage: import room: %w", err)
+	}
+	for i := range events {
+		if err := insertEvent(ctx, tx, &events[i]); err != nil {
+			return err
+		}
+	}
+	for i := range members {
+		if err := insertMember(ctx, tx, &members[i]); err != nil {
+			return err
+		}
+	}
+	for i := range devices {
+		if err := insertRoomDevice(ctx, tx, &devices[i]); err != nil {
+			return err
+		}
+	}
+	for i := range epochs {
+		if err := insertRoomEpoch(ctx, tx, &epochs[i]); err != nil {
+			return err
+		}
+	}
+	for i := range keys {
+		if err := insertRoomMemberKey(ctx, tx, &keys[i]); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storage: commit import room: %w", err)
+	}
+	return nil
+}
+
+// ImportEvents appends a batch of already-verified or deliberately opaque
+// remote events in one transaction.
+func (d *DB) ImportEvents(ctx context.Context, events []room.Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("storage: begin import events: %w", err)
+	}
+	defer tx.Rollback()
+	for i := range events {
+		if err := insertEvent(ctx, tx, &events[i]); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storage: commit import events: %w", err)
+	}
+	return nil
+}
+
 // ListRooms returns rooms newest first.
 func (d *DB) ListRooms(ctx context.Context) ([]room.Room, error) {
 	rows, err := d.db.QueryContext(ctx, `
@@ -522,6 +593,21 @@ func (d *DB) AppendEvent(ctx context.Context, event *room.Event) error {
 	return nil
 }
 
+// FirstEventSeqForEpoch returns the first event sequence sealed with an epoch.
+func (d *DB) FirstEventSeqForEpoch(ctx context.Context, roomID string, epoch int) (int64, error) {
+	var seq int64
+	err := d.db.QueryRowContext(ctx, `
+		SELECT seq FROM events WHERE room_id = ? AND epoch = ? ORDER BY seq ASC LIMIT 1`,
+		roomID, epoch).Scan(&seq)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, room.ErrNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("storage: first event for epoch: %w", err)
+	}
+	return seq, nil
+}
+
 // ListEvents returns events after a sequence, oldest first.
 func (d *DB) ListEvents(ctx context.Context, roomID string, after int64, limit int) ([]room.Event, error) {
 	rows, err := d.db.QueryContext(ctx, `
@@ -608,6 +694,35 @@ func (d *DB) UpdateMember(ctx context.Context, member *room.Member) error {
 	return nil
 }
 
+// UpsertMember inserts a membership or refreshes an existing one. A member
+// who left and rejoins is reactivated without losing their row.
+func (d *DB) UpsertMember(ctx context.Context, member *room.Member) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("storage: begin member: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO room_members (room_id, account_id, device_id, display_name, role, status,
+			account_public_key, encryption_public_key, joined_at, left_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(room_id, account_id) DO UPDATE SET
+			device_id = excluded.device_id, display_name = excluded.display_name,
+			role = excluded.role, status = excluded.status,
+			account_public_key = excluded.account_public_key,
+			encryption_public_key = excluded.encryption_public_key,
+			joined_at = excluded.joined_at, left_at = excluded.left_at`,
+		member.RoomID, member.AccountID, member.DeviceID, member.DisplayName, member.Role, member.Status,
+		nonNilBytes(member.AccountPublicKey), nonNilBytes(member.EncryptionPublicKey),
+		toMillis(member.JoinedAt), nullableMillis(member.LeftAt)); err != nil {
+		return fmt.Errorf("storage: upsert member: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storage: commit member: %w", err)
+	}
+	return nil
+}
+
 // GetRoomDevice returns a trusted device for a room.
 func (d *DB) GetRoomDevice(ctx context.Context, roomID, deviceID string) (*room.RoomDevice, error) {
 	row := d.db.QueryRowContext(ctx, `
@@ -645,6 +760,32 @@ func (d *DB) AddRoomDevice(ctx context.Context, device *room.RoomDevice) error {
 	defer tx.Rollback()
 	if err := insertRoomDevice(ctx, tx, device); err != nil {
 		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storage: commit room device: %w", err)
+	}
+	return nil
+}
+
+// UpsertRoomDevice inserts a trusted room device or reactivates a revoked one.
+func (d *DB) UpsertRoomDevice(ctx context.Context, device *room.RoomDevice) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("storage: begin room device: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO room_devices (room_id, device_id, account_id, public_key, encryption_public_key,
+			joined_at, revoked_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(room_id, device_id) DO UPDATE SET
+			account_id = excluded.account_id, public_key = excluded.public_key,
+			encryption_public_key = excluded.encryption_public_key,
+			joined_at = excluded.joined_at, revoked_at = excluded.revoked_at`,
+		device.RoomID, device.DeviceID, device.AccountID, nonNilBytes(device.PublicKey),
+		nonNilBytes(device.EncryptionPublicKey), toMillis(device.JoinedAt),
+		nullableMillis(device.RevokedAt)); err != nil {
+		return fmt.Errorf("storage: upsert room device: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("storage: commit room device: %w", err)

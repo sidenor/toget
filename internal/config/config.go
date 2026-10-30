@@ -16,11 +16,21 @@ import (
 const (
 	// DefaultListen is the loopback address of the local API and web UI.
 	DefaultListen = "127.0.0.1:7718"
+	// DefaultNodeListen is the LAN-facing node transport address.
+	DefaultNodeListen = "0.0.0.0:7717"
+	// NodeListenOff disables the LAN node transport.
+	NodeListenOff = "off"
 )
 
 // Config is stored in config.json inside the data directory.
 type Config struct {
 	Listen string `json:"listen"`
+	// NodeListen is the HTTPS listener for other Toget nodes. Use "off" to
+	// disable the transport entirely.
+	NodeListen string `json:"node_listen,omitempty"`
+	// NodeAdvertise overrides the host:port placed in invitation codes and
+	// room home addresses when the bind address is not reachable by peers.
+	NodeAdvertise string `json:"node_advertise,omitempty"`
 }
 
 // Paths describes the files a local node owns.
@@ -104,7 +114,7 @@ func Ensure(paths Paths) error {
 
 // Load reads config.json, creating it with defaults when missing.
 func Load(paths Paths) (Config, error) {
-	cfg := Config{Listen: DefaultListen}
+	cfg := Config{Listen: DefaultListen, NodeListen: DefaultNodeListen}
 	data, err := os.ReadFile(paths.Config)
 	if errors.Is(err, os.ErrNotExist) {
 		if err := Save(paths, cfg); err != nil {
