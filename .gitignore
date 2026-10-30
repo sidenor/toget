@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+vendor/
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+target/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+secrets.json
+
+# Local data and logs
+*.log
+logs/
+data/
+tmp/
+.cache/
+.DS_Store
+Thumbs.db
+
+# Editors and tooling
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+coverage/
+.nyc_output/
+.turbo/
+.next/
+out/
+
+# Local agent state
+.toget/
