@@ -1,214 +1,216 @@
-# Technology Stack
+# Technology Stack (Draft)
 
-> Status: proposed direction. Exact versions are pinned in `.mise.toml`, `go.mod`, and `pnpm-lock.yaml` when the scaffold lands.
+> Status: proposed direction. Exact versions will be pinned in `.mise.toml`, `go.mod`, and `pnpm-lock.yaml` when the scaffold lands.
 
 ## Decision summary
 
 | Layer | Choice | Why |
 | --- | --- | --- |
-| Server | **Go** + `net/http` + `chi` | Static binary, strong concurrency, simple deployment, stable language |
-| Daemon | **Go** | Cross-compiles to Linux, macOS, Windows; good process and service control; low memory |
-| Web | **TypeScript + React + Vite** | Largest UI ecosystem, fast builds, easy to wrap in desktop/mobile shells later |
-| UI system | **Tailwind CSS + Radix primitives + shadcn/ui** | Accessible primitives, copy-in components, no design-system lock-in |
-| Server state | **TanStack Query** | Caching, invalidation, and optimistic updates without a global store |
-| Forms | **React Hook Form + Zod** | Standard, typed, small |
-| API contract | **OpenAPI 3.1** | Language-neutral, generates Go server types and TypeScript clients |
-| Realtime | **WebSocket + JSON-RPC 2.0** | Bidirectional, simple, easy to debug, works in browsers and native clients |
-| Server database | **PostgreSQL** (team/hosted) · **SQLite** (local mode) | Mature server database; embedded zero-ops mode for desktop/local use |
-| Daemon database | **SQLite** | Embedded, zero-ops, good for local state and offline outbox |
-| Database access | **pgx + sqlc + goose** | SQL-first, typed queries, no ORM lock-in |
-| Auth | **OAuth/OIDC + device pairing** | No password storage; GitHub first, enterprise SSO later |
+| Node, daemon, account host, relay | **Go** | Static binary, cross-platform services, strong concurrency, predictable memory |
+| Node transport | **QUIC** (`quic-go`), WSS/TCP `443` fallback | Low-latency multiplexing, NAT traversal, HTTPS fallback for hostile networks |
+| Node encoding | **Protobuf** | Compact, versionable, generated types in Go and TypeScript |
+| Local API | **HTTP JSON + OpenAPI 3.1** on `127.0.0.1:7718` | Easy to inspect, script, and generate clients for |
+| Local web UI | **TypeScript + React + Vite** | Largest UI ecosystem; one codebase for web, desktop shell, and PWA |
+| UI system | **Tailwind CSS + Radix + shadcn/ui** | Accessible primitives, copy-in components, no design-system lock-in |
+| State | **TanStack Query** + minimal local state | Server state dominates: rooms, events, approvals |
+| Local storage | **SQLite** (`modernc.org/sqlite`) | Embedded, zero-ops, `CGO_ENABLED=0`, good for offline outbox and room copies |
+| Large official storage | **PostgreSQL** (optional) | Only when the official service outgrows SQLite |
+| Crypto | **Go stdlib + `golang.org/x/crypto` + `cloudflare/circl`** | Ed25519, X25519, HKDF, ChaCha20-Poly1305, HPKE, Argon2id, SPAKE2 |
 | CLI | **Cobra** | Standard Go CLI structure |
-| Logging | **log/slog** | Standard library, structured logs |
-| Telemetry | **OpenTelemetry** | Vendor-neutral traces and metrics |
-| Tests | **Go testing, Vitest, Playwright** | Standard tools with broad support |
-| Monorepo | **Go module + pnpm workspaces + mise + Taskfile** | Lightweight, reproducible, no heavy build system |
-| CI/CD | **GitHub Actions + GoReleaser** | Standard, cross-platform release artifacts |
-| Deployment | **Docker/OCI + Compose; Helm later** | Portable from laptop to cloud |
+| Logging | **log/slog** | Structured logs without a framework |
+| Metrics | **Prometheus client**, local only | Self-hosters can scrape; nothing is sent by default |
+| Tests | **Go testing, Vitest, Playwright** | Standard tools; plus protocol conformance and fuzz tests |
+| Build | **GoReleaser + Taskfile + mise** | Cross-platform artifacts, reproducible toolchain |
+| Signing | **Ed25519 release manifests**, checksums, SBOM | Root-certified release keys; verifiable updates |
 | Desktop (later) | **Tauri 2** | Small shell, system webview, reuses the web UI |
-| Mobile (later) | **PWA first, Capacitor later** | One UI codebase; native shell only when push/background is needed |
+| Mobile (later) | **PWA first, native shell later** | One UI codebase until push/background requires more |
 
-## Why Go for the server and daemon
+## Why Go for the node
 
-The daemon is the hardest part of the product to distribute:
+The node is the hardest part to distribute and operate:
 
-- it must run on Linux, macOS, and Windows;
-- it must start at boot, survive logout, and restart agents;
-- it must spawn processes, stream stdio, watch files, and hold local secrets;
-- it must be installable by a non-expert.
+- it runs on Linux, macOS, and Windows, often as a background service;
+- it must survive logout and reboot, supervise Agent processes, and hold local keys;
+- it must multiplex many peer connections and relay traffic;
+- it must be installable by someone who is not a systems expert.
 
-Go fits all of those:
+Go fits:
 
-- **Single static binary.** `CGO_ENABLED=0` cross-compilation gives one file per OS/arch. No Node runtime, no Python environment, no DLL hell.
-- **Cross-platform service support.** Linux systemd, macOS launchd, and Windows services can share one service abstraction.
-- **Good process control.** `os/exec`, signals, stdio pipes, and context cancellation are first-class. PTY support can be added behind an interface when needed.
-- **Low idle cost.** A daemon may run all day; Go's memory footprint and startup time are predictable.
-- **Stable language.** Go's compatibility promise means code written today keeps compiling. The standard library covers HTTP, TLS, JSON, logging, and crypto.
-- **Shared code with the server.** Protocol types, policy evaluation, event validation, and storage interfaces live in one module and are tested once.
+- **One static binary.** `CGO_ENABLED=0` cross-compilation gives a single file per OS/arch. No runtime, no virtualenv, no DLLs.
+- **Cross-platform services.** systemd, launchd, and Windows services share one abstraction.
+- **Good process control.** `os/exec`, signals, stdio pipes, and context cancellation are first-class; a PTY layer can be added behind an interface.
+- **Low idle cost.** A node runs all day; Go's memory and startup behavior are predictable.
+- **Stable language.** Go's compatibility promise protects long-lived code.
+- **Shared code.** Protocol types, crypto wrappers, event validation, and storage interfaces live in one module and are tested once across the node, account host, and relay.
 
-The server benefits from the same properties: one binary, easy containers, good concurrency, and no runtime dependency.
+Go is also used for the official service. The same binary with different subcommands keeps the self-hosted and official paths honest: they share the protocol and the storage code.
 
-### What Go is not used for
+## Why QUIC and Protobuf
 
-Go is not used for the UI. Building a rich, accessible, fast-moving web app in Go templates would slow the product down and make the future desktop/mobile shells harder. The UI boundary is the API contract, so the two languages do not leak into each other.
+- **QUIC** gives independent streams over one connection, cheap reconnects, and built-in TLS 1.3. It works well for many rooms and many peers without head-of-line blocking.
+- **WSS/TCP 443** is the fallback for networks that block UDP or only allow HTTPS. It carries the same Protobuf messages in binary frames.
+- **Protobuf** is compact, forward-compatible, and generates code for Go and TypeScript. Unknown fields are preserved, which matters for an open protocol with independent implementations.
+- **JSON stays at the edges**: the local API, the directory API, manifests, and configuration. Humans debug those; machines exchange Protobuf.
+
+We are not using libp2p. It is a large dependency with its own identity, routing, and transport stack, and Toget's relay tree and account model are specific enough that we would fight it more than use it. We borrow ideas, not the dependency.
+
+## Why not Matrix
+
+Matrix is a mature room protocol with a large ecosystem. It was considered seriously. Toget differs in ways that are hard to retrofit:
+
+- Matrix's room model is replicated across homeservers by default; Toget keeps history with participants and makes the official service optional and blind.
+- Toget's account ID, device model, and relay tree are designed around local-first nodes, not always-on homeservers.
+- Toget's Agent identity and approval model is a core object, not an extension.
+
+Using Matrix would mean adopting its trust model and event graph. Building a small protocol gives us the privacy and hosting properties the product needs.
 
 ## Why TypeScript and React for the web
 
-- **Ecosystem and longevity.** React has the largest component, testing, and hiring ecosystem. It is a safe long-term choice for an open-source product.
-- **One UI, three shells.** The web app can run as a normal SPA, inside Tauri for desktop, and inside Capacitor for mobile. That avoids maintaining a separate native UI.
-- **Type safety across the boundary.** OpenAPI generates the API client; JSON Schema generates event types. The web app does not hand-write wire types.
-- **Fast feedback.** Vite's dev server and React Fast Refresh keep the iteration loop short.
-- **Accessible components.** Radix primitives handle focus, keyboard navigation, and screen-reader behavior; shadcn/ui provides copy-in components that can be edited instead of fought.
+- **One UI, several shells.** The local web UI can run as a normal SPA, inside Tauri, and as a PWA. No second UI codebase.
+- **Ecosystem.** React has the largest component, testing, and hiring ecosystem; Radix and shadcn/ui provide accessible primitives that can be edited rather than fought.
+- **Typed contract.** OpenAPI generates the local API client; Protobuf generates event types. The UI does not hand-write wire types.
+- **Fast iteration.** Vite's dev server and React Fast Refresh keep the loop short.
 
-### Frontend choices in detail
+Details:
 
-- **Router:** React Router. It is widely used, well documented, and stable. The app is a SPA; SSR is not required.
-- **Server state:** TanStack Query. It handles caching, retries, background refresh, and invalidation, which map directly to rooms, tasks, and approvals.
-- **Local UI state:** Zustand only where needed. Most state should be server state or URL state.
-- **Styling:** Tailwind CSS with CSS variables for theming. Utility classes are easy to remove or restyle; no proprietary component runtime.
-- **Forms:** React Hook Form plus Zod. Both are widely used and have no vendor lock-in.
-- **i18n:** `react-i18next` from the start, with English and Chinese message catalogs.
-- **PWA:** Vite PWA plugin. The web app should be installable and usable for approvals on a phone before a native app exists.
+- **Router:** React Router. The app is a SPA; no SSR.
+- **Server state:** TanStack Query for caching, retries, and invalidation.
+- **Local state:** Zustand only where needed.
+- **Styling:** Tailwind with CSS variables for theming.
+- **Forms:** React Hook Form + Zod.
+- **i18n:** `react-i18next` from the start, with English and Chinese catalogs.
+- **PWA:** installable, with an approval experience that works on a phone before a native app exists.
 
 ### Why not Next.js
 
-Next.js is excellent for content sites and server-rendered products. Toget's authenticated app is a dashboard with realtime data; SSR adds deployment complexity, caching rules, and a server runtime that the product does not need. A static SPA served by the Go server or a CDN is simpler and easier to embed in Tauri/Capacitor.
+The authenticated UI is a realtime room list and conversation, not a content site. SSR adds a server runtime, caching rules, and deployment complexity we do not need. A static SPA served by the local daemon or a CDN is simpler and easy to embed in Tauri or a mobile shell.
 
-If a marketing site later needs SEO, it can be a separate static site. It should not force the app into a server-rendering framework.
+## Why SQLite everywhere at first
 
-## Data storage
+- **Daemon:** room copies, event outbox, sync cursors, device and Agent registry cache. It must work offline and survive restarts.
+- **Account host:** account records, device list, membership, and ciphertext for hosted rooms. A single-node self-hosted account host is the common case, and SQLite handles it without a database server.
+- **Official service:** starts on SQLite too. If load demands it, the store interface allows PostgreSQL for the account and room metadata; ciphertext blobs can move to object storage.
 
-### PostgreSQL for team deployments
+The pure-Go `modernc.org/sqlite` driver keeps cross-compilation free of CGO. Queries are written in SQL and reviewed; no ORM hides them. Migrations are plain SQL, embedded in the binary, and applied explicitly or at startup.
 
-- Mature, predictable, and available as a managed service everywhere.
-- JSONB is useful for event payloads and policy documents.
-- `LISTEN/NOTIFY` can power multi-instance realtime later without adding Redis on day one.
-- Row-level security and partitioning are available when the product needs them.
-- Standard SQL keeps the door open to managed Postgres, self-hosted Postgres, and compatible services.
+Why not Postgres by default: requiring a database server to run a personal node would break the "install one binary" promise. Postgres is an option for scale, not a prerequisite for use.
 
-### SQLite for local mode and the daemon
+## Cryptography
 
-- Embedded, zero-ops, and reliable for local state.
-- Server local mode uses SQLite so a desktop user does not need Docker or Postgres.
-- The daemon uses SQLite for its event outbox, agent registry cache, and offline queue.
-- Use the pure-Go `modernc.org/sqlite` driver so cross-compilation stays `CGO_ENABLED=0`.
-- The server's domain layer depends on a store interface; Postgres and SQLite are two implementations. Parity tests run the same behavior suite against both.
+- **Ed25519** for signatures: device certificates, outer envelopes, manifests.
+- **X25519** for key agreement.
+- **HKDF-SHA256** for key derivation.
+- **HPKE (RFC 9180)** with X25519 + HKDF-SHA256 + ChaCha20-Poly1305 for wrapping room epoch keys to member devices. `cloudflare/circl` provides the implementation.
+- **XChaCha20-Poly1305** for message content; AES-256-GCM where hardware acceleration is clearly better.
+- **Argon2id** for password verifiers and key derivation from passwords.
+- **SPAKE2** (via `circl/pake`) for password-authenticated login, so the host never sees the password. If a mature OPAQUE implementation becomes available, it is a candidate to replace SPAKE2.
+- **TLS 1.3** for transport; server identity is additionally proven with the signed manifest.
 
-### Why two server stores
+Rules:
 
-Local-first is a product requirement, not a deployment detail. A desktop user should be able to run Toget without installing a database server. A team should be able to run it on managed Postgres. The store interface keeps the domain logic independent of either choice.
+- No custom cryptography.
+- No keys in logs, crash reports, or telemetry.
+- Version the envelope and the key schedule so a future algorithm can be introduced without breaking old clients.
+- Treat every crypto dependency as a security dependency: pinned, reviewed, and scanned.
 
-The cost is two SQL dialects and a parity test suite. That cost is lower than forcing every local user to run Postgres, and lower than a later migration from SQLite to Postgres.
+## Local API and contract
 
-### Why not an ORM
-
-`sqlc` generates typed Go code from SQL. The queries remain visible, reviewable, and portable. Migrations are plain SQL managed by `goose`. This avoids the two common failure modes of ORMs: hidden queries and a hard-to-reverse schema abstraction.
-
-## API and realtime protocol
-
-### HTTP JSON for CRUD
-
-- `/api/v1/...` for auth, rooms, tasks, agents, approvals, and audit queries.
-- Cursor-based pagination, not offset pagination.
-- RFC 9457 Problem Details for errors.
-- Idempotency keys for task creation and approval decisions.
-- OpenAPI 3.1 is the source of truth. `oapi-codegen` produces Go server types; `openapi-typescript` produces the web client.
-- If a generator lags on 3.1 features, keep the document 3.0.3-compatible rather than changing the API. The contract matters more than the minor version of the spec.
-
-### WebSocket for events and commands
-
-- One persistent connection per web client and one per daemon.
-- JSON-RPC 2.0 envelopes: request, response, notification, error.
-- Per-room monotonic sequence numbers; reconnect with `after` to resume.
-- Bounded queues and backpressure; slow clients are disconnected rather than consuming unbounded memory.
-- Protocol version negotiated during the handshake. Additive changes are allowed within a major version; breaking changes require a new major version with an overlap window.
-
-### Why not GraphQL
-
-GraphQL would add a schema layer, resolver complexity, and caching questions for little benefit. The data model is event-oriented and realtime; REST plus WebSocket is a better fit and easier for third-party clients to implement.
-
-### Why not gRPC/Connect everywhere
-
-gRPC is excellent for service-to-service calls, but browser support and debugging are more complex. A JSON protocol keeps the barrier low for an open-source ecosystem. If internal service-to-service traffic grows, gRPC can be added behind the same domain interfaces without changing the public API.
+- `api/openapi.yaml` is the source of truth for the local HTTP API.
+- `proto/` is the source of truth for the node protocol.
+- `oapi-codegen` generates Go server types; `openapi-typescript` generates the web client.
+- `buf` generates Go and TypeScript from Protobuf and checks for breaking changes.
+- CI regenerates everything and fails if the working tree changes, so generated code never drifts.
+- The CLI and the local web UI use the same local API. There is no private backdoor for the UI.
 
 ## Authentication and secrets
 
-- **Users:** GitHub OAuth first, email magic link second. No password database in the MVP.
-- **Browser sessions:** short-lived access token in memory, refresh token in an `HttpOnly`, `Secure`, `SameSite=Lax` cookie. CSRF protection on refresh and state-changing cookie endpoints.
-- **Daemon pairing:** a one-time code shown in the web app; the daemon exchanges it for a device credential.
-- **Daemon credentials:** stored in the OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service). Headless Linux falls back to an encrypted file with a machine-bound key.
-- **Enterprise SSO:** OIDC first, SAML later. Keep the identity layer behind an interface so a self-hosted enterprise deployment can connect its own IdP.
-
-Secrets never go to the server. The server stores references and metadata, not API keys or agent credentials.
+- **Account login:** password via PAKE; the account host stores only a verifier.
+- **Official-hosted accounts:** MK is generated client-side and stored as `Enc(KEK(password), MK)`; the recovery credential stores `Enc(RK, MK)`.
+- **Devices:** each device has its own key pair and a certificate signed by the account key. Device enrollment requires approval from an existing device or the account host.
+- **Local API:** per-session token in a user-only file; `Origin` checks and `SameSite=Strict` cookies.
+- **Secrets at rest:** OS keychain (Keychain, Credential Manager, Secret Service) or an encrypted local vault for headless Linux. Agent API keys never go to the account host.
 
 ## Repository and build tooling
 
-- **One Go module at the repository root.** `cmd/toget` is the only binary; subcommands are `server`, `daemon`, `login`, `pair`, `agent`, `doctor`, and `migrate`.
-- **pnpm workspaces** for `apps/web` and `packages/*`.
-- **mise** pins Go, Node, pnpm, and other tools per repository.
-- **Taskfile** is the single entry point for cross-language tasks: `task dev`, `task test`, `task generate`, `task build`, `task release`.
-- **No Nx, Bazel, or Turborepo at the start.** They add concepts and configuration that a small team does not need yet. pnpm's workspace scripts and Taskfile are enough. Turborepo can be added later for caching without changing the repository layout.
+- **One Go module** at the repository root.
+- **Two binaries:** `cmd/toget` (node, daemon, CLI, relay, account host) and `cmd/toget-official` (directory, official account host, update service). The official binary reuses the same internal packages.
+- **pnpm workspaces** for `web/*` and `packages/*`.
+- **mise** pins Go, Node, pnpm, buf, and other tools.
+- **Taskfile** is the single entry point: `task dev`, `task test`, `task generate`, `task build`, `task release`, `task sign`.
+- **No Nx, Bazel, or Turborepo at the start.** They add concepts a small project does not need yet. Turborepo can be added later for caching without changing the layout.
 
 ## Testing and quality
 
-- **Go:** standard `testing`; table-driven tests; `httptest` for handlers; `testcontainers-go` for Postgres integration tests.
-- **Web:** Vitest and React Testing Library for units and components; Playwright for end-to-end flows.
-- **Contract tests:** shared JSON fixtures validate that Go and TypeScript agree on event envelopes and API payloads.
-- **Cross-platform CI:** build and test the daemon on Linux, macOS, and Windows, for `amd64` and `arm64` where practical.
-- **Static analysis:** `go vet`, `staticcheck`, `govulncheck`, ESLint, TypeScript strict mode, and `pnpm audit`.
-- **Generated-code check:** CI runs `task generate` and fails if the working tree changes, so generated clients never drift from the contract.
-- **Release checks:** GoReleaser builds archives, checksums, SBOMs, and container images; signatures via cosign.
+- **Go:** standard `testing`, table-driven tests, `httptest`, in-memory SQLite for store tests.
+- **Protocol:** golden Protobuf fixtures, round-trip tests, fuzz tests for every decoder, and conformance tests that a second implementation could reuse.
+- **Crypto:** known-answer tests for HPKE, AEAD, HKDF, and signatures; property tests for envelope binding.
+- **Web:** Vitest and React Testing Library; Playwright for end-to-end flows.
+- **Multi-node:** integration tests spin up two or three nodes, a relay, and a fake Agent on localhost.
+- **Cross-platform CI:** build and test on Linux, macOS, and Windows, `amd64` and `arm64` where practical.
+- **Static analysis:** `go vet`, `staticcheck`, `govulncheck`, ESLint, TypeScript strict mode, `pnpm audit`.
+- **Generated-code check:** CI fails if regeneration produces a diff.
+- **Release checks:** checksums, SBOM, signature verification, and a smoke test that installs the previous version, updates, and rolls back.
+
+## Release and signing
+
+- Release artifacts per device: `daemon/<os>-<arch>/v<version>/`, immutable.
+- `channels/stable.json` and `channels/beta.json` point at the current version.
+- `manifests/v<version>.json` lists artifacts, hashes, protocol and schema versions, and minimum supported versions.
+- The manifest is signed by a release key; the release key is certified by the offline root key.
+- Clients embed the root public key and refuse anything that does not chain to it.
+- Checksums and SBOMs ship with every release. Reproducible builds are a goal and are verified in CI where practical.
+- Canary rollout: 1% → 10% → 50% → 100%, with automatic pause on failure.
 
 ## Deployment and operations
 
-- **Self-hosted MVP:** one Go server binary, one Postgres instance, and a static web build served by the server. Docker Compose is the reference deployment.
-- **Hosted:** the same binary and image, behind a load balancer, with managed Postgres.
-- **Enterprise later:** Helm chart, horizontal scaling, external object storage, and SSO.
-- **Observability:** structured logs to stdout, Prometheus metrics at `/metrics`, OpenTelemetry traces. No proprietary APM in the core.
-- **Backups:** Postgres logical backups for team deployments; SQLite file backups for local mode; daemon state is reconstructable from the event log and agent configuration.
+- **Self-hosted:** one binary and one SQLite file. Docker is optional; systemd is the reference.
+- **Official:** the same packages behind a load balancer, with Postgres and object storage when scale requires it.
+- **Observability:** structured logs, local Prometheus metrics, optional OpenTelemetry traces; no telemetry sent anywhere by default.
+- **Backups:** encrypted local archives; the official service backs up ciphertext and account metadata, never plaintext.
 
 ## Desktop and mobile later
 
-- **Desktop:** Tauri 2 wraps the same web build and bundles the `toget` binary as a sidecar. This gives a tray icon, auto-start, deep links, and native notifications without a second UI codebase.
-- **Mobile:** the web app is a PWA first. If push notifications, background execution, or app-store distribution become necessary, Capacitor wraps the same web build. React Native is not the default because it would create a second UI codebase.
+- **Desktop:** Tauri 2 wraps the same web build and bundles the `toget` binary as a sidecar. Tray, auto-start, deep links, native notifications.
+- **Mobile:** PWA first. If push, background execution, or app-store distribution become necessary, a native shell wraps the same web build. React Native is not the default because it would fork the UI.
 
 ## Version policy
 
-- **Go:** track the current stable release; `go.mod` pins the minimum. Go's compatibility promise protects existing code.
-- **Node:** use an active LTS release, pinned in `.mise.toml` and CI.
-- **PostgreSQL:** support the current major and the previous major; test migrations against both.
-- **API:** `/api/v1` is stable. Additive fields are allowed. Breaking changes require `/api/v2` and a documented overlap period.
-- **Event schemas:** each event type has a version; unknown fields are preserved where possible.
-- **Dependencies:** prefer libraries with a stable API and an active maintainer. Avoid dependencies that own the domain model.
+- **Go:** current stable; `go.mod` pins the minimum.
+- **Node:** active LTS, pinned in `.mise.toml` and CI.
+- **Protocol:** integer version, N-2 support window, additive changes first.
+- **Schema:** integer version with forward migrations and backups before migration.
+- **Dependencies:** prefer stable APIs and active maintainers; avoid dependencies that own the domain model.
+- **Cryptography:** pin versions, review advisories, and keep an upgrade path for every primitive.
 
 ## Rejected alternatives
 
 | Alternative | Why not |
 | --- | --- |
-| **All TypeScript (Node daemon)** | Cross-platform service installation and native modules are fragile; packaging a Node runtime into a daemon is heavier; process/signal handling is weaker. Possible, but not the best long-term fit. |
-| **Rust for the server** | Excellent performance and safety, but slower iteration and a smaller hiring pool for CRUD-heavy server work. Rust remains an option for a future performance-critical helper. |
-| **Python for the server** | Great for prototypes and data work, but packaging, concurrency, and long-running daemon operations are less predictable. |
-| **Elixir/Phoenix** | Strong realtime story, but adds a second backend ecosystem and a smaller hiring pool for a small open-source project. |
-| **Next.js** | SSR and server runtime complexity are not needed for an authenticated realtime dashboard. |
-| **GraphQL** | More moving parts than REST + WebSocket for this data model; harder for third-party clients to adopt. |
-| **MongoDB** | The data is relational (users, rooms, memberships, events) and benefits from transactions and SQL. |
-| **Microservices** | Premature for a small team. A modular monolith with clear package boundaries can be split later if measurements justify it. |
-| **Kubernetes-first** | Too much operational surface for the MVP. Compose first; Helm when enterprise deployments need it. |
-| **Proprietary BaaS (auth, database, realtime)** | Convenient at first, but creates migration risk and weakens the self-hosted/open-source promise. |
+| **Matrix** | Mature, but its homeserver replication and trust model conflict with local-first, participant-held history, and a blind official service |
+| **libp2p** | Large identity/routing/transport stack; Toget's relay tree and account model are specific enough that we would fight it |
+| **All TypeScript / Node daemon** | Cross-platform service install and native modules are fragile; packaging a Node runtime is heavy |
+| **Rust for the node** | Excellent safety and performance, but slower iteration for a small team; a future performance-critical helper can be Rust |
+| **Python** | Great for prototypes, weaker for long-running cross-platform services and packaging |
+| **Elixir/Phoenix** | Strong realtime story, but a second backend ecosystem and a smaller pool for this project |
+| **Next.js** | SSR and a server runtime are unnecessary for an authenticated SPA |
+| **GraphQL** | More moving parts than REST + typed events for this data model; harder for third-party clients |
+| **gRPC everywhere** | Browser and debugging complexity; Protobuf over QUIC/WSS plus a JSON local API is simpler to adopt |
+| **Postgres by default** | Forces every personal node to run a database server |
+| **MongoDB** | The data is relational (accounts, devices, memberships, events) and benefits from transactions |
+| **Microservices** | Premature; a modular monolith with clear packages can split later if measurements justify it |
+| **Kubernetes-first** | Too much operational surface for the MVP; a binary and Compose first |
+| **Proprietary BaaS** | Convenient at first, but creates migration risk and weakens the self-hosted promise |
 
 ## What would make us revisit a decision
 
-A stack decision should change only when there is evidence, not fashion. Triggers to revisit:
+- A platform requirement the node cannot meet in Go.
+- QUIC unavailable or unreliable on a meaningful share of networks, making WSS the primary path.
+- SQLite becoming a proven bottleneck for the official service.
+- A crypto primitive losing its security margin, requiring a versioned migration.
+- A protocol requirement that QUIC + Protobuf cannot express.
 
-- The daemon cannot meet a platform requirement (for example, a needed OS API is unavailable in Go).
-- Postgres becomes a proven bottleneck at a scale where a different store is justified.
-- The web UI needs a capability that React cannot reasonably provide.
-- A protocol requirement cannot be met by HTTP + WebSocket.
-
-If a change is needed, the API contract, domain packages, and event log stay the same; only the adapter or runtime changes. That is the point of the boundaries.
+If a change is needed, the protocol contract and domain packages stay the same; only the adapter or runtime changes. That is what the boundaries are for.
 
 ## The short version
 
-**Go for the server and daemon. TypeScript/React for the web. Postgres and SQLite for data. OpenAPI and WebSocket for the contract. One repository, one release train, boring standards.**
-
-Two languages is a deliberate trade: Go gives the daemon a reliable cross-platform story, and TypeScript gives the UI the ecosystem it needs. The API contract keeps them independent, so neither choice forces a rewrite of the other.
+**Go for the node and the official service. QUIC plus a WSS fallback, Protobuf on the wire. SQLite first. React for the local UI. Standard cryptography only. One repository, one release train, boring standards.**

@@ -21,12 +21,19 @@ We aim to acknowledge reports within three business days and will keep you infor
 
 Especially relevant areas:
 
-- Authentication and authorization between users, agents, and rooms
-- Local daemon pairing and token handling
+- Authentication and authorization between accounts, devices, agents, and rooms
+- End-to-end encryption: the envelope, HPKE key wrapping, epoch rotation, AAD binding
+- Relay behavior: metadata leakage, envelope tampering, replay, offline queue abuse
+- Account host behavior: ciphertext handling, PAKE login, device enrollment and revocation
+- Recovery credential handling and the password-reset flow (the file must never be uploaded)
+- Release signing, update verification, and rollback
+- Local API exposure, token handling, and origin checks
 - Prompt injection that can cause unintended tool execution
 - Approval bypasses and audit-log tampering
 - Secret storage and leakage
 - Path traversal, SSRF, and command injection in connectors
+
+The intended trust model is documented in [docs/security-model.md](docs/security-model.md). If the implementation disagrees with it, that is a security bug.
 
 ## Out of scope
 

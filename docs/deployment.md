@@ -1,117 +1,188 @@
-# Deployment
+# Deployment (Draft)
+
+> Status: design draft. Installation commands and file paths are the intended shape, not final.
+
+Toget is deployed as a **node**: one `toget` binary that can act as a daemon, a self-hosted account host, a relay, or the local CLI. Most users run it on one machine and never think about the rest.
 
 ## Modes
 
-| Mode | Server | Database | Daemon | Use case |
-| --- | --- | --- | --- | --- |
-| **Local dev** | `toget server` on localhost | Postgres in Docker, or SQLite for local mode | `toget daemon` on the same machine | Development and demos |
-| **Self-hosted** | Docker container or binary | PostgreSQL | User machines | A team or a privacy-conscious user |
-| **Hosted** | Managed containers | Managed PostgreSQL | User machines | The commercial service |
-| **Enterprise** | Helm chart, HA | Managed or external PostgreSQL | Managed fleet | SSO, retention, support |
+| Mode | Where the account lives | Reachability | Who can decrypt |
+| --- | --- | --- | --- |
+| **Local only** | This machine | LAN | This machine |
+| **Self-hosted, public** | This machine (VPS or home server with a public address) | Direct | This machine |
+| **Self-hosted behind NAT** | This machine | Outbound to a relay | This machine |
+| **Official-hosted** | The official service | The official service | The user's devices |
+| **Relay-only** | No account | Public address | Nobody; it forwards ciphertext |
+| **Mixed room** | Each member's chosen host | Per member | Each member's endpoint |
 
-## Self-hosted reference deployment
+The account host is chosen at registration and cannot be moved silently. Moving an account to another host is a future migration flow, not a setting.
 
-```yaml
-# deploy/compose/docker-compose.yml (sketch)
-services:
-  postgres:
-    image: postgres:17
-    environment:
-      POSTGRES_DB: toget
-      POSTGRES_USER: toget
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U toget"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
+## Requirements
 
-  server:
-    image: ghcr.io/sidenor/toget:latest
-    environment:
-      TOGET_DATABASE_URL: postgres://toget:${POSTGRES_PASSWORD}@postgres:5432/toget?sslmode=disable
-      TOGET_PUBLIC_URL: https://toget.example.com
-      TOGET_LISTEN_ADDR: :8080
-    depends_on:
-      postgres:
-        condition: service_healthy
-    ports:
-      - "8080:8080"
+- Linux `amd64`/`arm64`/`armv7`, macOS `amd64`/`arm64`, or Windows `amd64`.
+- 1 CPU core and 256 MB of RAM for a small node; more if it runs Agents.
+- Disk: a few hundred MB for the binary and local data, plus room history and attachments.
+- A stable outbound connection. Inbound reachability is optional; a relay covers NAT and firewalls.
+- For a public self-hosted account host: a domain is recommended but not required; a static IPv6 address or a working port mapping is enough.
 
-volumes:
-  postgres-data:
-```
+## Ports
 
-Put a TLS-terminating reverse proxy (Caddy, Nginx, or a cloud load balancer) in front of the server. Do not expose Postgres to the public internet.
+| Port | Purpose | Exposure |
+| --- | --- | --- |
+| `7717` | Node protocol (QUIC, WSS fallback) | Reachable by peers, or outbound-only through a relay |
+| `7718` | Local API and web UI | `127.0.0.1` or a Unix socket only |
 
-## Configuration
+Do not expose `7718` to the network. The local UI is not designed to be a public web app.
 
-Configuration comes from environment variables first, then an optional YAML file. All variables use the `TOGET_` prefix.
-
-| Variable | Purpose |
-| --- | --- |
-| `TOGET_DATABASE_URL` | PostgreSQL connection string |
-| `TOGET_PUBLIC_URL` | Public base URL for links and OAuth callbacks |
-| `TOGET_LISTEN_ADDR` | HTTP listen address, default `:8080` |
-| `TOGET_LOG_LEVEL` | `debug`, `info`, `warn`, `error` |
-| `TOGET_SESSION_SECRET` | Session signing secret |
-| `TOGET_GITHUB_CLIENT_ID` / `_SECRET` | GitHub OAuth |
-| `TOGET_SMTP_URL` | Email magic links and notifications |
-| `TOGET_S3_*` | Optional object storage for attachments and exports |
-
-Secrets should be provided by the platform's secret manager or a root-readable env file, never committed.
-
-## Database migrations
-
-- Migrations are embedded in the server binary.
-- `toget migrate` applies them explicitly; `toget server --migrate` applies them at startup for small deployments.
-- For HA deployments, run migrations as a separate job before rolling out the new version.
-- Migrations must be backward-compatible for one release: add columns first, backfill, then remove old code.
-
-## Daemon installation
+## Install
 
 ### Linux
 
-- Install the binary to `/usr/local/bin/toget`.
-- Install `deploy/systemd/toget.service`.
-- State: `/var/lib/toget` for system service, or `~/.local/state/toget` for user service.
-- Config: `/etc/toget/config.yaml` or `~/.config/toget/config.yaml`.
+- Binary in `/opt/toget/versions/<version>/`, with `/opt/toget/current` as a symlink.
+- `toget` on `PATH` through `/usr/local/bin/toget`.
+- State in `/var/lib/toget/{config,identity,data,keys,relay,logs,backups,update}`.
+- Service unit in `/etc/systemd/system/toget.service`; runs as a dedicated `toget` user.
+- `toget doctor` checks ports, permissions, disk space, clock skew, and connectivity.
 
 ### macOS
 
-- Install the binary to `/usr/local/bin/toget` or bundle it in the app.
-- Install `deploy/launchd/com.toget.daemon.plist`.
-- State: `~/Library/Application Support/Toget`.
-- Secrets: Keychain.
-- Sign and notarize the binary and the app bundle for distribution.
+- Binary and app bundle in `/Applications/Toget.app` or a Homebrew cask.
+- State under `~/Library/Application Support/Toget`.
+- `launchd` agent for login-time start; secrets in Keychain.
+- Signed and notarized for distribution.
 
 ### Windows
 
-- Install the binary to `%ProgramFiles%\Toget`.
-- Register a Windows service (via `golang.org/x/sys/windows/svc` or the installer).
-- State: `%ProgramData%\Toget`.
-- Secrets: Credential Manager.
-- Sign the installer and binaries before public distribution.
+- Installer under `%ProgramFiles%\Toget`, state under `%ProgramData%\Toget`.
+- Windows service registered by the installer; secrets in Credential Manager.
+- Signed installer and binaries.
 
-## Upgrades
+### Container
 
-- The server exposes `/healthz` and `/readyz`.
-- The daemon checks for signed releases and can self-update, but auto-update is opt-in.
-- Protocol version is negotiated; a newer daemon can talk to an older server within the supported window.
-- Rollbacks require a database migration policy; destructive migrations are not allowed in a patch release.
+A container image is published for self-hosted account hosts and relays. Mount a persistent volume for `/var/lib/toget` and publish `7717` only if the node should accept direct connections.
+
+```yaml
+services:
+  toget:
+    image: ghcr.io/sidenor/toget:latest
+    restart: unless-stopped
+    ports:
+      - "7717:7717/udp"
+      - "7717:7717/tcp"
+    volumes:
+      - toget-data:/var/lib/toget
+volumes:
+  toget-data:
+```
+
+The container is a convenience. A static binary on the host is the reference deployment, because it can use the host's keychain, service manager, and update path.
+
+## Create an account
+
+```bash
+toget account create
+```
+
+The command asks where the account should live:
+
+- **This machine** — self-hosted. The node prints the 14-digit account ID and starts serving as the account host.
+- **Official** — the node registers with the official service and stores the account record there.
+
+For an official-hosted account, registration generates the account master key and the recovery credential. The credential file must be downloaded and confirmed before registration completes:
+
+```text
+toget-recovery-48392017-174628.togetkey
+```
+
+Store it offline. It is a bearer secret: anyone with the file and the account ID can reset the password and unwrap the account key. It is never uploaded to the official service; the reset page reads it locally in the browser.
+
+Self-hosted accounts do not have a recovery credential. The local administrator can reset the password:
+
+```bash
+toget account reset-password
+```
+
+or from the local UI at `127.0.0.1:7718`. If the machine is lost and there is no backup, the data is lost. Full-disk encryption and regular backups are strongly recommended.
+
+## Connect from another device
+
+```bash
+toget device enroll --account 48392017-174628
+```
+
+The new device shows a request; an existing device or the account host approves it. The account key signs the new device certificate, and the current room epoch keys are wrapped to it. The new device then syncs room history up to its access.
+
+Device roles:
+
+- **Persistent node** — always on, callable, stores a copy, can relay.
+- **Client App** — phone/tablet; chat and approvals, no relay, not callable.
+- **Pure CLI** — no persistent service, for scripts and servers.
+
+## Networking
+
+### Direct
+
+The node advertises its endpoints in its signed manifest. Clients try IPv6, then port mapping (UPnP/NAT-PMP/PCP), then QUIC hole punching. Direct connections are preferred because they are faster and keep relays out of the path.
+
+### Relay
+
+If direct fails, the node uses its parent relay:
+
+```bash
+toget relay status
+toget relay set-parent 48392018
+toget relay disable
+```
+
+- The default parent is the official service.
+- A node can use a friend's node, a community relay, or its own public node.
+- A relay sees only the outer envelope; it cannot decrypt.
+- Relays can hold messages for offline recipients for a bounded TTL.
+
+A node that should never relay for others can turn relaying off while still using a parent for its own traffic. The exact semantics of "no relay" are still being decided.
+
+### Public node checklist
+
+- Firewall allows `7717` (UDP and TCP) from the internet.
+- `7718` is bound to localhost only.
+- The service runs as a non-root user with a read-only binary directory.
+- Disk quotas are set for room history and relay queues.
+- Logs are rotated.
+- The host key is backed up; losing it changes the server code.
+
+## Updates
+
+- The daemon checks the signed release manifest on a schedule.
+- Updates download to a temporary directory, verify the signature and hash, extract a new version directory, switch `current`, and restart with a delay.
+- A health check runs after restart; failure rolls back to the previous version.
+- The previous version is kept until the next successful update.
+- Auto-update is opt-in for self-hosted nodes and on by default for official-hosted accounts, where the user can still choose "not now" unless the release is security-critical or protocol-incompatible.
 
 ## Backups
 
-- **Server:** nightly PostgreSQL logical backups, plus point-in-time recovery for hosted deployments.
-- **Daemon:** local state is reconstructable from the server event log and the agent configuration file. Back up the config and the local vault.
-- **Audit exports:** store hash-chain manifests with the export so integrity can be verified later.
+What matters, in order:
+
+1. **Account and device keys** — without them, encrypted history is unreadable.
+2. **Room history and local data** — `/var/lib/toget/data` or the platform equivalent.
+3. **Configuration** — relay parent, ports, Agent policies.
+4. **Recovery credential** — for official-hosted accounts, stored offline.
+
+A backup is only useful if restore is tested. `toget backup` writes an encrypted archive; `toget restore` verifies and restores it. Backups never leave the machine unless the user moves them.
 
 ## Observability
 
-- Structured JSON logs to stdout.
-- Prometheus metrics at `/metrics` (protected or internal-only).
-- OpenTelemetry traces exported via OTLP.
-- Health endpoints for load balancers.
-- No proprietary APM dependency in the core.
+- Structured logs to stdout and to a rotating local file.
+- `toget status` shows rooms, peers, relay path, connected devices, and Agent state.
+- Metrics are exposed locally for the user; no telemetry is sent anywhere by default.
+- Crash reports are opt-in and never include message content or keys.
+
+## Security checklist for self-hosters
+
+- Full-disk encryption on the account host.
+- `7718` bound to localhost or a Unix socket.
+- A dedicated non-root service user.
+- Automatic security updates for the OS.
+- Backups tested at least once.
+- Recovery credential stored offline for official-hosted accounts.
+- Review the device list after any suspicious login.
+- Keep the node within the supported version window (N-2).

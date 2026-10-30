@@ -5,11 +5,11 @@
 
 ## Context
 
-The first client is a web app for task inboxes, rooms, approvals, agent status, and audit timelines. It must be fast to develop, accessible, and reusable inside future desktop and mobile shells. The app is authenticated and realtime; it does not need SEO or server-side rendering.
+The first client is the local web UI: a room list and conversation where messages, cards, approvals, Agent status, and tool receipts share one timeline. It must be fast to develop, accessible, and reusable inside future desktop and mobile shells. The app is authenticated and realtime; it does not need SEO or server-side rendering. It talks to the local daemon, not to a remote dashboard server.
 
 ## Decision
 
-Use TypeScript, React, Vite, React Router, TanStack Query, Tailwind CSS, Radix primitives, and shadcn/ui. The app is a static SPA served by the Go server or a CDN.
+Use TypeScript, React, Vite, React Router, TanStack Query, Tailwind CSS, Radix primitives, and shadcn/ui. The app is a static SPA served by the local daemon at `127.0.0.1:7718` or embedded in a desktop/mobile shell.
 
 ## Consequences
 
@@ -17,15 +17,17 @@ Use TypeScript, React, Vite, React Router, TanStack Query, Tailwind CSS, Radix p
 - Vite keeps the development loop fast; the build is a static bundle.
 - The same build can be wrapped by Tauri for desktop and Capacitor for mobile.
 - The API client is generated from OpenAPI, so wire types are not hand-written.
-- The app must handle its own routing, authentication state, and error boundaries; there is no server-rendering framework doing that.
+- The local API client is generated from OpenAPI; room event types are generated from Protobuf.
+- The app must handle its own routing, session token handling, and error boundaries; there is no server-rendering framework doing that.
 - Accessibility depends on using Radix primitives correctly and testing keyboard flows.
+- The same build can be installed as a PWA before a native app exists.
 
 ## Alternatives considered
 
-- **Next.js:** excellent for content and SSR, but adds a server runtime and caching model that this authenticated dashboard does not need.
+- **Next.js:** excellent for content and SSR, but adds a server runtime and caching model that this authenticated local UI does not need.
 - **Vue/Svelte:** both are good; React was chosen for ecosystem size and the availability of accessible primitives.
 - **Server-rendered Go templates:** simpler deployment, but a poorer fit for a rich realtime app and future shells.
-- **React Native for mobile:** would create a second UI codebase; Capacitor is the default until native capabilities require otherwise.
+- **React Native for mobile:** would create a second UI codebase; a native shell around the same web build is the default until native capabilities require otherwise.
 
 ## Review trigger
 

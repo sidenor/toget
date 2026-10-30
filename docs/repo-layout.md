@@ -1,6 +1,6 @@
-# Repository Layout
+# Repository Layout (Draft)
 
-Toget is a single repository containing the server, the cross-platform daemon, the web app, future desktop/mobile shells, shared packages, deployment assets, and documentation.
+Toget is one repository containing the node, the official service, the local web UI, the reset page, shared packages, deployment assets, and documentation.
 
 ## Top-level tree
 
@@ -8,17 +8,19 @@ Toget is a single repository containing the server, the cross-platform daemon, t
 toget/
 ├── .github/
 │   ├── workflows/
-│   │   ├── ci.yml                 # lint, test, build, cross-platform daemon matrix
-│   │   ├── release.yml            # GoReleaser, container images, checksums
+│   │   ├── ci.yml                 # lint, test, cross-platform build
+│   │   ├── release.yml            # artifacts, manifests, signatures
 │   │   └── security.yml           # dependency and vulnerability scanning
 │   ├── ISSUE_TEMPLATE/
 │   └── pull_request_template.md
 ├── .editorconfig
 ├── .gitignore
-├── .mise.toml                     # pinned Go, Node, pnpm, task versions
-├── Taskfile.yml                   # cross-language task entry point
+├── .mise.toml                     # pinned Go, Node, pnpm, buf, task
+├── Taskfile.yml                   # cross-language entry point
 ├── go.mod
 ├── go.sum
+├── buf.yaml
+├── buf.gen.yaml
 ├── package.json
 ├── pnpm-lock.yaml
 ├── pnpm-workspace.yaml
@@ -29,207 +31,200 @@ toget/
 ├── SECURITY.md
 ├── TRADEMARK.md
 │
-├── api/                           # contract source of truth
-│   ├── openapi.yaml               # HTTP API 3.1
-│   ├── events/                    # JSON Schema for realtime events
-│   │   ├── envelope.schema.json
-│   │   ├── task.schema.json
-│   │   ├── approval.schema.json
-│   │   ├── agent.schema.json
-│   │   └── tool.schema.json
+├── cmd/
+│   ├── toget/
+│   │   └── main.go                # node, daemon, CLI, relay, self-hosted account host
+│   └── toget-official/
+│       └── main.go                # directory, official account host, update service
+│
+├── internal/                      # Go implementation, not importable outside the module
+│   ├── account/                   # account records, 14-digit ID, login, recovery
+│   ├── device/                    # device identity, enrollment, certificates, revocation
+│   ├── identity/                  # keys, signatures, trust anchors, manifests
+│   ├── crypto/                    # HPKE, AEAD, KDF, PAKE wrappers; no domain logic
+│   ├── protocol/                  # generated Protobuf types and validation
+│   ├── transport/                 # QUIC, WSS fallback, framing, handshake, reconnect
+│   ├── relay/                     # parent table, routing, forwarding, offline queue
+│   ├── room/                      # rooms, membership, epochs, events, ordering
+│   ├── message/                   # envelope construction, inner/outer split, attachments
+│   ├── sync/                      # cursors, deltas, snapshots, outbox replay
+│   ├── storage/                   # storage interfaces and SQLite implementation
+│   ├── agent/                     # Agent identity, sessions, supervision, permissions
+│   ├── discovery/                 # directory client, manifest cache, QR/manual addresses
+│   ├── official/                  # directory, update service, official account host
+│   ├── update/                    # version check, download, verify, switch, rollback
+│   ├── ui/                        # local web UI serving, token, origin checks
+│   ├── api/                       # local HTTP API handlers (OpenAPI)
+│   ├── config/                    # config loading, defaults, validation
+│   ├── platform/                  # paths, services, keychain, PTY
+│   └── version/                   # app, protocol, schema versions and capability flags
+│
+├── proto/                         # node protocol source of truth
+│   ├── toget/v1/
+│   │   ├── session.proto
+│   │   ├── account.proto
+│   │   ├── room.proto
+│   │   ├── message.proto
+│   │   ├── relay.proto
+│   │   ├── agent.proto
+│   │   └── envelope.proto
 │   └── README.md
 │
-├── cmd/
-│   └── toget/
-│       └── main.go                # one binary: server, daemon, login, pair, agent, doctor, migrate
+├── api/                           # local API source of truth
+│   ├── openapi.yaml
+│   └── README.md
 │
-├── internal/                      # Go implementation (not importable outside this module)
-│   ├── cli/                       # Cobra commands and wiring
-│   ├── config/                    # config loading, validation, defaults
-│   ├── server/                    # Hub: HTTP, WebSocket, middleware
-│   │   ├── http/
-│   │   ├── ws/
-│   │   └── middleware/
-│   ├── daemon/                    # local runtime
-│   │   ├── runtime/               # lifecycle, reconnect, outbox
-│   │   ├── supervisor/            # agent process supervision
-│   │   ├── pairing/               # device pairing
-│   │   └── updater/               # signed self-update (later)
-│   ├── domain/                    # business rules, no transport types
-│   │   ├── user/
-│   │   ├── room/
-│   │   ├── agent/
-│   │   ├── task/
-│   │   ├── approval/
-│   │   ├── policy/
-│   │   └── audit/
-│   ├── store/                     # storage interfaces and implementations
-│   │   ├── store.go
-│   │   ├── postgres/              # server
-│   │   └── sqlite/                # daemon local state
-│   ├── events/                    # event envelope, validation, hash chain
-│   ├── protocol/                  # generated wire types (do not edit)
-│   ├── auth/                      # OAuth, sessions, device tokens
-│   ├── secrets/                   # OS keychain + encrypted fallback
-│   ├── connectors/                # agent and tool integrations
-│   │   ├── mcp/                   # MCP client
-│   │   ├── process/               # generic CLI agent adapter
-│   │   └── http/                  # OpenAI-compatible / HTTP agent adapter
-│   ├── platform/                  # OS-specific behavior behind interfaces
-│   │   ├── paths/                 # config, state, log locations
-│   │   ├── service/               # systemd, launchd, Windows service
-│   │   ├── keychain/              # Keychain, Credential Manager, Secret Service
-│   │   └── pty/                   # PTY abstraction (later)
-│   └── telemetry/                 # logs, metrics, traces
-│
-├── apps/                          # user-facing clients
-│   ├── web/                       # React SPA (first client)
+├── web/
+│   ├── app/                       # local web UI (React SPA)
 │   │   ├── index.html
-│   │   ├── package.json
 │   │   ├── vite.config.ts
-│   │   ├── public/
 │   │   └── src/
 │   │       ├── app/               # bootstrap, providers, error boundary
-│   │       ├── routes/            # route definitions
-│   │       ├── features/          # feature folders
-│   │       │   ├── auth/
-│   │       │   ├── rooms/
-│   │       │   ├── tasks/
-│   │       │   ├── agents/
-│   │       │   ├── approvals/
-│   │       │   └── audit/
-│   │       ├── components/        # app-specific composed components
-│   │       ├── lib/               # API client, hooks, utilities
-│   │       ├── styles/
+│   │       ├── routes/
+│   │       ├── features/          # rooms, agents, approvals, devices, relay, audit
+│   │       ├── components/
+│   │       ├── lib/
 │   │       └── main.tsx
-│   ├── desktop/                   # Tauri 2 shell (later)
-│   └── mobile/                    # PWA first; Capacitor shell later
-│
-├── packages/                      # shared TypeScript
-│   ├── api-client/                # generated from api/openapi.yaml; do not edit by hand
-│   ├── ui/                        # design system and shared components
-│   └── config/                    # eslint, tsconfig, tailwind presets
+│   ├── reset/                     # static account-reset page; reads the credential locally
+│   ├── site/                      # project site and docs site
+│   └── packages/
+│       ├── ui/                    # design system and shared components
+│       ├── api-client/            # generated from api/openapi.yaml
+│       ├── proto/                 # generated from proto/
+│       └── config/                # eslint, tsconfig, tailwind presets
 │
 ├── deploy/
-│   ├── docker/
-│   │   ├── server.Dockerfile
-│   │   └── web.Dockerfile
-│   ├── compose/
-│   │   └── docker-compose.yml     # Postgres + server + web
-│   ├── helm/                      # enterprise/self-hosted chart (later)
 │   ├── systemd/
 │   │   └── toget.service
 │   ├── launchd/
 │   │   └── com.toget.daemon.plist
-│   └── windows/                   # service installer / MSI (later)
+│   ├── windows/
+│   │   └── toget.wxs
+│   ├── docker/
+│   │   └── Dockerfile
+│   └── compose/
+│       └── docker-compose.yml
 │
 ├── docs/
-│   ├── README.md                  # docs index
-│   ├── product.md                 # what we are building and for whom
-│   ├── architecture.md            # components, flows, security model
-│   ├── tech-stack.md              # choices and rationale
-│   ├── repo-layout.md             # this file
-│   ├── protocol.md                # HTTP/WebSocket/event protocol
-│   ├── security-model.md          # threat model and controls
-│   ├── deployment.md              # local, self-hosted, hosted
-│   ├── roadmap.md                 # milestones and definition of done
+│   ├── README.md
+│   ├── philosophy.md
+│   ├── product.md
+│   ├── architecture.md
+│   ├── protocol.md
+│   ├── security-model.md
+│   ├── deployment.md
+│   ├── tech-stack.md
+│   ├── repo-layout.md
+│   ├── roadmap.md
 │   └── decisions/                 # architecture decision records
 │       ├── 0001-monorepo.md
 │       ├── 0002-go-backend.md
 │       ├── 0003-web-stack.md
 │       ├── 0004-storage.md
-│       └── 0005-protocol.md
+│       ├── 0005-protocol.md       # superseded by 0008
+│       ├── 0006-account-model.md
+│       ├── 0007-endpoint-trust.md
+│       ├── 0008-mesh-protocol.md
+│       └── 0009-versioning.md
 │
 ├── scripts/
-│   ├── dev.sh                     # start Postgres, server, web
-│   ├── generate.sh                # OpenAPI and JSON Schema codegen
-│   ├── build.sh                   # build server + web
-│   └── release.sh                 # local release smoke test
+│   ├── build.sh                   # build node, official service, web assets
+│   ├── release.sh                 # local release smoke test
+│   ├── sign.sh                    # sign manifests and artifacts
+│   └── generate.sh                # regenerate Protobuf and OpenAPI clients
 │
-├── test/
-│   ├── integration/               # Go + testcontainers
-│   ├── e2e/                       # Playwright
-│   └── fixtures/                  # shared JSON fixtures for contract tests
+├── tests/
+│   ├── integration/               # multi-node, relay, storage, sync
+│   ├── e2e/                       # Playwright against a real local node
+│   ├── conformance/               # protocol fixtures a second implementation can reuse
+│   └── fixtures/
 │
 └── examples/
-    ├── cli-agent/                 # minimal agent that speaks the adapter protocol
-    └── mcp-server/                # example MCP server for connector tests
+    ├── cli-agent/                 # minimal Agent that speaks the CLI protocol
+    └── relay/                     # smallest relay-only node
 ```
 
 ## Rules
 
 ### `cmd/` contains wiring only
 
-`cmd/toget/main.go` parses flags, builds dependencies, and calls into `internal/`. Business logic belongs in `internal/domain` or the relevant subsystem. This keeps the binary entry point replaceable.
+`cmd/toget/main.go` and `cmd/toget-official/main.go` parse flags, build dependencies, and call into `internal/`. No business logic lives here. The official binary reuses the same internal packages as the node; it is a different composition, not a fork.
 
-### `internal/` is the Go application
+### `internal/` boundaries
 
-- `internal/domain` owns business rules and must not import HTTP, WebSocket, or database drivers.
-- `internal/store` defines interfaces and SQL implementations. Domain code depends on the interface, not Postgres or SQLite.
-- `internal/server` translates HTTP/WS into domain calls. It does not contain policy decisions.
-- `internal/daemon` owns local lifecycle, agent supervision, and the outbox.
-- `internal/connectors` contains adapters. Adding a new agent runtime should not require changes to the server.
+- `crypto` depends only on standard libraries and vetted crypto packages. It has no network, storage, or domain types.
+- `protocol` contains generated types and validation. It does not perform I/O.
+- `transport` moves bytes and manages connections. It knows nothing about rooms or approvals.
+- `room`, `message`, `account`, `device`, `agent`, and `sync` own the domain rules and do not import HTTP, QUIC, or SQL drivers.
+- `storage` defines interfaces; the SQLite implementation lives beside them. Domain code depends on the interface.
+- `relay` forwards opaque envelopes and must not import `message` decryption or room keys.
+- `official` composes the directory, update service, and official account host from the same building blocks as a self-hosted node.
+- `ui` and `api` translate transport into domain calls; policy decisions belong in the domain.
 
-### `api/` is the contract
+### `proto/` is the node contract
 
-- `api/openapi.yaml` is the source of truth for HTTP.
-- `api/events/*.schema.json` is the source of truth for realtime events.
-- Generated code goes to `internal/protocol` (Go) and `packages/api-client` (TypeScript).
-- Never hand-edit generated files. CI checks that regeneration produces no diff.
-- Breaking changes require a new API major version; additive changes are preferred.
+- `.proto` files are the source of truth for node-to-node messages.
+- Generated Go goes to `internal/protocol`; generated TypeScript goes to `web/packages/proto`.
+- Never hand-edit generated files. CI runs `task generate` and fails on a diff.
+- Breaking changes require a new package version (`toget/v2`), not a silent field change.
+- `buf breaking` runs against the previous release in CI.
 
-### `apps/` contains clients, not business logic
+### `api/` is the local contract
 
-- `apps/web` is a SPA. It talks to the server only through the generated API client and WebSocket protocol.
-- `apps/desktop` and `apps/mobile` are shells around the same web build. They must not fork the UI.
-- Feature code lives under `src/features/<feature>` with its own components, hooks, and tests.
+- `api/openapi.yaml` describes the local HTTP API on `127.0.0.1:7718`.
+- It covers rooms, messages, agents, approvals, devices, relay, settings, and audit.
+- The CLI and the web UI are both clients of this API; neither gets a private backdoor.
+- Generated Go server types and TypeScript clients are checked in and regenerated by CI.
 
-### `packages/` contains shared TypeScript
+### `web/` contains clients, not business logic
 
-- `packages/api-client` is generated.
-- `packages/ui` is the design system. Components here are generic; feature-specific components stay in the app.
-- `packages/config` holds shared lint, TypeScript, and Tailwind configuration.
+- `web/app` is the local UI SPA. It talks only through the local API and the event stream.
+- `web/reset` is a static page. It must not load third-party scripts or telemetry; it reads the recovery credential locally with the File API and WebCrypto.
+- `web/site` is the public project and documentation site. It can be statically generated and deployed separately.
+- `web/packages/ui` is the design system; feature-specific components stay in the app.
+- `web/packages/api-client` and `web/packages/proto` are generated.
 
-### `deploy/` is per environment
+### `deploy/` is per platform
 
-- Docker Compose is the reference self-hosted deployment.
-- Helm is for enterprise/HA deployments later.
-- Service files for systemd, launchd, and Windows live here and are embedded into the daemon installer.
-- Do not put secrets in this directory. Use environment variables or secret files.
+- systemd, launchd, and Windows service definitions live here and are embedded into installers.
+- Docker and Compose are convenience paths for self-hosted account hosts and relays.
+- No secrets in this directory. Use environment variables, keychain, or root-readable files.
 
 ### `docs/` is part of the product
 
-- Every irreversible or expensive decision gets an ADR in `docs/decisions/`.
+- Every expensive-to-reverse decision gets an ADR in `docs/decisions/`.
 - `docs/architecture.md` describes the current design, not aspirational features.
 - `docs/roadmap.md` defines what "done" means for each milestone.
-- Keep docs in English for the open-source community; Chinese summaries can live in release notes or the README.
+- Docs are in English for the open-source community; Chinese summaries can live in the README and release notes.
 
-### `test/` is for cross-cutting tests
+### `tests/` is for cross-cutting tests
 
-- Unit tests live next to the code they test.
-- `test/integration` covers database and multi-component behavior.
-- `test/e2e` covers user-visible flows with a real server, database, and fake daemon.
-- `test/fixtures` contains shared JSON used by both Go and TypeScript contract tests.
-
-## Private notes are not in this repository
-
-The repository is public. Personal notes, credentials, customer data, and internal strategy belong outside it. Public docs may summarize product decisions, but they must not contain private information.
+- Unit tests live next to the code.
+- `tests/integration` covers multi-node, relay, storage, and sync behavior.
+- `tests/e2e` covers user-visible flows with a real local node and a fake Agent.
+- `tests/conformance` holds protocol fixtures and a small reference harness that an independent implementation can run.
+- `tests/fixtures` holds shared data used by Go, TypeScript, and conformance tests.
 
 ## Naming conventions
 
 - Go packages: short, lowercase, no underscores.
 - TypeScript files: `kebab-case.ts` for modules, `PascalCase.tsx` for components.
-- Feature folders: singular nouns (`approval`, `agent`) in Go; plural route segments (`approvals`, `agents`) in the web app.
-- Event types: `domain.action` in past or present tense, consistently: `task.created`, `tool.requested`, `approval.granted`.
+- Feature folders: singular nouns in Go (`approval`, `agent`); plural route segments in the web app (`approvals`, `agents`).
+- Event types: `domain.action`, past tense, consistently: `message.posted`, `approval.granted`.
 - Environment variables: `TOGET_` prefix.
 - Database tables: plural snake_case (`room_members`, `approval_requests`).
+- Release directories: `daemon/<os>-<arch>/v<version>/`, immutable.
 
 ## Why one repository
 
-- One change can update the protocol, server, daemon, web client, and docs together.
+- One change can update the protocol, node, official service, web UI, and docs together.
 - One CI pipeline catches contract drift.
 - One release train keeps versions aligned.
 - Contributors can run the whole system with one command.
-- The open-source core and the hosted product share the same code, which keeps the self-hosted path honest.
+- The official service and the self-hosted node share code, which keeps the self-hosted path honest.
 
-The repository is a modular monolith, not a pile of unrelated projects. Boundaries are enforced by package structure and the API contract, not by separate repositories.
+This is a modular monolith, not a pile of unrelated projects. Boundaries are enforced by packages and contracts, not by separate repositories.
+
+## Private notes are not in this repository
+
+The repository is public. Personal notes, credentials, customer data, and internal strategy belong outside it. Public docs may summarize product decisions, but they must not contain private information.

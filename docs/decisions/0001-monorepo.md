@@ -5,24 +5,24 @@
 
 ## Context
 
-Toget consists of a server, a cross-platform daemon, a web app, shared protocol types, deployment assets, and documentation. The protocol changes frequently during early development, and a change often touches the server, daemon, web client, and docs at the same time.
+Toget consists of a node (daemon, CLI, relay, self-hosted account host), an official service (directory, relay, account host, update service), a local web UI, a reset page, shared protocol types, deployment assets, and documentation. The protocol changes frequently during early development, and a change often touches the node, official service, web client, and docs at the same time.
 
 ## Decision
 
-Use one repository for the core server, daemon, web app, shared packages, deployment assets, and public documentation.
+Use one repository for the node, the official service, the local web UI, the reset page, shared packages, deployment assets, and public documentation.
 
 ## Consequences
 
 - Protocol changes can be made atomically across all components.
 - One CI pipeline can catch contract drift and cross-platform build failures.
-- One release train keeps server, daemon, and web versions aligned.
+- One release train keeps the node, official service, and web UI versions aligned.
 - Contributors can run the whole system with one checkout.
 - The repository must enforce boundaries through package structure and the API contract, because it does not have separate-repository walls.
 - Private notes and customer data must stay outside the repository.
 
 ## Alternatives considered
 
-- **Separate server, daemon, and web repositories:** more independent releases, but contract changes become multi-repository dances. Rejected for a small team.
+- **Separate node, official-service, and web repositories:** more independent releases, but contract changes become multi-repository dances. Rejected for a small team.
 - **A monorepo only for the core, with separate connector repositories:** possible later for third-party connectors; the core stays together.
 
 ## Review trigger

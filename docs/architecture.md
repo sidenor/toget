@@ -1,189 +1,293 @@
-# Toget Architecture (Draft)
+# Architecture (Draft)
 
-> Status: design draft. Nothing here is implemented yet. Names and boundaries will change as the first version is built.
+> Status: design draft. Nothing here is implemented yet. Names, boundaries, and wire formats will change as the first version is built.
 
 ## Goals
 
-- Give one person a single place to use agents that run on different machines, in different tools, and on different model providers.
-- Let people and agents work in the same room without giving every agent unlimited authority.
-- Make every consequential action visible, approvable, and auditable.
-- Keep data local by default. A hosted service is optional, not required.
-- Stay open: the core protocol and client should be implementable by anyone.
+- Let people and Agents share rooms across machines, servers, and networks.
+- Keep data, keys, and Agent execution on machines the user controls; when the official service stores anything, it stores ciphertext.
+- Make the official service optional: a relay, a directory, and a blind store, never the owner of the data.
+- Keep messages end-to-end encrypted; the relay and the official host see ciphertext and metadata, not content.
+- Stay open: one protocol, implementable by anyone, with no lock-in.
 
 ## Non-goals
 
 - Training or serving foundation models.
-- Replacing agent runtimes such as coding agents, browser agents, or workflow engines.
-- Being a general-purpose social network or consumer messenger.
-- Storing a user's passwords for third-party services in plaintext.
+- Replacing Agent runtimes such as coding Agents, browser Agents, or workflow engines.
+- Being a public social network or a mass-messaging platform.
+- Hiding all metadata in v1. Who talks to whom, when, and how large a message is remains visible to relays and hosts.
+- Multi-tenant shared nodes where one machine hosts multiple people's accounts.
 
 ## Design principles
 
-1. **Local-first.** The daemon, agent credentials, and execution history live with the user. The hub coordinates; it does not need to see everything.
-2. **Bring your own agents.** Toget integrates with existing runtimes instead of forcing a single one.
-3. **Deny by default.** An agent has no authority until a policy grants it, and risky actions require a human decision.
-4. **Append-only history.** Events are immutable; corrections are new events, not edits.
-5. **Least privilege.** Every agent, connector, and room gets its own identity and scoped tokens.
-6. **Open core.** The protocol and core runtime are Apache-2.0. Enterprise governance features may be separately licensed.
+1. **The endpoint is the trust boundary.** A self-hosted server is an endpoint; an official-hosted account's endpoint is the user's device. The official service is never an endpoint.
+2. **Local-first.** The daemon, keys, history, and Agent execution live with the user. The network coordinates; it does not need to see everything.
+3. **Deny by default.** An Agent has no authority until a policy grants it; risky actions require a human decision.
+4. **Append-only history.** Events are immutable; corrections are new events.
+5. **Least privilege.** Every device, Agent, room, and connector gets its own identity and scoped authority.
+6. **Open source.** The daemon and the core protocol are Apache-2.0. There is no CLA and no plan to change the license.
+
+## System overview
+
+```text
+        ┌──────────────────────────────┐
+        │        Official service       │
+        │  directory · relay · account  │
+        │  host · update · identity     │
+        └──────────────┬───────────────┘
+                       │  encrypted envelopes / signed manifests
+       ┌───────────────┼────────────────┬─────────────────┐
+       │               │                │                 │
+┌──────▼──────┐ ┌──────▼──────┐  ┌──────▼──────┐  ┌───────▼──────┐
+│  Node A      │ │  Node B      │  │  Relay R    │  │  Node C      │
+│  daemon      │ │  daemon      │  │  (any node) │  │  daemon      │
+│  local data  │ │  local data  │  └─────────────┘  │  local data  │
+│  rooms       │ │  rooms       │                   │  rooms       │
+│  Agents      │ │  Agents      │                   │  Agents      │
+└──────┬───────┘ └──────┬───────┘                   └──────┬───────┘
+       │                │                                  │
+┌──────▼───────┐ ┌──────▼───────┐                  ┌───────▼──────┐
+│ Local web UI │ │ Local web UI │                  │ Phone/tablet │
+│ 127.0.0.1:7718│ │ 127.0.0.1:7718│                  │ client App   │
+└──────────────┘ └──────────────┘                  └──────────────┘
+```
+
+- **Nodes** are persistent devices running the daemon. They store local data, host rooms, run Agents, and can relay for others.
+- **Client Apps** (phone/tablet) are devices too, but they are not callable, do not relay, and cannot be an account root.
+- **Relays** forward encrypted envelopes. Any node with a reachable address can relay; the official service is the default.
+- **The official service** provides a directory, a default relay, optional account hosting, the update service, and the root identity that signs manifests.
+
+Any node can also be its owner's account host. The distinction is a role, not a separate product: the same binary can run a node, host an account, and relay encrypted traffic.
+
+## Account and device model
+
+### Account ID
+
+A public account ID is 14 decimal digits, displayed as `48392017-174628`:
+
+- **8 digits — server code.** `decimal(SHA-256(server_pubkey || server_nonce)) mod 100_000_000`, padded to 8 digits. The nonce is in the signed server manifest.
+- **6 digits — account code.** Assigned by the account host; unique on that host.
+- Capacity: 100 million server codes × 1 million accounts per host = 10^14 accounts. If it ever runs out, the protocol can extend to more digits; clients parse by length.
+
+The ID is a lookup key, not a secret and not a password. The cryptographic identity is the host's Ed25519 key and the account's own keys.
+
+### Account host
+
+The account host is the machine or service that stores the account's records, verifies login, assigns the account code, and keeps the device list. It is chosen at registration:
+
+- **Official:** the Toget service. Convenient; the user does not need a public address.
+- **Self-hosted:** the user's PC, NAS, or VPS. The user controls the machine; it must be reachable directly or through a relay.
+
+The account host is the source of truth for account records and membership. It is not the only place where room history is stored.
+
+### Devices
+
+- **One device belongs to one account.** A device cannot be shared by multiple people.
+- One account can have many devices.
+- A device has its own key pair and a device certificate signed by the account key.
+- Roles:
+  - **Persistent node:** runs the daemon, is callable, stores room copies, can relay, can host Agents.
+  - **Client App:** phone/tablet; can send and receive, but is not callable, does not relay, and cannot be an account root.
+  - **Pure CLI:** uses the same `toget` binary but does not run a persistent service; useful on a server or in a script.
+
+Switching accounts: log out, wipe local keys and caches, then join the new account as a new device. A device is never a member of two accounts.
+
+### Keys
+
+| Key | Owner | Purpose |
+| --- | --- | --- |
+| Account key (Ed25519) | The account, held on devices | Signs device certificates, migrations, and account-level statements |
+| Device key (Ed25519 + X25519) | Each device | Signs device messages; receives HPKE-wrapped room keys |
+| Room epoch key | Each room member endpoint | Encrypts room messages for one membership epoch |
+| Account master key (MK) | User devices; official host stores only ciphertext | Unlocks account data and history on official-hosted accounts |
+| Recovery key (RK) | The user's recovery credential file | Unwraps MK after a password reset |
+| Server root key (Ed25519) | Account host / official service | Signs the server manifest and rotates operation keys |
+| Release key | Official service | Signs version manifests; certified by the root key |
+
+## Trust model: who is an endpoint?
+
+An **endpoint** is a trust boundary that can decrypt messages and run Agents.
+
+| Hosting | Endpoint | Official can read? | Notes |
+| --- | --- | --- | --- |
+| Self-hosted account | The user's own server | No | The server can decrypt and run Agents; the official service only relays/directs |
+| Official-hosted account | The user's devices | No | Official stores ciphertext; the devices hold the keys |
+| Official-hosted + official Agent | The official Agent, with explicit authorization | Not by default | The user delegates a specific room/data scope; the scope is visible and revocable |
+
+- The official service is **never** an endpoint by default.
+- The official relay sees the outer envelope: target, time, size, sender signature. It does not see the room ID or content.
+- The official account host sees account metadata and ciphertext; it does not hold room epoch keys.
+- The official room home node stores ciphertext, orders envelopes, and does not decrypt unless the user explicitly authorizes it to run an Agent.
 
 ## Components
 
-```
-┌──────────────┐        ┌──────────────┐        ┌──────────────┐
-│  Web client   │        │  Server      │        │  Local       │
-│  (desktop/    │◄──────►│  (Hub)       │◄──────►│  Daemon      │
-│   mobile      │  WS    │ identity,    │  WS    │              │
-│   later)      │        │ rooms, relay,│        └──────┬───────┘
-└──────────────┘        │ event store   │               │
-                        └──────────────┘               │ spawns / connects
-                                                       ▼
-                                                ┌──────────────┐
-                                                │   Agents      │
-                                                │ CLI, browser, │
-                                                │ custom, MCP   │
-                                                └──────────────┘
-```
+### Account host
 
-### Client
+- Stores account records: ID, public keys, password verifier (PAKE/Argon2id), device list, room membership, and the encrypted master-key blob for official-hosted accounts.
+- Assigns the 6-digit account code.
+- Verifies login; issues device tokens.
+- Can host rooms as a home node.
+- For official hosting, stores ciphertext only; it cannot decrypt message content.
+- For self-hosting, it is the user's endpoint and can decrypt; the local administrator can reset the password.
 
-The human interface: task inbox, room timeline, approval prompts, agent status, and audit history. The first client is the web app. Desktop and mobile are later shells around the same web build, not separate products.
+### Daemon / node
 
-### Server (Hub)
+The daemon is the local runtime on a persistent device. It:
 
-Coordinates identity, rooms, invitations, presence, policy, and message relay. It stores the event log for hosted deployments. In local-only mode the server can run on the same machine as the daemon.
+- holds the device key and the device certificate;
+- stores the local copy of rooms the device participates in;
+- connects outbound to peers, relays, and the account host;
+- exposes the local API and local web UI on `127.0.0.1:7718`;
+- supervises Agent processes and enforces local permissions;
+- can relay encrypted envelopes for other nodes;
+- participates in the relay tree (parent advertisement, path discovery);
+- performs signed updates and rollbacks.
 
-### Local daemon
+### Local web UI
 
-Runs next to the agents. It:
+- Served by the daemon at `127.0.0.1:7718` or a Unix socket.
+- Token-protected; not exposed to the network by default.
+- Room list, conversation, Agent status, approval cards, device list, relay settings, and audit view.
+- The same web build can later be wrapped by a desktop shell.
 
-- connects outbound to the hub (no inbound ports required);
-- registers agents and reports heartbeats;
-- starts or attaches to agent processes;
-- executes approved tool calls;
-- streams events back to the hub;
-- holds local secrets in an encrypted vault.
+### Client App (phone/tablet)
 
-### Agent runtime adapter
+- A device, but not a persistent node.
+- Chat, approvals, notifications, and basic settings.
+- Not callable, not a relay, not an account root.
+- Uses the same protocol and identity model; it is not a second-class citizen in rooms.
 
-A thin layer that normalizes different agent runtimes into a common event and tool-call model. The MVP starts with a process adapter for CLI agents; MCP is the long-term first-class tool protocol. Other adapters can be added without changing the core.
+### Relay
 
-### Policy and approval service
+- Forwards encrypted envelopes when two nodes cannot connect directly.
+- Any node with a reachable address can relay; the official service is the default.
+- Sees the outer envelope only: target, time, size, sender signature.
+- Can store offline messages for a bounded TTL and capacity.
+- Is a service, not an ownership relationship: a device owned by A can relay B's encrypted traffic.
 
-Evaluates each proposed action against scoped policies. Produces `allow`, `deny`, or `require_approval`. Approval decisions are recorded as events and bound to a specific action digest so an approval cannot be replayed for a different action.
+### Official directory
 
-### Event store
+- Maps a server code to a signed server manifest (`server_id`, endpoints, public keys, protocol version).
+- Optional: clients can use cached cards, QR codes, peer exchange, or a manual address.
+- Cannot impersonate a server: the manifest is signed by the server root key, and the client verifies `server_id = hash(root_pubkey)`.
 
-An append-only log per room. Each event has an ID, timestamp, actor, type, payload, and references to prior events. Optional hash chaining makes tampering detectable. Team/hosted deployments use PostgreSQL; local mode uses SQLite behind the same store interface.
+### Official identity and update service
 
-### Runtime mapping (2026-10-30)
+- Long-term root key signs the official manifest and certifies online release keys.
+- Clients embed the root public key as a trust anchor.
+- Release manifests list versions, protocol/schema versions, artifacts, hashes, and signatures.
+- The update service returns the right artifact for a device's OS/arch and channel.
 
-| Architecture concept | Implementation |
-| --- | --- |
-| Client | React SPA in `apps/web`; later Tauri/Capacitor shells |
-| Server (Hub) | Go binary, `toget server`; PostgreSQL |
-| Local daemon | Go binary, `toget daemon`; SQLite outbox and local state |
-| Agent runtime adapter | `internal/connectors/{process,mcp,http}` |
-| Policy and approval service | `internal/domain/policy` + `internal/domain/approval` |
-| Event store | PostgreSQL (team/hosted) or SQLite (local mode) on the server; SQLite outbox on the daemon |
-| Protocol | OpenAPI 3.1 for HTTP; JSON-RPC 2.0 over WebSocket for events |
-| Deployment | Docker Compose for self-hosted; Helm later |
+### Agent runtime
 
-The detailed stack and rationale are in [tech-stack.md](tech-stack.md). The repository mapping is in [repo-layout.md](repo-layout.md).
+- An Agent runs on an endpoint: the user's self-hosted server, or the user's device for an official-hosted account.
+- The first runtime is Claude Code, driven by the `toget` CLI and a skill.
+- The CLI talks to the local daemon over the local API, using the Agent's own identity.
+- Agents have scoped permissions: file access, command execution, network access, and tool use.
+- Risky actions become approval cards in the room; the Agent waits for a human decision.
+- Shared Agents remain on their owner's endpoint; other members call them through the room. The owner can see the room content the Agent can see, and the room is told when a shared Agent is present.
 
-## Request flow (MVP)
+## Room model
 
-A risky action, end to end:
+A **room** is a private conversation with people, Agents, messages, files, and structured cards.
 
-1. The web app creates a task and sends it to the server.
-2. The server records `task.created` and routes the task to the daemon that owns the agent.
-3. The daemon starts or resumes the agent and streams `plan.proposed` and `tool.requested` events.
-4. The server's policy engine evaluates the proposed action. Safe actions are allowed; risky actions produce `approval.requested`.
-5. The web app shows the exact action, target, parameters, and amount. A human grants or rejects it.
-6. The server records `approval.granted` or `approval.rejected` and forwards the decision to the daemon.
-7. The daemon verifies the action digest, executes the tool, and streams `tool.started` and `tool.result`.
-8. The server appends the events to the room log; the web timeline updates in realtime.
-9. The task ends with `task.completed` or `task.failed`.
+- **Home node:** the node that orders the room's events and stores a copy. By default it is the room creator's account host.
+- **Event log:** an append-only log per room. Each event has an ID, author, type, payload, timestamp, and references to prior events. The home node assigns the room sequence.
+- **Membership:** humans and Agents are members. Membership changes rotate the room's epoch key.
+- **Cards:** a message can be text, a task card, an approval card, a tool-call receipt, or an Agent-status card.
+- **Threads:** replies grouped under a message without splitting the main stream.
+- **Approvals:** a card that blocks an action until a human decides. The approval is bound to the exact action digest.
 
-If the daemon is offline, it queues events in SQLite and replays them after reconnecting. The server deduplicates by event ID and assigns the room sequence.
+### History storage
 
-## Core objects
+History follows the participants, not a central server:
 
-| Object | Meaning |
-| --- | --- |
-| `User` | A human identity. |
-| `Agent` | A registered agent runtime with an owner, capabilities, and scopes. |
-| `Room` | A shared workspace containing humans, agents, tasks, and events. |
-| `Task` | A unit of work with a goal, owner, status, and budget. |
-| `Event` | An immutable record of something that happened. |
-| `Approval` | A human decision bound to a specific proposed action. |
-| `Policy` | A rule that maps an action to allow / deny / require approval. |
-| `Connector` | An integration that exposes tools or data to agents. |
+- Every participant's machine stores a copy of the rooms it can decrypt.
+- The room home node stores a copy and orders events.
+- The official service stores a copy only when it is involved: an official-hosted account (ciphertext), an official Agent with explicit authorization, or an official room home node (ciphertext).
+- A relay stores messages only temporarily for offline delivery; it is not a permanent history store.
+- If two self-hosted machines talk and no official Agent is involved, the official service has no copy.
+- Copies are per machine, not per identity: a person and their Agent on the same machine share one local copy.
 
-## Event types (initial set)
+### New members and history
 
-- `room.created`, `room.member_added`
-- `agent.registered`, `agent.heartbeat`, `agent.offline`
-- `task.created`, `task.assigned`, `task.completed`, `task.failed`
-- `plan.proposed`
-- `tool.requested`, `tool.allowed`, `tool.denied`, `tool.result`
-- `approval.requested`, `approval.granted`, `approval.rejected`, `approval.expired`
-- `message.posted`
-- `policy.changed`
+- By default, a new member sees only messages sent after joining.
+- The inviter can choose to attach history: all of it, or a recent window (for example, 7 or 30 days).
+- If history is attached, the home node (or an authorized endpoint) re-encrypts the selected messages for the new member's key and delivers them.
+- The room posts a system notice: "@inviter invited @new and attached the last 7 days."
+- If the new member is a shared Agent, the notice also warns that the Agent's owner will be able to see the attached history.
+- An inviter can only attach history they can see; inviting is not a way to read or forward messages they could not otherwise access.
 
-## Approval model
+## Message flow
 
-Actions are classified by scope:
+A room message, end to end:
 
-| Scope | Examples | Default |
-| --- | --- | --- |
-| `read` | Read a file, query a database | Allow inside the workspace |
-| `write` | Modify files, create records | Allow with audit |
-| `external.send` | Send email, post publicly, call a third-party API | Require approval |
-| `money.spend` | Purchases, transfers, paid API calls above a threshold | Require approval |
-| `destructive` | Delete data, revoke access, force-push | Require approval |
+1. The sender's endpoint encrypts the inner message with the room epoch key. The inner message contains the room ID, epoch, sender, body, attachments, and mentions.
+2. The sender wraps it in an outer envelope: target node, message ID, timestamp, size, and the sender's signature.
+3. The sender sends the envelope to the room home node, directly if possible, otherwise through a relay.
+4. The home node verifies the signature and ordering, assigns a room sequence, stores its copy, and forwards the envelope to the other member endpoints. How the home node learns the room without exposing the room ID to relays is still open (a routing token visible only to the home node, or a global order with client-side sequencing).
+5. Each recipient endpoint verifies the sender signature, decrypts the inner message with the epoch key, and stores its copy.
+6. Delivery is at-least-once; recipients deduplicate by message ID. The home node's sequence is the ordering key.
 
-Policies can narrow these defaults by agent, room, connector, amount, recipient, or time window. An approval is valid only for the exact action it describes and expires after a configurable window.
+If a member is offline, the home node or a relay holds the envelope for a bounded TTL. When the member reconnects, it syncs from its last known sequence.
 
-## Security model
+## Relay tree
 
-Threats considered in the first design:
+Every node has a **parent relay**: the node it uses to reach the rest of the network when direct connections fail. The default parent is the official service; users can choose a friend's node, a community relay, or their own public node.
 
-- **Prompt injection** from untrusted content. Tool results are labeled as untrusted, and actions that cross a trust boundary require approval.
-- **Malicious or compromised agent.** Each agent has its own token, scopes, and process boundary.
-- **Compromised daemon.** Tokens are short-lived and revocable; the hub can isolate a daemon.
-- **Approval phishing.** Approval prompts show the concrete action, target, and amount, not just a summary written by the agent.
-- **Audit tampering.** Events are append-only; hosted deployments can hash-chain them.
-- **Secret leakage.** Secrets stay in the local vault and are injected only into the process that needs them.
+- **Direct first:** try a direct connection (IPv6, port mapping, QUIC hole punching).
+- **Relay fallback:** if direct fails, send through the parent chain.
+- **Path calculation:** the sender and receiver find the lowest common ancestor in the relay tree; only the necessary hops are used.
+- **No ownership:** a relay is a service. A device owned by A can relay B's encrypted traffic.
+- **Bounded:** relays have rate limits, quotas, and a maximum message size. Large files prefer direct connections or encrypted object storage.
+- **Offline queue:** a relay can hold encrypted messages for a TTL; it does not become a permanent history store.
 
-End-to-end encryption for room content is desirable but not in the first milestone. The initial hosted mode should be explicit about what the server can see.
+Open details: parent-table merge rules, maximum hop count, and the exact meaning of "no relay" (no outbound via parent vs. no inbound relay at all) are still being decided.
+
+## Identity and cryptography
+
+- **Signatures:** Ed25519.
+- **Key exchange:** X25519.
+- **KDF:** HKDF-SHA256.
+- **AEAD:** XChaCha20-Poly1305 (preferred) or AES-256-GCM.
+- **HPKE:** RFC 9180 with X25519 + HKDF-SHA256 + ChaCha20-Poly1305, using a mature library.
+- **Password verification:** PAKE for login, Argon2id for the stored verifier and key derivation.
+- **Transport:** TLS 1.3 for all connections; server identity is verified with the signed manifest, not only the certificate.
+- **No custom cryptography.** Use standard combinations and mature libraries.
+
+## Sync and offline behavior
+
+- Login to the account host returns the account record, device list, room list, and a sync cursor.
+- Each device syncs room events incrementally from its last sequence.
+- The daemon keeps an outbox for messages and events created while offline; it replays them after reconnecting.
+- Event appends are idempotent by event ID.
+- A device that has been offline for a long time can request a snapshot plus a delta, rather than replaying every event.
+- A room home node that is offline makes the room read-only for new ordered events until it returns or a new home is chosen. The failover policy is still being designed.
+
+## Versioning and upgrades
+
+- **App version:** SemVer, visible to users.
+- **Protocol version:** integer, negotiated in the handshake. Breaking changes require a new major version and an overlap window.
+- **Data schema version:** integer, with forward migrations and backups.
+- **Capability flags:** optional features are advertised, not assumed.
+- **Release channels:** stable and beta.
+- **Support window:** the current and previous two minor versions (N-2) remain able to log in and exchange messages.
+- **Updates:** signed manifests, atomic switch to a new version directory, delayed restart, health check, automatic rollback on failure.
+- **Forced updates:** only for protocol-incompatible or security-critical releases, and only for devices that can reach the official service. LAN-only and offline deployments are not forced offline.
 
 ## Deployment modes
 
-1. **Local only.** Client, hub, and daemon on one machine. No account required.
-2. **Self-hosted team.** A team runs the hub; members run daemons on their own machines.
-3. **Hosted cloud.** The project runs the hub; users can still keep execution local.
-
-## Open-core boundary
-
-**Apache-2.0 core:** protocol, client, local daemon, hub, policy engine, basic event log, MCP connector.
-
-**Separately licensed enterprise features:** SSO/SCIM, advanced RBAC, long-term audit retention and export, compliance reports, high availability, private deployment support.
-
-The boundary should be documented per feature, and no core security capability should depend on a proprietary component.
-
-## Roadmap
-
-See [roadmap.md](roadmap.md) for milestones, definitions of done, and the near-term task list.
-
-- **M0 — scaffold.** Documentation, repository hygiene, buildable skeleton.
-- **M1 — local MVP.** One user, local daemon, one agent adapter, task inbox, approval prompts, event timeline.
-- **M2 — team rooms.** Multiple humans and agents, invitations, roles, scoped tokens.
-- **M3 — connectors and platform.** More agent adapters, policy templates, audit export, desktop/mobile shells.
+1. **Self-hosted account, LAN or public.** The user's machine is the account host and endpoint. Rooms can stay on the LAN; the official service is optional.
+2. **Self-hosted account behind NAT.** The machine keeps an outbound connection to a relay; other devices reach it through the relay.
+3. **Official-hosted account.** The official service stores ciphertext and account metadata; the user's devices are endpoints.
+4. **Mixed room.** A self-hosted account and an official-hosted account share a room; the room home node is the creator's account host, and the official service stores only what its hosted participants require.
+5. **Relay-only node.** A public node that forwards encrypted envelopes but hosts no accounts.
 
 ## Open questions
 
-- Which agent runtime should the first adapter target?
-- Should rooms be end-to-end encrypted from the start, or after the local MVP?
-- How much of the hub can be stateless?
-- What is the smallest useful policy language?
-- Which enterprise features are worth keeping closed without weakening trust?
+- Exact relay parent-table merge rules, maximum hop count, and "no relay" semantics.
+- Room home-node failover: read-only, queue, or elect a new home.
+- Offline queue TTL and capacity for relays.
+- The smallest useful policy language for Agent permissions.
+- How much of the official service can be stateless.
+- The first mobile client: responsive web, PWA, or native shell.

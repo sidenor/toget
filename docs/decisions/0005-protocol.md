@@ -1,7 +1,9 @@
 # 0005 — HTTP JSON + WebSocket, contract-first
 
-**Status:** accepted
+**Status:** superseded by [0008](0008-mesh-protocol.md)
 **Date:** 2026-10-30
+
+> This ADR described the first hub-centric draft: one server, HTTP JSON, and WebSocket JSON-RPC. The current design is a mesh of nodes with an end-to-end envelope, QUIC/Protobuf on the wire, and a local HTTP API. The record is kept for history; see 0008 for the current decision.
 
 ## Context
 

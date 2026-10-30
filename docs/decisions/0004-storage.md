@@ -1,39 +1,41 @@
-# 0004 — Postgres for team deployments, SQLite for local mode
+# 0004 — SQLite first; Postgres only at scale
 
 **Status:** accepted
 **Date:** 2026-10-30
+**Updated:** 2026-10-31 — replaced "Postgres for teams, SQLite for local" with "SQLite first".
 
 ## Context
 
-The server stores users, rooms, memberships, agents, tasks, approvals, policies, and an append-only event log. A team deployment needs a real database server. A local-first desktop user should not need to install one.
+A node stores account records, device certificates, room events, an outbox, sync cursors, and Agent configuration. It must work offline, survive restarts, and install without a database server. The official service starts with the same needs at a smaller scale; only a large deployment would need a shared database.
 
-The daemon also needs local state that survives restarts and works offline: an outbox, agent configuration, and a cache of room metadata.
+Earlier drafts assumed every team deployment would run Postgres. That forced a database server into a product whose first promise is "install one binary".
 
 ## Decision
 
-- **Server, team/hosted mode:** PostgreSQL, accessed with `pgx`, `sqlc`, and `goose` migrations.
-- **Server, local mode:** SQLite via the pure-Go `modernc.org/sqlite` driver, with the same migration discipline.
-- **Daemon:** SQLite for the outbox, local state, and cache.
-- **No ORM.** Queries are SQL; generated types come from `sqlc`.
+- **Node, daemon, self-hosted account host, and the official service at first:** SQLite via the pure-Go `modernc.org/sqlite` driver.
+- **Large official deployment, if measurements justify it:** PostgreSQL behind the same store interface, for account and room metadata; ciphertext blobs can move to object storage.
+- **No ORM.** Queries are SQL and reviewed. Migrations are plain SQL, embedded in the binary, applied explicitly or at startup.
 - The domain layer depends on a `store` interface, not on a database driver.
-- A shared behavior suite runs against both Postgres and SQLite to keep parity.
+- A shared behavior suite runs against every store implementation.
 
 ## Consequences
 
-- Postgres provides transactions, JSONB, `LISTEN/NOTIFY`, and a mature managed-service ecosystem for teams.
-- SQLite gives local users zero-ops storage and keeps cross-compilation free of CGO.
-- The daemon can work offline and replay events after reconnecting.
-- Two SQL dialects mean two sets of queries and a parity test suite. The store interface is intentionally small.
-- Schema changes require migrations and backward-compatible rollout in both implementations.
+- One binary and one data directory is a complete install.
+- `CGO_ENABLED=0` cross-compilation works on every supported platform.
+- The node works offline and replays its outbox after reconnecting.
+- SQLite serializes writes; a single node is the right scope. Room history is per participant, so a node does not need to serve thousands of writers.
+- If the official service moves to Postgres, it carries a second SQL dialect and a parity suite. The store interface is intentionally small to keep that cost bounded.
+- Schema changes require migrations and a backup before an incompatible change.
 
 ## Alternatives considered
 
-- **Postgres only:** simpler server code, but forces every desktop/local user to run Postgres. Rejected for a local-first product.
-- **SQLite only:** excellent local mode, but weak for multi-instance team deployments and concurrent writes at team scale. It would force a migration later.
-- **MySQL/MariaDB:** viable, but weaker JSONB and ecosystem fit for this data model.
+- **Postgres by default:** simpler at scale, but forces every personal node to run a database server. Rejected for a local-first product.
+- **SQLite only forever:** fine for nodes, but risky for a large official deployment with many concurrent writers.
+- **MySQL/MariaDB:** viable, but a weaker fit than Postgres for the scale path.
 - **MongoDB:** the data is relational; transactions and joins are useful.
 - **ORM (GORM/Ent):** faster CRUD, but hides queries and creates a schema abstraction that is hard to undo.
+- **Embedded KV stores (BoltDB, Badger):** fast, but poor fit for relational queries, cursors, and partial indexes.
 
 ## Review trigger
 
-Revisit if the two-store parity cost becomes disproportionate to the product value, or if Postgres becomes a measured bottleneck at a scale that justifies a different store. The store interface isolates either change.
+Revisit if SQLite write contention becomes a measured problem for the official service, or if a self-hosted account host needs multi-writer concurrency. The store interface isolates either change.
