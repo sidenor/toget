@@ -30,26 +30,27 @@
 
 ```
 ┌──────────────┐        ┌──────────────┐        ┌──────────────┐
-│   Client      │        │     Hub       │        │  Local       │
-│ desktop/mobile│◄──────►│ identity,     │◄──────►│  Daemon      │
-│               │  WS    │ rooms, relay, │  WS    │              │
-└──────────────┘        │ event store   │        └──────┬───────┘
-                        └──────────────┘               │
-                                                       │ spawns / connects
-                                                ┌──────▼───────┐
+│  Web client   │        │  Server      │        │  Local       │
+│  (desktop/    │◄──────►│  (Hub)       │◄──────►│  Daemon      │
+│   mobile      │  WS    │ identity,    │  WS    │              │
+│   later)      │        │ rooms, relay,│        └──────┬───────┘
+└──────────────┘        │ event store   │               │
+                        └──────────────┘               │ spawns / connects
+                                                       ▼
+                                                ┌──────────────┐
                                                 │   Agents      │
-                                                │ coding, browser│
+                                                │ CLI, browser, │
                                                 │ custom, MCP   │
                                                 └──────────────┘
 ```
 
 ### Client
 
-The human interface: task inbox, room timeline, approval prompts, agent status, and audit history. Desktop first; mobile as a companion for approvals and status.
+The human interface: task inbox, room timeline, approval prompts, agent status, and audit history. The first client is the web app. Desktop and mobile are later shells around the same web build, not separate products.
 
-### Hub
+### Server (Hub)
 
-Coordinates identity, rooms, invitations, presence, and message relay. It stores the event log for hosted deployments. In local-only mode the hub can run on the same machine as the daemon.
+Coordinates identity, rooms, invitations, presence, policy, and message relay. It stores the event log for hosted deployments. In local-only mode the server can run on the same machine as the daemon.
 
 ### Local daemon
 
@@ -64,7 +65,7 @@ Runs next to the agents. It:
 
 ### Agent runtime adapter
 
-A thin layer that normalizes different agent runtimes into a common event and tool-call model. MCP is the first-class tool protocol; other adapters can be added without changing the core.
+A thin layer that normalizes different agent runtimes into a common event and tool-call model. The MVP starts with a process adapter for CLI agents; MCP is the long-term first-class tool protocol. Other adapters can be added without changing the core.
 
 ### Policy and approval service
 
@@ -72,7 +73,38 @@ Evaluates each proposed action against scoped policies. Produces `allow`, `deny`
 
 ### Event store
 
-An append-only log per room. Each event has an ID, timestamp, actor, type, payload, and references to prior events. Optional hash chaining makes tampering detectable.
+An append-only log per room. Each event has an ID, timestamp, actor, type, payload, and references to prior events. Optional hash chaining makes tampering detectable. Team/hosted deployments use PostgreSQL; local mode uses SQLite behind the same store interface.
+
+### Runtime mapping (2026-10-30)
+
+| Architecture concept | Implementation |
+| --- | --- |
+| Client | React SPA in `apps/web`; later Tauri/Capacitor shells |
+| Server (Hub) | Go binary, `toget server`; PostgreSQL |
+| Local daemon | Go binary, `toget daemon`; SQLite outbox and local state |
+| Agent runtime adapter | `internal/connectors/{process,mcp,http}` |
+| Policy and approval service | `internal/domain/policy` + `internal/domain/approval` |
+| Event store | PostgreSQL (team/hosted) or SQLite (local mode) on the server; SQLite outbox on the daemon |
+| Protocol | OpenAPI 3.1 for HTTP; JSON-RPC 2.0 over WebSocket for events |
+| Deployment | Docker Compose for self-hosted; Helm later |
+
+The detailed stack and rationale are in [tech-stack.md](tech-stack.md). The repository mapping is in [repo-layout.md](repo-layout.md).
+
+## Request flow (MVP)
+
+A risky action, end to end:
+
+1. The web app creates a task and sends it to the server.
+2. The server records `task.created` and routes the task to the daemon that owns the agent.
+3. The daemon starts or resumes the agent and streams `plan.proposed` and `tool.requested` events.
+4. The server's policy engine evaluates the proposed action. Safe actions are allowed; risky actions produce `approval.requested`.
+5. The web app shows the exact action, target, parameters, and amount. A human grants or rejects it.
+6. The server records `approval.granted` or `approval.rejected` and forwards the decision to the daemon.
+7. The daemon verifies the action digest, executes the tool, and streams `tool.started` and `tool.result`.
+8. The server appends the events to the room log; the web timeline updates in realtime.
+9. The task ends with `task.completed` or `task.failed`.
+
+If the daemon is offline, it queues events in SQLite and replays them after reconnecting. The server deduplicates by event ID and assigns the room sequence.
 
 ## Core objects
 
@@ -141,10 +173,12 @@ The boundary should be documented per feature, and no core security capability s
 
 ## Roadmap
 
-- **M0 — scaffold.** Documentation, license, repository hygiene.
+See [roadmap.md](roadmap.md) for milestones, definitions of done, and the near-term task list.
+
+- **M0 — scaffold.** Documentation, repository hygiene, buildable skeleton.
 - **M1 — local MVP.** One user, local daemon, one agent adapter, task inbox, approval prompts, event timeline.
 - **M2 — team rooms.** Multiple humans and agents, invitations, roles, scoped tokens.
-- **M3 — connectors and governance.** More agent adapters, policy templates, audit export, self-hosted deployment.
+- **M3 — connectors and platform.** More agent adapters, policy templates, audit export, desktop/mobile shells.
 
 ## Open questions
 

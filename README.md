@@ -6,6 +6,16 @@ Toget is an open-source, local-first control plane for AI agents. It gives you o
 
 [中文](#中文)
 
+## Design docs
+
+- [Product](docs/product.md) — what Toget is, who it is for, and the MVP scope
+- [Architecture](docs/architecture.md) — components, event model, approval flow
+- [Technology stack](docs/tech-stack.md) — choices, rationale, and long-term version policy
+- [Repository layout](docs/repo-layout.md) — where every kind of code belongs
+- [Protocol](docs/protocol.md) — HTTP API, WebSocket events, versioning
+- [Security model](docs/security-model.md) — trust boundaries and controls
+- [Roadmap](docs/roadmap.md) — milestones and near-term tasks
+
 ## Why Toget
 
 Agents are scattered across laptops, servers, and clouds. You can't see what they're doing, you can't stop them before they act, and your teammates can't safely work with them.
@@ -23,7 +33,7 @@ Toget is the room where all of that comes together.
 
 ## Status
 
-Early development. Nothing usable yet. Open an issue if you want to follow along or share a use case.
+Design phase. The architecture and protocol are drafted; the first code scaffold is next. Nothing is usable yet. Open an issue if you want to follow along or share a use case.
 
 ## Architecture
 
