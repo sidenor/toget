@@ -21,10 +21,14 @@ The first implementation covers health, status, account, rooms, events, and
 messages. Agents, approvals, devices, relay settings, and audit endpoints are
 still design-only; they will be added to the same document as they land.
 
-Generated output:
+Planned generated output (not wired yet):
 
 - Go: `internal/api/` types and server stubs
 - TypeScript: `web/packages/api-client/`
+
+For the first local slice, the handlers in `internal/api/` and the web client
+in `web/app/src/api.ts` are written by hand against this document. Client
+generation and the CI drift check land before the API grows further.
 
 ## Node protocol
 
@@ -36,11 +40,15 @@ Generated output:
 
 ## Generation
 
+Protobuf types are generated and checked in:
+
 ```bash
 task generate
 ```
 
-CI runs the same command and fails if the working tree changes. Do not edit generated files by hand.
+CI runs the same command and fails if the working tree changes. OpenAPI client
+generation is not wired yet; until it is, changes to `openapi.yaml` and the
+hand-written handlers must be reviewed together.
 
 ## Versioning
 
