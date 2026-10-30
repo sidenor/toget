@@ -57,3 +57,6 @@ out/
 
 # Local agent state
 .toget/
+
+# Built binary at repository root
+/toget

@@ -318,19 +318,31 @@ type Store interface {
 	SaveRoomMemberKey(ctx context.Context, k *RoomMemberKey) error
 	GetRoomMemberKey(ctx context.Context, roomID string, epoch int, deviceID string) (*RoomMemberKey, error)
 	ListRoomMemberKeys(ctx context.Context, roomID string, epoch int) ([]RoomMemberKey, error)
+	CreateAttachment(ctx context.Context, a *Attachment) error
+	GetAttachment(ctx context.Context, id string) (*Attachment, error)
+	ListAttachments(ctx context.Context, roomID string) ([]Attachment, error)
+	AttachToEvent(ctx context.Context, eventID string, attachmentIDs []string) error
 }
 
 // Service owns room rules.
 type Service struct {
-	store Store
-	vault *vault.Vault
-	now   func() time.Time
-	mu    sync.Mutex
+	store   Store
+	vault   *vault.Vault
+	now     func() time.Time
+	mu      sync.Mutex
+	dataDir string
 }
 
+// Option configures a room service.
+type Option func(*Service)
+
 // New creates a room service.
-func New(store Store, v *vault.Vault) *Service {
-	return &Service{store: store, vault: v, now: time.Now}
+func New(store Store, v *vault.Vault, opts ...Option) *Service {
+	s := &Service{store: store, vault: v, now: time.Now}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // CreateRoom creates a room, its room.created event, and the creator's
@@ -427,7 +439,26 @@ func (s *Service) PostMessage(ctx context.Context, roomID string, actor Actor, b
 	if body.Format == "" {
 		body.Format = "plain"
 	}
-	return s.Append(ctx, roomID, actor, EventMessagePosted, body)
+	if len(body.Attachments) > 0 {
+		if err := s.RequireMember(ctx, roomID, actor); err != nil {
+			return nil, err
+		}
+		ids, err := s.validateAttachmentRefs(ctx, roomID, body.Attachments)
+		if err != nil {
+			return nil, err
+		}
+		body.Attachments = ids
+	}
+	event, err := s.Append(ctx, roomID, actor, EventMessagePosted, body)
+	if err != nil {
+		return nil, err
+	}
+	if len(body.Attachments) > 0 {
+		if err := s.store.AttachToEvent(ctx, event.ID, body.Attachments); err != nil {
+			return nil, err
+		}
+	}
+	return event, nil
 }
 
 // EditMessage appends a message.edited event. History is never rewritten.

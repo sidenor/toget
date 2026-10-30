@@ -25,13 +25,14 @@ type Config struct {
 
 // Paths describes the files a local node owns.
 type Paths struct {
-	Home         string
-	DB           string
-	VaultKey     string
-	APIToken     string
-	Config       string
-	WebCache     string
-	DownloadsDir string
+	Home           string
+	DB             string
+	VaultKey       string
+	APIToken       string
+	Config         string
+	WebCache       string
+	DownloadsDir   string
+	AttachmentsDir string
 }
 
 // DefaultHome returns the per-user data directory.
@@ -79,13 +80,14 @@ func Resolve(home string) (Paths, error) {
 		return Paths{}, fmt.Errorf("resolve home: %w", err)
 	}
 	return Paths{
-		Home:         abs,
-		DB:           filepath.Join(abs, "toget.db"),
-		VaultKey:     filepath.Join(abs, "vault.key"),
-		APIToken:     filepath.Join(abs, "api-token"),
-		Config:       filepath.Join(abs, "config.json"),
-		WebCache:     filepath.Join(abs, "web"),
-		DownloadsDir: filepath.Join(abs, "downloads"),
+		Home:           abs,
+		DB:             filepath.Join(abs, "toget.db"),
+		VaultKey:       filepath.Join(abs, "vault.key"),
+		APIToken:       filepath.Join(abs, "api-token"),
+		Config:         filepath.Join(abs, "config.json"),
+		WebCache:       filepath.Join(abs, "web"),
+		DownloadsDir:   filepath.Join(abs, "downloads"),
+		AttachmentsDir: filepath.Join(abs, "attachments"),
 	}, nil
 }
 

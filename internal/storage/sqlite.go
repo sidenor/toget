@@ -894,3 +894,18 @@ func isUniqueViolation(err error) bool {
 	return strings.Contains(msg, "UNIQUE constraint failed") ||
 		strings.Contains(msg, "constraint failed: UNIQUE")
 }
+
+// Backup writes a consistent snapshot of the database to dest. dest must not
+// exist.
+func (d *DB) Backup(ctx context.Context, dest string) error {
+	if dest == "" {
+		return errors.New("storage: empty backup path")
+	}
+	if _, err := d.db.ExecContext(ctx, `VACUUM INTO ?`, dest); err != nil {
+		return fmt.Errorf("storage: backup: %w", err)
+	}
+	if err := os.Chmod(dest, 0o600); err != nil {
+		return fmt.Errorf("storage: set backup permissions: %w", err)
+	}
+	return nil
+}

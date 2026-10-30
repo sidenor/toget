@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -25,6 +27,7 @@ import (
 	"github.com/sidenor/toget/internal/agent"
 	"github.com/sidenor/toget/internal/api"
 	"github.com/sidenor/toget/internal/approval"
+	"github.com/sidenor/toget/internal/backup"
 	"github.com/sidenor/toget/internal/config"
 	"github.com/sidenor/toget/internal/room"
 	"github.com/sidenor/toget/internal/session"
@@ -69,12 +72,115 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newRoomCommand())
 	root.AddCommand(newSendCommand())
 	root.AddCommand(newMessagesCommand())
+	root.AddCommand(newAttachmentCommand())
 	root.AddCommand(newAgentCommand())
 	root.AddCommand(newApprovalCommand())
 	root.AddCommand(newToolCommand())
 	root.AddCommand(newSearchCommand())
+	root.AddCommand(newBackupCommand())
+	root.AddCommand(newRestoreCommand())
 	root.AddCommand(newVersionCommand())
 	return root
+}
+
+func newBackupCommand() *cobra.Command {
+	var out string
+	cmd := &cobra.Command{
+		Use:   "backup [output]",
+		Short: "Write an encrypted snapshot of this node",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			paths, _, err := resolveConfig()
+			if err != nil {
+				return err
+			}
+			dest := out
+			if len(args) == 1 {
+				dest = args[0]
+			}
+			if dest == "" {
+				dir := filepath.Join(paths.Home, "backups")
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					return err
+				}
+				dest = filepath.Join(dir, "toget-"+time.Now().UTC().Format("20060102-150405")+".toget-backup")
+			}
+			db, err := storage.Open(paths.DB)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			manifest, err := backup.Create(cmd.Context(), db, paths, dest)
+			if err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(manifest)
+			}
+			fmt.Printf("Backup: %s\n", dest)
+			fmt.Printf("Files: %d · schema v%d · %s\n", len(manifest.Files), manifest.SchemaVersion, manifest.CreatedAt.Format(time.RFC3339))
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&out, "out", "", "output path")
+	return cmd
+}
+
+func newRestoreCommand() *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "restore <archive>",
+		Short: "Restore a node snapshot (stop the node first)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			paths, cfg, err := resolveConfig()
+			if err != nil {
+				return err
+			}
+			if running(cfg.Listen) {
+				return errors.New("the local node is running; stop `toget serve` before restoring")
+			}
+			manifest, err := backup.ReadManifest(args[0])
+			if err != nil {
+				return err
+			}
+			if !yes {
+				fmt.Printf("Restore %d files from %s?\n", len(manifest.Files), args[0])
+				fmt.Printf("Created: %s · schema v%d\n", manifest.CreatedAt.Format(time.RFC3339), manifest.SchemaVersion)
+				fmt.Print("Existing data will be moved to a pre-restore directory. Type yes to continue: ")
+				answer, _ := stdinReader.ReadString('\n')
+				if strings.TrimSpace(strings.ToLower(answer)) != "yes" {
+					return errors.New("restore cancelled")
+				}
+			}
+			restored, rollback, err := backup.Restore(cmd.Context(), paths, args[0])
+			if err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(map[string]any{"manifest": restored, "rollback": rollback})
+			}
+			fmt.Printf("Restored %d files. Previous data: %s\n", len(restored.Files), rollback)
+			fmt.Println("Run `toget serve` and unlock with the backed-up account password.")
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
+	return cmd
+}
+
+func running(listen string) bool {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return false
+	}
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	resp, err := client.Get("http://" + net.JoinHostPort(host, port) + "/healthz")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 func newVersionCommand() *cobra.Command {
@@ -133,7 +239,7 @@ func runServe(ctx context.Context) error {
 	}
 
 	accounts := account.New(db, v)
-	rooms := room.New(db, v)
+	rooms := room.New(db, v, room.WithDataDir(paths.Home))
 	agents := agent.New(db, rooms)
 	approvals := approval.New(db, rooms)
 	tools := tool.New(db, rooms, approvals)
@@ -895,11 +1001,15 @@ func newRoomReadCommand() *cobra.Command {
 
 func newSendCommand() *cobra.Command {
 	var roomID, format string
+	var files []string
 	cmd := &cobra.Command{
 		Use:   "send [text...]",
-		Short: "Send a message to a room",
-		Args:  cobra.MinimumNArgs(1),
+		Short: "Send a message, optionally with attachments",
+		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 && len(files) == 0 {
+				return errors.New("message text or --file is required")
+			}
 			c, _, _, err := localClient()
 			if err != nil {
 				return err
@@ -909,8 +1019,15 @@ func newSendCommand() *cobra.Command {
 				return err
 			}
 			text := strings.Join(args, " ")
+			attachments, err := uploadFiles(cmd.Context(), c, roomID, files)
+			if err != nil {
+				return err
+			}
 			var event room.Event
-			body := map[string]string{"text": text, "format": format}
+			body := map[string]any{"text": text, "format": format}
+			if len(attachments) > 0 {
+				body["attachments"] = attachments
+			}
 			if err := c.Post(cmd.Context(), "/api/v1/rooms/"+roomID+"/messages", body, &event); err != nil {
 				return err
 			}
@@ -923,6 +1040,161 @@ func newSendCommand() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&roomID, "room", "", "room ID (defaults to the only room)")
 	cmd.Flags().StringVar(&format, "format", "plain", "plain or markdown")
+	cmd.Flags().StringArrayVar(&files, "file", nil, "attach a file (repeatable)")
+	return cmd
+}
+
+func uploadFiles(ctx context.Context, c *api.Client, roomID string, files []string) ([]string, error) {
+	ids := make([]string, 0, len(files))
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", file, err)
+		}
+		if len(data) > room.MaxAttachmentSize {
+			return nil, fmt.Errorf("%s: %w", file, room.ErrAttachmentTooLarge)
+		}
+		name := filepath.Base(file)
+		mimeType := mime.TypeByExtension(filepath.Ext(name))
+		if mimeType == "" {
+			mimeType = "application/octet-stream"
+		}
+		path := "/api/v1/rooms/" + roomID + "/attachments?name=" + url.QueryEscape(name) + "&mime=" + url.QueryEscape(mimeType)
+		body, err := c.Upload(ctx, path, data, mimeType)
+		if err != nil {
+			return nil, err
+		}
+		var attachment room.Attachment
+		if err := json.Unmarshal(body, &attachment); err != nil {
+			return nil, fmt.Errorf("decode attachment: %w", err)
+		}
+		ids = append(ids, attachment.ID)
+	}
+	return ids, nil
+}
+
+func newAttachmentCommand() *cobra.Command {
+	cmd := &cobra.Command{Use: "attachment", Short: "Upload and download encrypted attachments"}
+	cmd.AddCommand(newAttachmentListCommand())
+	cmd.AddCommand(newAttachmentUploadCommand())
+	cmd.AddCommand(newAttachmentDownloadCommand())
+	return cmd
+}
+
+func newAttachmentListCommand() *cobra.Command {
+	var roomID string
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List attachments in a room",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			roomID, err = resolveRoom(cmd.Context(), c, roomID)
+			if err != nil {
+				return err
+			}
+			var result struct {
+				Attachments []room.Attachment `json:"attachments"`
+			}
+			if err := c.Get(cmd.Context(), "/api/v1/rooms/"+roomID+"/attachments", &result); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(result.Attachments)
+			}
+			for _, a := range result.Attachments {
+				state := "unattached"
+				if a.EventID != "" {
+					state = "event " + a.EventID
+				}
+				fmt.Printf("%s  %-32s %8d  %s\n", a.ID, a.Name, a.Size, state)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&roomID, "room", "", "room ID (defaults to the only room)")
+	return cmd
+}
+
+func newAttachmentUploadCommand() *cobra.Command {
+	var roomID string
+	cmd := &cobra.Command{
+		Use:   "upload <file>...",
+		Short: "Encrypt and upload files to a room",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			roomID, err = resolveRoom(cmd.Context(), c, roomID)
+			if err != nil {
+				return err
+			}
+			for _, file := range args {
+				data, err := os.ReadFile(file)
+				if err != nil {
+					return fmt.Errorf("read %s: %w", file, err)
+				}
+				name := filepath.Base(file)
+				mimeType := mime.TypeByExtension(filepath.Ext(name))
+				if mimeType == "" {
+					mimeType = "application/octet-stream"
+				}
+				path := "/api/v1/rooms/" + roomID + "/attachments?name=" + url.QueryEscape(name) + "&mime=" + url.QueryEscape(mimeType)
+				body, err := c.Upload(cmd.Context(), path, data, mimeType)
+				if err != nil {
+					return err
+				}
+				var attachment room.Attachment
+				if err := json.Unmarshal(body, &attachment); err != nil {
+					return fmt.Errorf("decode attachment: %w", err)
+				}
+				if jsonFlag {
+					if err := printJSON(attachment); err != nil {
+						return err
+					}
+					continue
+				}
+				fmt.Printf("%s  %s (%d bytes)\n", attachment.ID, attachment.Name, attachment.Size)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&roomID, "room", "", "room ID (defaults to the only room)")
+	return cmd
+}
+
+func newAttachmentDownloadCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "download <attachment-id> <output>",
+		Short: "Download and decrypt an attachment",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			data, _, err := c.Download(cmd.Context(), "/api/v1/attachments/"+args[0]+"/content")
+			if err != nil {
+				return err
+			}
+			if args[1] == "-" {
+				_, err := os.Stdout.Write(data)
+				return err
+			}
+			if err := os.WriteFile(args[1], data, 0o600); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(map[string]any{"path": args[1], "size": len(data)})
+			}
+			fmt.Printf("Wrote %s (%d bytes)\n", args[1], len(data))
+			return nil
+		},
+	}
 	return cmd
 }
 

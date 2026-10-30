@@ -1,93 +1,196 @@
-export type VersionInfo = {
-  app: string;
-  commit: string;
-  build_time: string;
-  protocol: number;
-  schema: number;
-  go_version: string;
-  os: string;
-  arch: string;
-};
+import type {
+  Account,
+  Agent,
+  Approval,
+  ApprovalAction,
+  Attachment,
+  AuditResponse,
+  CreateRoomResponse,
+  Device,
+  Invite,
+  Member,
+  Room,
+  RoomDevice,
+  RoomEvent,
+  SearchHit,
+  SessionInfo,
+  Status,
+  ToolReceipt,
+} from "./types";
 
-export type Account = {
-  id: string;
-  name: string;
-  server_id: string;
-  server_code: string;
-  created_at: string;
-};
+export class APIError extends Error {
+  status: number;
+  code: string;
 
-export type Room = {
-  id: string;
-  name: string;
-  home_node: string;
-  created_by: string;
-  epoch: number;
-  created_at: string;
-};
-
-export type RoomEvent = {
-  id: string;
-  room_id: string;
-  seq: number;
-  type: string;
-  author_id: string;
-  payload: Record<string, unknown>;
-  created_at: string;
-  prev_id?: string;
-  hash: string;
-};
-
-export type Status = {
-  version: VersionInfo;
-  account: Account | null;
-  rooms: number;
-  listen: string;
-};
-
-export type CreateRoomResponse = {
-  room: Room;
-  event: RoomEvent;
-};
+  constructor(status: number, code: string, message: string) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     credentials: "same-origin",
     ...init,
     headers: {
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      ...(init?.body && !(init.body instanceof Blob) ? { "Content-Type": "application/json" } : {}),
       ...init?.headers,
     },
   });
   const data = await response.json().catch(() => null);
   if (!response.ok) {
-    const message =
-      data && typeof data === "object" && "error" in data
-        ? String((data as { error?: { message?: string } }).error?.message ?? "")
-        : "";
-    throw new Error(message || `Request failed (${response.status})`);
+    const envelope = data as { error?: { code?: string; message?: string } } | null;
+    throw new APIError(
+      response.status,
+      String(envelope?.error?.code ?? ""),
+      String(envelope?.error?.message ?? "") || `Request failed (${response.status})`,
+    );
   }
   return data as T;
 }
 
+function json(body: unknown): RequestInit {
+  return { method: "POST", body: JSON.stringify(body) };
+}
+
 export const api = {
   status: () => request<Status>("/api/v1/status"),
-  createAccount: (name: string, password: string) =>
-    request<Account>("/api/v1/account", {
-      method: "POST",
-      body: JSON.stringify({ name, password }),
-    }),
+  session: () => request<SessionInfo>("/api/v1/session"),
+  unlock: (password: string) => request<SessionInfo>("/api/v1/session", json({ password })),
+  lock: () => request<void>("/api/v1/session", { method: "DELETE" }),
+
+  createAccount: (name: string, password: string, deviceName?: string) =>
+    request<Account>("/api/v1/account", json({ name, password, device_name: deviceName })),
+  account: () => request<Account>("/api/v1/account"),
+
   rooms: () => request<{ rooms: Room[] }>("/api/v1/rooms"),
-  createRoom: (name: string) =>
-    request<CreateRoomResponse>("/api/v1/rooms", {
-      method: "POST",
-      body: JSON.stringify({ name }),
+  createRoom: (name: string, topic = "") => request<CreateRoomResponse>("/api/v1/rooms", json({ name, topic })),
+  room: (id: string) => request<Room>(`/api/v1/rooms/${encodeURIComponent(id)}`),
+  updateRoom: (id: string, patch: { name?: string; topic?: string }) =>
+    request<{ room: Room; event: RoomEvent }>(`/api/v1/rooms/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
     }),
-  events: (roomID: string, after = 0) =>
-    request<{ events: RoomEvent[] }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/events?after=${after}&limit=500`),
-  send: (roomID: string, text: string) =>
+  archiveRoom: (id: string) =>
+    request<{ room: Room; event?: RoomEvent }>(`/api/v1/rooms/${encodeURIComponent(id)}/archive`, { method: "POST" }),
+
+  events: (roomID: string, after = 0, limit = 500, type?: string) => {
+    const params = new URLSearchParams({ after: String(after), limit: String(limit) });
+    if (type) params.set("type", type);
+    return request<{ events: RoomEvent[] }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/events?${params}`);
+  },
+  send: (
+    roomID: string,
+    body: { text: string; format?: string; attachments?: string[]; mentions?: string[]; reply_to?: string },
+  ) =>
     request<RoomEvent>(`/api/v1/rooms/${encodeURIComponent(roomID)}/messages`, {
       method: "POST",
+      body: JSON.stringify(body),
+    }),
+  editMessage: (roomID: string, eventID: string, text: string) =>
+    request<RoomEvent>(`/api/v1/rooms/${encodeURIComponent(roomID)}/messages/${encodeURIComponent(eventID)}`, {
+      method: "PATCH",
       body: JSON.stringify({ text }),
     }),
+
+  members: (roomID: string) =>
+    request<{ members: Member[] }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/members`),
+  roomDevices: (roomID: string) =>
+    request<{ devices: RoomDevice[] }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/devices`),
+  createInvite: (roomID: string, history: string) =>
+    request<{ invite: Invite; event: RoomEvent }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/invites`, json({ history })),
+  redeemInvite: (secret: string) =>
+    request<{ room: Room; member: Member; event: RoomEvent }>("/api/v1/invites/redeem", json({ secret })),
+  leaveRoom: (roomID: string) =>
+    request<RoomEvent>(`/api/v1/rooms/${encodeURIComponent(roomID)}/leave`, { method: "POST" }),
+  unread: (roomID: string) =>
+    request<{ unread: number }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/unread`),
+  markRead: (roomID: string, seq: number) =>
+    request<{ seq: number }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/read`, json({ seq })),
+
+  agents: () => request<{ agents: Agent[] }>("/api/v1/agents"),
+  createAgent: (name: string, runtime: string, permissions: Record<string, unknown>) =>
+    request<Agent>("/api/v1/agents", json({ name, runtime, permissions })),
+  agent: (id: string) => request<Agent>(`/api/v1/agents/${encodeURIComponent(id)}`),
+  setAgentStatus: (id: string, status: string, roomID = "", detail = "") =>
+    request<{ agent: Agent; event?: RoomEvent }>(`/api/v1/agents/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status, room_id: roomID, detail }),
+    }),
+  revokeAgent: (id: string) =>
+    request<void>(`/api/v1/agents/${encodeURIComponent(id)}/revoke`, { method: "POST" }),
+  agentRooms: (id: string) =>
+    request<{ rooms: { room_id: string; joined_at: string }[] }>(`/api/v1/agents/${encodeURIComponent(id)}/rooms`),
+  roomAgents: (roomID: string) =>
+    request<{ agents: Agent[] }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/agents`),
+  joinAgent: (roomID: string, agentID: string) =>
+    request<{ agent: Agent; event: RoomEvent }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/agents`, json({ agent_id: agentID })),
+  leaveAgent: (roomID: string, agentID: string) =>
+    request<RoomEvent>(`/api/v1/rooms/${encodeURIComponent(roomID)}/agents/${encodeURIComponent(agentID)}`, {
+      method: "DELETE",
+    }),
+
+  approvals: (roomID: string, status = "") =>
+    request<{ approvals: Approval[] }>(
+      `/api/v1/rooms/${encodeURIComponent(roomID)}/approvals${status ? `?status=${encodeURIComponent(status)}` : ""}`,
+    ),
+  approval: (id: string) => request<Approval>(`/api/v1/approvals/${encodeURIComponent(id)}`),
+  requestApproval: (roomID: string, agentID: string, action: ApprovalAction, ttlSeconds = 900) =>
+    request<{ approval: Approval; event: RoomEvent }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/approvals`, {
+      method: "POST",
+      body: JSON.stringify({ agent_id: agentID, action, ttl_seconds: ttlSeconds }),
+    }),
+  decideApproval: (id: string, decision: "grant" | "reject") =>
+    request<{ approval: Approval; event: RoomEvent }>(`/api/v1/approvals/${encodeURIComponent(id)}/decide`, json({ decision })),
+  consumeApproval: (id: string, digest: string) =>
+    request<{ approval: Approval; event: RoomEvent }>(`/api/v1/approvals/${encodeURIComponent(id)}/consume`, json({ digest })),
+
+  tools: (roomID: string, limit = 100) =>
+    request<{ receipts: ToolReceipt[] }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/tools?limit=${limit}`),
+  requestTool: (roomID: string, body: { agent_id: string; kind: string; tool: string; input?: unknown; approval_id?: string }) =>
+    request<{ receipt: ToolReceipt; event: RoomEvent }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/tools`, json(body)),
+  completeTool: (id: string, output: string, success: boolean) =>
+    request<{ receipt: ToolReceipt; event: RoomEvent }>(`/api/v1/tools/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ output, success }),
+    }),
+
+  devices: () => request<{ devices: Device[] }>("/api/v1/devices"),
+  revokeDevice: (id: string) =>
+    request<void>(`/api/v1/devices/${encodeURIComponent(id)}`, { method: "DELETE" }),
+
+  attachments: (roomID: string) =>
+    request<{ attachments: Attachment[] }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/attachments`),
+  uploadAttachment: (roomID: string, file: File) => {
+    const params = new URLSearchParams({ name: file.name, mime: file.type || "application/octet-stream" });
+    return request<Attachment>(`/api/v1/rooms/${encodeURIComponent(roomID)}/attachments?${params}`, {
+      method: "POST",
+      body: file,
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+    });
+  },
+  attachmentURL: (id: string) => `/api/v1/attachments/${encodeURIComponent(id)}/content`,
+
+  search: (q: string, roomID?: string) => {
+    const params = new URLSearchParams({ q, limit: "100" });
+    const path = roomID ? `/api/v1/rooms/${encodeURIComponent(roomID)}/search?${params}` : `/api/v1/search?${params}`;
+    return request<{ hits: SearchHit[] }>(path);
+  },
+
+  audit: (roomID: string) => request<AuditResponse>(`/api/v1/rooms/${encodeURIComponent(roomID)}/audit`),
+  verifyAudit: (bundle: unknown) =>
+    request<{ verified: boolean; head: string; events: number }>("/api/v1/audit/verify", json(bundle)),
+
+  async download(path: string, filename: string): Promise<void> {
+    const response = await fetch(path, { credentials: "same-origin" });
+    if (!response.ok) throw new APIError(response.status, "", `Download failed (${response.status})`);
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  },
 };

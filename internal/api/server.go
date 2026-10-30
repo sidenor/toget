@@ -128,6 +128,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/rooms/{id}/read", s.data(s.handleGetReadCursor))
 	mux.HandleFunc("POST /api/v1/rooms/{id}/read", s.data(s.handleSetReadCursor))
 	mux.HandleFunc("GET /api/v1/rooms/{id}/unread", s.data(s.handleUnread))
+	mux.HandleFunc("GET /api/v1/rooms/{id}/attachments", s.data(s.handleListAttachments))
+	mux.HandleFunc("POST /api/v1/rooms/{id}/attachments", s.data(s.handleUploadAttachment))
+	mux.HandleFunc("GET /api/v1/attachments/{id}", s.data(s.handleGetAttachment))
+	mux.HandleFunc("GET /api/v1/attachments/{id}/content", s.data(s.handleAttachmentContent))
 
 	// Agents, approvals, and tool receipts.
 	mux.HandleFunc("GET /api/v1/agents", s.data(s.handleListAgents))
@@ -522,6 +526,9 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 	})
 
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Content-Security-Policy", "default-src 'self' blob:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 	name := strings.TrimPrefix(r.URL.Path, "/")
 	if name == "" {
 		name = "index.html"
@@ -557,8 +564,19 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not read web UI", http.StatusInternalServerError)
 		return
 	}
-	if strings.HasSuffix(name, ".html") {
+	switch path.Ext(name) {
+	case ".html":
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	case ".js", ".mjs":
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	case ".css":
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	case ".webmanifest":
+		w.Header().Set("Content-Type", "application/manifest+json")
+	case ".png":
+		w.Header().Set("Content-Type", "image/png")
+	case ".svg":
+		w.Header().Set("Content-Type", "image/svg+xml")
 	}
 	_, _ = w.Write(data)
 }
@@ -621,6 +639,16 @@ func writeRoomError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_invite", "invitation is invalid")
 	case errors.Is(err, room.ErrInvalidInviteHistory):
 		writeError(w, http.StatusBadRequest, "invalid_history", "history choice must be none, recent, or all")
+	case errors.Is(err, room.ErrAttachmentNotFound):
+		writeError(w, http.StatusNotFound, "attachment_not_found", "attachment not found")
+	case errors.Is(err, room.ErrAttachmentTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, "attachment_too_large", "attachment exceeds the 25 MiB limit")
+	case errors.Is(err, room.ErrInvalidAttachment):
+		writeError(w, http.StatusBadRequest, "invalid_attachment", "attachment is invalid")
+	case errors.Is(err, room.ErrAttachmentUsed):
+		writeError(w, http.StatusConflict, "attachment_used", "attachment is already attached to a message")
+	case errors.Is(err, room.ErrAttachmentsDisabled):
+		writeError(w, http.StatusServiceUnavailable, "attachments_disabled", "attachment storage is not configured")
 	case errors.Is(err, room.ErrCorruptEvent):
 		writeError(w, http.StatusInternalServerError, "corrupt_event", "an event failed its integrity check")
 	default:

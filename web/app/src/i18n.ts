@@ -1,0 +1,229 @@
+export type Lang = "en" | "zh";
+
+const strings: Record<string, [string, string]> = {
+  "brand.tagline": ["A local-first place for people and Agents", "人与 Agent 的本地优先空间"],
+  "nav.chat": ["Rooms", "房间"],
+  "nav.approvals": ["Approvals", "审批"],
+  "nav.agents": ["Agents", "Agent"],
+  "nav.devices": ["Devices", "设备"],
+  "nav.audit": ["Audit", "审计"],
+  "nav.search": ["Search", "搜索"],
+  "nav.settings": ["Settings", "设置"],
+
+  "boot.starting": ["Starting your local node…", "正在启动本地节点…"],
+  "boot.unreachable": ["The local node is not reachable.", "无法连接本地节点。"],
+  "boot.retry": ["Try again", "重试"],
+
+  "lock.title": ["Welcome back", "欢迎回来"],
+  "lock.subtitle": ["Unlock this device with your account password.", "用账户密码解锁这台设备。"],
+  "lock.password": ["Password", "密码"],
+  "lock.unlock": ["Unlock", "解锁"],
+  "lock.unlocking": ["Unlocking…", "解锁中…"],
+  "lock.note": ["The session stays unlocked for 12 hours on this device.", "解锁状态在这台设备上保持 12 小时。"],
+
+  "onboard.eyebrow": ["A local-first place for people and Agents", "人与 Agent 的本地优先空间"],
+  "onboard.title": ["Create your Toget account", "创建你的 Toget 账户"],
+  "onboard.subtitle": ["Your keys and data stay on this machine. You can add more devices later.", "密钥和数据都留在这台机器上，之后可以添加更多设备。"],
+  "onboard.name": ["Your name", "你的名字"],
+  "onboard.password": ["Password", "密码"],
+  "onboard.confirm": ["Confirm password", "确认密码"],
+  "onboard.create": ["Create account", "创建账户"],
+  "onboard.creating": ["Creating…", "创建中…"],
+  "onboard.fine": ["This is an early build. The account lives on this machine; back up the data directory.", "这是早期版本。账户只存在于这台机器上，请备份数据目录。"],
+  "onboard.passwordShort": ["Use at least 8 characters for the password.", "密码至少需要 8 个字符。"],
+  "onboard.mismatch": ["The two passwords do not match.", "两次输入的密码不一致。"],
+
+  "sidebar.rooms": ["Rooms", "房间"],
+  "sidebar.newRoom": ["New room", "新建房间"],
+  "sidebar.roomPlaceholder": ["Room name", "房间名称"],
+  "sidebar.node": ["Local node", "本地节点"],
+  "sidebar.locked": ["Locked", "已锁定"],
+  "sidebar.account": ["Account", "账户"],
+
+  "room.empty.title": ["Your rooms live here", "你的房间在这里"],
+  "room.empty.subtitle": ["Start a room for a project, a trip, or a conversation with an Agent.", "为项目、旅行，或与 Agent 的对话建一个房间。"],
+  "room.empty.placeholder": ["Give the room a name", "给房间起个名字"],
+  "room.empty.create": ["Create room", "创建房间"],
+
+  "conversation.quiet": ["This room is quiet.", "这个房间很安静。"],
+  "conversation.first": ["Send the first message.", "发出第一条消息吧。"],
+  "conversation.placeholder": ["Write a message…", "写点什么…"],
+  "conversation.send": ["Send", "发送"],
+  "conversation.sending": ["Sending…", "发送中…"],
+  "conversation.private": ["Private room", "私密房间"],
+  "conversation.events": ["events", "条事件"],
+  "conversation.home": ["home", "归属"],
+  "conversation.info": ["Room details", "房间详情"],
+  "conversation.encrypted": ["encrypted locally", "本地加密"],
+  "conversation.attach": ["Attach files", "添加附件"],
+  "conversation.attachLimit": ["Up to 25 MiB per file", "每个文件最大 25 MiB"],
+  "conversation.mentionsHint": ["Type @name to mention an Agent", "输入 @名字 可以召唤 Agent"],
+  "conversation.edited": ["edited", "已编辑"],
+  "conversation.download": ["Download", "下载"],
+  "conversation.showMore": ["Show earlier", "显示更早"],
+
+  "event.roomCreated": ["Room “{name}” created", "房间「{name}」已创建"],
+  "event.joined": ["{name} joined", "{name} 加入了房间"],
+  "event.left": ["{name} left", "{name} 离开了房间"],
+  "event.invited": ["Invitation created ({history} history)", "已创建邀请（历史记录：{history}）"],
+  "event.epoch": ["Room key rotated to epoch {epoch}", "房间密钥已轮换到第 {epoch} 代"],
+  "event.settings": ["Room settings updated", "房间设置已更新"],
+  "event.agentStatus": ["{name} is {status}", "{name} 状态：{status}"],
+  "event.tool": ["Tool {tool}: {status}", "工具 {tool}：{status}"],
+  "event.archived": ["Room archived", "房间已归档"],
+
+  "approval.requested": ["Approval requested", "请求审批"],
+  "approval.pending": ["pending", "待处理"],
+  "approval.granted": ["granted", "已批准"],
+  "approval.rejected": ["rejected", "已拒绝"],
+  "approval.expired": ["expired", "已过期"],
+  "approval.consumed": ["used", "已使用"],
+  "approval.approve": ["Approve", "批准"],
+  "approval.reject": ["Reject", "拒绝"],
+  "approval.digest": ["Action digest", "操作摘要"],
+  "approval.expires": ["Expires", "过期时间"],
+  "approval.agent": ["Agent", "Agent"],
+  "approval.details": ["Exact action", "具体操作"],
+  "approval.none": ["No pending approvals.", "没有待处理的审批。"],
+  "approval.title": ["Approvals", "审批"],
+  "approval.subtitle": ["Every risky action is bound to an exact digest and expires automatically.", "每个高风险操作都绑定精确摘要，并会自动过期。"],
+
+  "roomInfo.title": ["Room details", "房间详情"],
+  "roomInfo.members": ["Members", "成员"],
+  "roomInfo.devices": ["Devices", "设备"],
+  "roomInfo.agents": ["Agents in this room", "房间内的 Agent"],
+  "roomInfo.invite": ["Invite someone", "邀请新成员"],
+  "roomInfo.history": ["History for new members", "新成员可见历史"],
+  "roomInfo.none": ["No history", "不共享历史"],
+  "roomInfo.recent": ["Current epoch", "当前一代"],
+  "roomInfo.all": ["All history", "全部历史"],
+  "roomInfo.createInvite": ["Create invite", "创建邀请"],
+  "roomInfo.copy": ["Copy invite", "复制邀请"],
+  "roomInfo.copied": ["Copied", "已复制"],
+  "roomInfo.leave": ["Leave room", "离开房间"],
+  "roomInfo.archive": ["Archive room", "归档房间"],
+  "roomInfo.archived": ["Archived", "已归档"],
+  "roomInfo.noAgents": ["No Agents in this room yet.", "这个房间还没有 Agent。"],
+  "roomInfo.shareHint": ["The secret is shown once. Anyone with it can join once.", "邀请密钥只显示一次，任何人拿到都可以加入一次。"],
+  "roomInfo.epoch": ["Key epoch", "密钥代次"],
+  "roomInfo.role": ["Role", "角色"],
+  "roomInfo.status": ["Status", "状态"],
+
+  "agents.title": ["Agents", "Agent"],
+  "agents.subtitle": ["Local runtimes that can act in your rooms — always visible, always gated.", "可以在房间里行动的本地运行时：全程可见，全程受控。"],
+  "agents.add": ["Add Agent", "添加 Agent"],
+  "agents.name": ["Name", "名字"],
+  "agents.runtime": ["Runtime", "运行时"],
+  "agents.permissions": ["Permissions", "权限"],
+  "agents.shell": ["Shell commands", "Shell 命令"],
+  "agents.write": ["Write files", "写入文件"],
+  "agents.external": ["External sends", "对外发送"],
+  "agents.status": ["Status", "状态"],
+  "agents.rooms": ["Rooms", "房间"],
+  "agents.join": ["Join", "加入"],
+  "agents.leave": ["Leave", "离开"],
+  "agents.revoke": ["Revoke", "撤销"],
+  "agents.revoked": ["Revoked", "已撤销"],
+  "agents.none": ["No Agents yet. Add one to give your rooms a helper.", "还没有 Agent。添加一个，让房间多一个帮手。"],
+  "agents.idle": ["idle", "空闲"],
+  "agents.running": ["running", "运行中"],
+  "agents.waiting": ["waiting for approval", "等待审批"],
+  "agents.offline": ["offline", "离线"],
+  "agents.owner": ["Owned by you", "由你拥有"],
+  "agents.notInRoom": ["Not in any room", "尚未加入房间"],
+
+  "devices.title": ["Devices", "设备"],
+  "devices.subtitle": ["Every device has its own key. Revoke one and it can no longer sign.", "每台设备都有自己的密钥；撤销后就不能再签名。"],
+  "devices.current": ["This device", "本机"],
+  "devices.fingerprint": ["Fingerprint", "指纹"],
+  "devices.lastSeen": ["Last seen", "最近活跃"],
+  "devices.revoke": ["Revoke", "撤销"],
+  "devices.none": ["No devices.", "没有设备。"],
+  "devices.confirm": ["Revoke this device? It will lose access immediately.", "撤销这台设备？它将立刻失去访问权限。"],
+
+  "audit.title": ["Audit", "审计"],
+  "audit.subtitle": ["Export the signed hash chain and verify it offline or on another node.", "导出已签名的哈希链，在离线或其他节点上验证。"],
+  "audit.room": ["Room", "房间"],
+  "audit.verified": ["Chain verified", "链验证通过"],
+  "audit.failed": ["Chain verification failed", "链验证失败"],
+  "audit.head": ["Head hash", "链头哈希"],
+  "audit.events": ["Events", "事件"],
+  "audit.members": ["Members", "成员"],
+  "audit.download": ["Download JSON", "下载 JSON"],
+  "audit.verifyFile": ["Verify a bundle", "验证审计包"],
+  "audit.chooseFile": ["Choose audit JSON", "选择审计 JSON"],
+  "audit.resultOk": ["Verified {events} events. Head {head}.", "已验证 {events} 条事件，链头 {head}。"],
+  "audit.resultFail": ["Verification failed: {message}", "验证失败：{message}"],
+  "audit.load": ["Load audit", "加载审计"],
+
+  "settings.title": ["Settings", "设置"],
+  "settings.subtitle": ["This node, its identity, and local controls.", "本节点、身份与本地控制。"],
+  "settings.node": ["Node", "节点"],
+  "settings.version": ["Version", "版本"],
+  "settings.protocol": ["Protocol", "协议"],
+  "settings.schema": ["Schema", "数据结构"],
+  "settings.listen": ["Listen", "监听地址"],
+  "settings.language": ["Language", "语言"],
+  "settings.lockNow": ["Lock now", "立即锁定"],
+  "settings.account": ["Account ID", "账户 ID"],
+  "settings.server": ["Server", "服务器"],
+  "settings.backupTitle": ["Backup and restore", "备份与恢复"],
+  "settings.backupText": [
+    "Run `toget backup` on this machine to write an encrypted snapshot. Restore with `toget restore <archive>` while the node is stopped.",
+    "在这台机器上运行 `toget backup` 生成加密快照；停止节点后用 `toget restore <archive>` 恢复。",
+  ],
+  "settings.securityTitle": ["Security notes", "安全说明"],
+  "settings.securityText": [
+    "Room payloads are sealed with per-room epoch keys. At-rest files are encrypted; the vault key never leaves this data directory. The local API is loopback-only and requires this browser session.",
+    "房间内容使用每个房间的 epoch 密钥加密；本地文件也已加密，保险库密钥不会离开数据目录。本地 API 只监听回环地址，并要求浏览器会话。",
+  ],
+
+  "search.title": ["Search", "搜索"],
+  "search.placeholder": ["Search decrypted local history", "搜索本地已解密的历史"],
+  "search.button": ["Search", "搜索"],
+  "search.none": ["No matches.", "没有找到。"],
+  "search.open": ["Open room", "打开房间"],
+
+  "common.cancel": ["Cancel", "取消"],
+  "common.save": ["Save", "保存"],
+  "common.create": ["Create", "创建"],
+  "common.close": ["Close", "关闭"],
+  "common.confirm": ["Confirm", "确认"],
+  "common.delete": ["Delete", "删除"],
+  "common.copy": ["Copy", "复制"],
+  "common.copied": ["Copied", "已复制"],
+  "common.loading": ["Loading…", "加载中…"],
+  "common.error": ["Something went wrong.", "出了点问题。"],
+  "common.room": ["Room", "房间"],
+  "common.agent": ["Agent", "Agent"],
+  "common.status": ["Status", "状态"],
+  "common.actions": ["Actions", "操作"],
+  "common.you": ["You", "你"],
+  "common.none": ["None", "无"],
+};
+
+export type Translate = (key: string, vars?: Record<string, string | number>) => string;
+
+export function detectLang(): Lang {
+  const stored = localStorage.getItem("toget.lang");
+  if (stored === "en" || stored === "zh") return stored;
+  return navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
+}
+
+export function makeT(lang: Lang): Translate {
+  const index = lang === "zh" ? 1 : 0;
+  return (key, vars) => {
+    const pair = strings[key];
+    let text = pair ? pair[index] : key;
+    if (vars) {
+      for (const [name, value] of Object.entries(vars)) {
+        text = text.split(`{${name}}`).join(String(value));
+      }
+    }
+    return text;
+  };
+}
+
+export function localeOf(lang: Lang): string {
+  return lang === "zh" ? "zh-CN" : "en-US";
+}

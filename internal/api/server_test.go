@@ -46,7 +46,7 @@ func newTestNode(t *testing.T, ui fs.FS) *testNode {
 	t.Cleanup(func() { db.Close() })
 
 	accounts := account.New(db, v)
-	rooms := room.New(db, v)
+	rooms := room.New(db, v, room.WithDataDir(dir))
 	agents := agent.New(db, rooms)
 	approvals := approval.New(db, rooms)
 	handler := api.New(api.Options{
