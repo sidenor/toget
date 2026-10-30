@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go test and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go vet ./...
+      - run: go test ./...
+      - run: go build ./...
+
+  web:
+    name: Web build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.22.2
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @toget/app build
+      - name: Check the committed web build is current
+        run: git diff --exit-code -- web/app/dist
+
+  proto:
+    name: Protobuf lint and generation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          version: 1.75.0
+      - run: buf lint
+      - run: buf generate
+      - name: Check generated code is current
+        run: test -z "$(git status --porcelain)"
+
+  cross-build:
+    name: Build ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go build ./...

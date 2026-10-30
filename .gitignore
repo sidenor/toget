@@ -11,6 +11,8 @@ __pycache__/
 dist/
 build/
 target/
+!web/app/dist/
+!web/app/dist/**
 
 # Environment and secrets
 .env
@@ -31,6 +33,10 @@ tmp/
 .cache/
 .DS_Store
 Thumbs.db
+*.db
+*.db-shm
+*.db-wal
+*.togetkey
 
 # Editors and tooling
 .idea/
@@ -39,10 +45,15 @@ Thumbs.db
 *.swo
 *~
 coverage/
+coverage.out
 .nyc_output/
 .turbo/
 .next/
 out/
+
+# Build output
+/bin/
+*.exe
 
 # Local agent state
 .toget/

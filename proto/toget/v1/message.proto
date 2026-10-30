@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package toget.v1;
+
+option go_package = "github.com/sidenor/toget/internal/protocol/toget/v1;togetv1";
+
+// Envelope is what relays and account hosts see. It deliberately omits the
+// room ID, sender account ID, and message type.
+message Envelope {
+  uint32 version = 1;
+  string message_id = 2;
+  string target = 3;
+  int64 sent_at_unix_ms = 4;
+  uint32 ciphertext_size = 5;
+  string sender_device = 6;
+  bytes sender_signature = 7;
+  bytes ciphertext = 8;
+}
+
+message Sender {
+  string account_id = 1;
+  string device_id = 2;
+}
+
+message Attachment {
+  string object_id = 1;
+  string name = 2;
+  string media_type = 3;
+  uint64 size = 4;
+  bytes wrapped_key = 5;
+  bytes digest = 6;
+}
+
+// InnerMessage is encrypted end to end and only readable by room members.
+message InnerMessage {
+  string room_id = 1;
+  uint64 key_epoch = 2;
+  Sender sender = 3;
+  string type = 4;
+  bytes body = 5;
+  repeated Attachment attachments = 6;
+  repeated string mentions = 7;
+  string reply_to = 8;
+  int64 created_at_unix_ms = 9;
+}
+
+message SendMessageRequest {
+  Envelope envelope = 1;
+}
+
+message MessageAck {
+  string message_id = 1;
+  string room_id = 2;
+  uint64 sequence = 3;
+}
+
+message DeliverMessage {
+  Envelope envelope = 1;
+}
+
+message ReadCursor {
+  string room_id = 1;
+  uint64 sequence = 2;
+}

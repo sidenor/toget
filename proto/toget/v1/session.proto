@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package toget.v1;
+
+import "toget/v1/common.proto";
+
+option go_package = "github.com/sidenor/toget/internal/protocol/toget/v1;togetv1";
+
+// Hello opens a session and proves which device is connecting.
+message Hello {
+  uint32 protocol_version = 1;
+  repeated uint32 supported_versions = 2;
+  DeviceCertificate device_certificate = 3;
+  repeated string capabilities = 4;
+  string client_version = 5;
+}
+
+// HelloAck selects a protocol version and returns the host manifest.
+message HelloAck {
+  uint32 protocol_version = 1;
+  repeated string capabilities = 2;
+  ServerManifest server_manifest = 3;
+  bytes session_nonce = 4;
+}
+
+// AuthRequest completes device authentication. For account login the
+// PAKE message is carried in a separate exchange.
+message AuthRequest {
+  bytes device_signature = 1;
+  bytes pake_message = 2;
+}
+
+message AuthResponse {
+  string account_id = 1;
+  string device_id = 2;
+  bytes session_token = 3;
+  int64 expires_at_unix_ms = 4;
+}
+
+message Ping {
+  int64 sent_at_unix_ms = 1;
+}
+
+message Pong {
+  int64 sent_at_unix_ms = 1;
+}
+
+// GoAway announces a planned shutdown or a redirect to another endpoint.
+message GoAway {
+  string reason = 1;
+  repeated Endpoint redirect = 2;
+}

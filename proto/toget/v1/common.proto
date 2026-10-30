@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package toget.v1;
+
+option go_package = "github.com/sidenor/toget/internal/protocol/toget/v1;togetv1";
+
+// Endpoint is one way to reach a node. Transport is "quic" or "wss".
+message Endpoint {
+  string transport = 1;
+  string address = 2;
+}
+
+// ServerManifest is the signed identity of an account host.
+// The JSON representation used by directories is defined in docs/protocol.md;
+// this message is the node-to-node form.
+message ServerManifest {
+  string server_id = 1;
+  string server_code = 2;
+  bytes root_public_key = 3;
+  bytes server_nonce = 4;
+  repeated Endpoint endpoints = 5;
+  string relay_parent = 6;
+  repeated uint32 protocol_versions = 7;
+  int64 issued_at_unix_ms = 8;
+  int64 expires_at_unix_ms = 9;
+  bytes signature = 10;
+}
+
+// DeviceCertificate binds a device key to an account.
+message DeviceCertificate {
+  string device_id = 1;
+  string account_id = 2;
+  bytes device_public_key = 3;
+  int64 issued_at_unix_ms = 4;
+  int64 expires_at_unix_ms = 5;
+  bytes signature = 6;
+}

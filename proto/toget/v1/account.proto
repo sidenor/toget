@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package toget.v1;
+
+import "toget/v1/common.proto";
+
+option go_package = "github.com/sidenor/toget/internal/protocol/toget/v1;togetv1";
+
+// Account is the public record of a person or Agent owner.
+message Account {
+  string id = 1;
+  string server_id = 2;
+  string account_code = 3;
+  string name = 4;
+  bytes public_key = 5;
+  int64 created_at_unix_ms = 6;
+}
+
+// RegisterRequest creates an account on an account host.
+message RegisterRequest {
+  string name = 1;
+  bytes password_verifier = 2;
+  bytes account_public_key = 3;
+  DeviceCertificate device_certificate = 4;
+  string device_name = 5;
+}
+
+message RegisterResponse {
+  Account account = 1;
+}
+
+// LoginRequest starts a PAKE login. It reveals neither the password nor an
+// offline-verifiable hash to the host.
+message LoginRequest {
+  string account_id = 1;
+  string device_id = 2;
+  bytes pake_message = 3;
+}
+
+message LoginResponse {
+  bytes pake_message = 1;
+  bytes session_token = 2;
+  int64 expires_at_unix_ms = 3;
+}
+
+message DeviceRecord {
+  string device_id = 1;
+  string name = 2;
+  bytes public_key = 3;
+  int64 created_at_unix_ms = 4;
+  int64 last_seen_at_unix_ms = 5;
+  bool revoked = 6;
+}
+
+message ListDevicesRequest {}
+
+message ListDevicesResponse {
+  repeated DeviceRecord devices = 1;
+}
+
+message RevokeDeviceRequest {
+  string device_id = 1;
+}

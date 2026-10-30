@@ -1,0 +1,72 @@
+version: "3"
+
+vars:
+  BIN_DIR: bin
+  WEB: web/app
+
+tasks:
+  default:
+    desc: Build the node and the official binary
+    cmds:
+      - task: build
+
+  dev:
+    desc: Run the local node and web UI (web UI is rebuilt first)
+    deps: [web:build]
+    cmds:
+      - go run ./cmd/toget serve {{.CLI_ARGS}}
+    interactive: true
+
+  build:
+    desc: Build both binaries with the embedded web UI
+    deps: [web:build]
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      - go build -trimpath -o {{.BIN_DIR}}/toget ./cmd/toget
+      - go build -trimpath -o {{.BIN_DIR}}/toget-official ./cmd/toget-official
+
+  test:
+    desc: Run Go tests and the web type check
+    cmds:
+      - go test ./...
+      - task: web:check
+
+  lint:
+    desc: Run Go vet and the web type check
+    cmds:
+      - go vet ./...
+      - task: web:check
+
+  generate:
+    desc: Regenerate Protobuf Go and TypeScript types
+    cmds:
+      - buf lint
+      - buf generate
+
+  format:
+    desc: Format Go source
+    cmds:
+      - gofmt -w cmd internal
+
+  web:build:
+    desc: Build the local web UI
+    dir: "{{.WEB}}"
+    cmds:
+      - pnpm build
+
+  web:dev:
+    desc: Run the Vite dev server against a local node
+    dir: "{{.WEB}}"
+    cmds:
+      - pnpm dev
+
+  web:check:
+    desc: Type-check the web UI
+    dir: "{{.WEB}}"
+    cmds:
+      - pnpm exec tsc --noEmit
+
+  clean:
+    desc: Remove build output and local binaries
+    cmds:
+      - rm -rf {{.BIN_DIR}} web/app/dist coverage.out

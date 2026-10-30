@@ -30,6 +30,45 @@ Toget is the room where people and Agents meet instead: one timeline, real ident
 
 Toget is not a model provider, a public social network, or an enterprise admin console. It is a private place for people and their Agents to get work done.
 
+## Try the local loop
+
+Toget currently runs on one machine: create an account, create a room, and
+send messages to yourself through the CLI or the web UI. There is no network
+transport yet, so two machines cannot talk to each other.
+
+Requirements: Go 1.27+, Node 24, and pnpm 9. Or install the pinned toolchain
+with `mise install`.
+
+```bash
+pnpm install
+pnpm --filter @toget/app build   # web/app/dist is also committed
+go run ./cmd/toget serve
+```
+
+Open <http://127.0.0.1:7718> and create your account. There is no recovery
+flow yet. At this stage the password is an Argon2id verifier for future
+sign-in; it does not yet unlock the local vault, so protect the data directory
+with OS permissions and full-disk encryption on a shared machine.
+
+The same loop from the CLI, while `toget serve` is running:
+
+```bash
+go run ./cmd/toget account create --name Aiden
+go run ./cmd/toget room create --name General
+go run ./cmd/toget send "hello from this machine"
+go run ./cmd/toget messages
+```
+
+Data lives in the per-user data directory (`~/.local/share/toget` on Linux,
+`~/Library/Application Support/Toget` on macOS, `%LOCALAPPDATA%\Toget` on
+Windows). Set `TOGET_HOME` to use another directory. `task dev` rebuilds the
+web UI and starts the node; `task test` runs the Go tests and the web type
+check.
+
+The local API binds to loopback only. Private keys and event payloads are
+encrypted at rest; the append-only event log is hash-chained and the database
+rejects updates and deletes.
+
 ## Design docs
 
 - [Philosophy](docs/philosophy.md) — why Toget exists, what we believe, and what we are not
@@ -44,9 +83,18 @@ Toget is not a model provider, a public social network, or an enterprise admin c
 
 ## Status
 
-**Design phase — very early.** The architecture and protocol are drafted; the first code scaffold is next. Nothing is usable yet, many parts are incomplete, and some ideas will be redesigned as we learn.
+**Early implementation — the local loop works.** The M0 scaffold is in place
+and the first M1 slice runs: account and device identity, the 14-digit ID,
+SQLite storage, an encrypted append-only event log, the loopback API, the
+CLI, and the React web UI. The node protocol, LAN transport, end-to-end
+envelope, rooms with more than one member, and Agents are not implemented.
 
-That is exactly why the project is open this early. If you care about local-first software, privacy, open protocols, or humans and Agents working together, you are welcome to help shape it. You do not need to be an expert in all of it: use cases, criticism, documentation, translations, tests, design feedback, and code are all valuable.
+Many parts are incomplete, and some ideas will be redesigned as we learn.
+That is exactly why the project is open this early. If you care about
+local-first software, privacy, open protocols, or humans and Agents working
+together, you are welcome to help shape it. You do not need to be an expert in
+all of it: use cases, criticism, documentation, translations, tests, design
+feedback, and code are all valuable.
 
 See [docs/philosophy.md](docs/philosophy.md) for the ideas behind the project, and [CONTRIBUTING.md](CONTRIBUTING.md) for how to get involved.
 
@@ -83,6 +131,27 @@ Toget 是一个开源、本地优先的空间：人和自己的 Agent 在同一�
 
 Toget 不是一个模型供应商，不是公开社交网络，也不是企业管理后台。它是人和自己的 Agent 一起做事的一个私密空间。
 
+### 本地试用
+
+目前可以在单机上跑通第一个闭环：创建账号、创建房间、在命令行或网页里发消息。还没有网络传输，两台机器暂时不能互通。
+
+```bash
+pnpm install
+pnpm --filter @toget/app build
+go run ./cmd/toget serve
+```
+
+打开 <http://127.0.0.1:7718> 创建账号即可。也可以让服务在后台运行，再用 CLI：
+
+```bash
+go run ./cmd/toget account create --name Aiden
+go run ./cmd/toget room create --name General
+go run ./cmd/toget send "你好"
+go run ./cmd/toget messages
+```
+
+数据默认放在用户数据目录（Linux 为 `~/.local/share/toget`），可用 `TOGET_HOME` 指定。私钥和事件内容在本地加密存储，事件日志只可追加、带哈希链。目前密码只保存为 Argon2id 校验值，用于以后的登录，还不能解锁本地保险库；请依赖系统权限和全盘加密保护数据目录。
+
 ### 文档
 
 - [理念](docs/philosophy.md)
@@ -95,4 +164,4 @@ Toget 不是一个模型供应商，不是公开社交网络，也不是企业�
 - [代码结构](docs/repo-layout.md)
 - [路线图](docs/roadmap.md)
 
-目前处于早期设计阶段，还不能实际使用。欢迎开 issue 关注、分享场景，或直接参与建设。项目理念见 [docs/philosophy.md](docs/philosophy.md)，参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+**早期实现：本地闭环已经可用。** M0 脚手架已就位，M1 的第一块可以运行：账号与设备身份、14 位 ID、SQLite 存储、加密的只追加事件日志、本地 API、CLI 和 React 网页。节点协议、局域网传输、端到端信封、多人房间和 Agent 还没有实现，很多地方仍会调整。欢迎开 issue 关注、分享场景，或直接参与建设。项目理念见 [docs/philosophy.md](docs/philosophy.md)，参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。

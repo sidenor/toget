@@ -9,11 +9,11 @@ Toget is at the very beginning. The order below is chosen so that each milestone
 **Goal:** make the project buildable and the decisions explicit.
 
 - [x] Philosophy, product, architecture, protocol, security model, deployment, tech stack, and repository layout drafts
-- [ ] Go module, `cmd/toget`, `cmd/toget-official`, health check
-- [ ] Protobuf package `toget/v1` with the first messages
-- [ ] OpenAPI skeleton for the local API
+- [x] Go module, `cmd/toget`, `cmd/toget-official`, health check
+- [x] Protobuf package `toget/v1` with the first messages
+- [x] OpenAPI skeleton for the local API
 - [ ] React app shell with routing and a design-system baseline
-- [ ] `Taskfile` with `dev`, `test`, `generate`, `build`
+- [x] `Taskfile` with `dev`, `test`, `generate`, `build`
 - [ ] CI: Go tests, web build, lint, cross-platform build
 - [x] ADRs for the account model, endpoint trust, mesh protocol, and versioning
 

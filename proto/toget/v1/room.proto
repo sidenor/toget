@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package toget.v1;
+
+option go_package = "github.com/sidenor/toget/internal/protocol/toget/v1;togetv1";
+
+// RoomEventType is the stable event type written to a room log.
+enum RoomEventType {
+  ROOM_EVENT_TYPE_UNSPECIFIED = 0;
+  ROOM_EVENT_TYPE_ROOM_CREATED = 1;
+  ROOM_EVENT_TYPE_MEMBER_INVITED = 2;
+  ROOM_EVENT_TYPE_MEMBER_JOINED = 3;
+  ROOM_EVENT_TYPE_MEMBER_LEFT = 4;
+  ROOM_EVENT_TYPE_MESSAGE_POSTED = 5;
+  ROOM_EVENT_TYPE_AGENT_REGISTERED = 6;
+  ROOM_EVENT_TYPE_APPROVAL_REQUESTED = 7;
+  ROOM_EVENT_TYPE_APPROVAL_DECIDED = 8;
+  ROOM_EVENT_TYPE_TOOL_REQUESTED = 9;
+  ROOM_EVENT_TYPE_TOOL_RESULT = 10;
+  ROOM_EVENT_TYPE_TOOL_FAILED = 11;
+  ROOM_EVENT_TYPE_SYSTEM_NOTICE = 12;
+}
+
+message Room {
+  string id = 1;
+  string name = 2;
+  string home_node = 3;
+  string created_by = 4;
+  uint64 key_epoch = 5;
+  int64 created_at_unix_ms = 6;
+}
+
+// RoomEvent is one immutable entry in a room log. Payload is opaque to relays
+// and is encoded according to the event type.
+message RoomEvent {
+  string id = 1;
+  string room_id = 2;
+  uint64 sequence = 3;
+  RoomEventType type = 4;
+  string author_id = 5;
+  bytes payload = 6;
+  int64 created_at_unix_ms = 7;
+  string previous_event_id = 8;
+  bytes hash = 9;
+}
+
+message CreateRoomRequest {
+  string name = 1;
+}
+
+message CreateRoomResponse {
+  Room room = 1;
+  RoomEvent event = 2;
+}
+
+message RoomEventRequest {
+  string room_id = 1;
+  RoomEvent event = 2;
+}
+
+message RoomEventAck {
+  string room_id = 1;
+  uint64 sequence = 2;
+}
+
+message SyncRequest {
+  string room_id = 1;
+  uint64 after_sequence = 2;
+  uint32 limit = 3;
+}
+
+message SyncResponse {
+  repeated RoomEvent events = 1;
+  uint64 next_sequence = 2;
+}
+
+message RoomSnapshot {
+  Room room = 1;
+  repeated RoomEvent events = 2;
+}

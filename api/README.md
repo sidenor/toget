@@ -13,9 +13,13 @@ The local API is what a user or a local program can inspect and script. The node
 
 - `openapi.yaml` is the source of truth.
 - Authentication: a per-session token written to a user-only file, plus `Origin` checks for browser requests.
-- Errors use RFC 9457 Problem Details.
-- Pagination is cursor-based.
+- Errors use a compact, stable shape: `{"error": {"code": "...", "message": "..."}}`.
+- Pagination is cursor-based (`after` plus `limit`).
 - Idempotency keys for task creation and approval decisions.
+
+The first implementation covers health, status, account, rooms, events, and
+messages. Agents, approvals, devices, relay settings, and audit endpoints are
+still design-only; they will be added to the same document as they land.
 
 Generated output:
 
