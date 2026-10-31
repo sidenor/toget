@@ -17,9 +17,9 @@ func (d *DB) CreateToolReceipt(ctx context.Context, r *tool.Receipt) error {
 		input = json.RawMessage(`{}`)
 	}
 	_, err := d.db.ExecContext(ctx, `
-		INSERT INTO tool_receipts (id, room_id, agent_id, approval_id, kind, tool, input, output, status, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.RoomID, r.AgentID, r.ApprovalID, r.Kind, r.Tool, string(input), r.Output, r.Status, toMillis(r.CreatedAt))
+		INSERT INTO tool_receipts (id, room_id, agent_id, approval_id, kind, tool, input, output, status, policy_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.RoomID, r.AgentID, r.ApprovalID, r.Kind, r.Tool, string(input), r.Output, r.Status, r.PolicyID, toMillis(r.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("storage: create tool receipt: %w", err)
 	}
@@ -29,7 +29,7 @@ func (d *DB) CreateToolReceipt(ctx context.Context, r *tool.Receipt) error {
 // GetToolReceipt returns one receipt.
 func (d *DB) GetToolReceipt(ctx context.Context, id string) (*tool.Receipt, error) {
 	row := d.db.QueryRowContext(ctx, `
-		SELECT id, room_id, agent_id, approval_id, kind, tool, input, output, status, created_at
+		SELECT id, room_id, agent_id, approval_id, kind, tool, input, output, status, policy_id, created_at
 		FROM tool_receipts WHERE id = ?`, id)
 	r, err := scanToolReceipt(row)
 	if err != nil {
@@ -44,7 +44,7 @@ func (d *DB) GetToolReceipt(ctx context.Context, id string) (*tool.Receipt, erro
 // ListToolReceipts returns recent receipts in a room.
 func (d *DB) ListToolReceipts(ctx context.Context, roomID string, limit int) ([]tool.Receipt, error) {
 	rows, err := d.db.QueryContext(ctx, `
-		SELECT id, room_id, agent_id, approval_id, kind, tool, input, output, status, created_at
+		SELECT id, room_id, agent_id, approval_id, kind, tool, input, output, status, policy_id, created_at
 		FROM tool_receipts WHERE room_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`, roomID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("storage: list tool receipts: %w", err)
@@ -77,7 +77,7 @@ func scanToolReceipt(row rowScanner) (*tool.Receipt, error) {
 	var input string
 	var created int64
 	if err := row.Scan(&r.ID, &r.RoomID, &r.AgentID, &r.ApprovalID, &r.Kind, &r.Tool,
-		&input, &r.Output, &r.Status, &created); err != nil {
+		&input, &r.Output, &r.Status, &r.PolicyID, &created); err != nil {
 		return nil, err
 	}
 	r.Input = json.RawMessage(input)

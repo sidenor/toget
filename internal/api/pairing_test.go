@@ -71,7 +71,7 @@ func newPairAPINode(t *testing.T, createAccount bool) *pairAPINode {
 		},
 	))
 	agents := agent.New(db, rooms)
-	approvals := approval.New(db, rooms)
+	approvals := approval.New(db, rooms, nil)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	lan, err = node.New(node.Options{
 		Accounts: accounts, Rooms: rooms, Paths: paths,
@@ -90,7 +90,7 @@ func newPairAPINode(t *testing.T, createAccount bool) *pairAPINode {
 	})
 	handler := api.New(api.Options{
 		Accounts: accounts, Rooms: rooms, Agents: agents, Approvals: approvals,
-		Tools: tool.New(db, rooms, approvals), Node: lan,
+		Tools: tool.New(db, rooms, approvals, nil), Node: lan,
 		Session: session.New(session.DefaultTTL), Version: version.Current(),
 		Token: testToken, Listen: "127.0.0.1:7718", Logger: logger,
 	}).Handler()

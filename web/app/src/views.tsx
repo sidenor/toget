@@ -14,6 +14,9 @@ import type {
   DiscoveredPeer,
   NodeInfo,
   PairingView,
+  Policy,
+  PolicyDecision,
+  PolicyRule,
   RecoveryStatus,
   Room,
   SearchHit,
@@ -1076,6 +1079,411 @@ export function UpdateSettingsPanel({
         </>
       )}
     </article>
+  );
+}
+
+
+type RuleDraft = {
+  key: string;
+  id: string;
+  effect: "allow" | "deny";
+  kind: string;
+  tool: string;
+  target: string;
+  recipient: string;
+  amountMin: string;
+  amountMax: string;
+  currency: string;
+  weekdays: number[];
+  start: string;
+  end: string;
+  timezone: string;
+  note: string;
+};
+
+function draftFromRule(rule: PolicyRule): RuleDraft {
+  return {
+    key: rule.id || Math.random().toString(36).slice(2),
+    id: rule.id ?? "",
+    effect: rule.effect === "deny" ? "deny" : "allow",
+    kind: rule.kind ?? "",
+    tool: rule.tool ?? "",
+    target: rule.target ?? "",
+    recipient: rule.recipient ?? "",
+    amountMin: rule.amount_min ?? "",
+    amountMax: rule.amount_max ?? "",
+    currency: rule.currency ?? "",
+    weekdays: rule.weekdays ?? [],
+    start: rule.start ?? "",
+    end: rule.end ?? "",
+    timezone: rule.timezone ?? "",
+    note: rule.note ?? "",
+  };
+}
+
+function blankRule(): RuleDraft {
+  return {
+    key: Math.random().toString(36).slice(2),
+    id: "",
+    effect: "allow",
+    kind: "",
+    tool: "",
+    target: "",
+    recipient: "",
+    amountMin: "",
+    amountMax: "",
+    currency: "",
+    weekdays: [],
+    start: "",
+    end: "",
+    timezone: "",
+    note: "",
+  };
+}
+
+function cleanRule(rule: RuleDraft): PolicyRule {
+  const value = (text: string) => text.trim() || undefined;
+  return {
+    id: rule.id,
+    effect: rule.effect,
+    kind: value(rule.kind),
+    tool: value(rule.tool),
+    target: value(rule.target),
+    recipient: value(rule.recipient),
+    amount_min: value(rule.amountMin),
+    amount_max: value(rule.amountMax),
+    currency: value(rule.currency),
+    weekdays: rule.weekdays.length > 0 ? [...rule.weekdays].sort((a, b) => a - b) : undefined,
+    start: value(rule.start),
+    end: value(rule.end),
+    timezone: value(rule.timezone),
+    note: value(rule.note),
+  };
+}
+
+const weekdayKeys = [
+  "policies.weekdayMon",
+  "policies.weekdayTue",
+  "policies.weekdayWed",
+  "policies.weekdayThu",
+  "policies.weekdayFri",
+  "policies.weekdaySat",
+  "policies.weekdaySun",
+];
+
+export function PoliciesView({ t, rooms, notify, onError }: CommonProps) {
+  const [roomID, setRoomID] = useState(rooms[0]?.id ?? "");
+  const [agentID, setAgentID] = useState("");
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [policies, setPolicies] = useState<Policy[]>([]);
+  const [drafts, setDrafts] = useState<RuleDraft[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [preview, setPreview] = useState<PolicyDecision | null>(null);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [action, setAction] = useState({ kind: "tool.call", tool: "", target: "", recipient: "", amount: "", currency: "" });
+
+  useEffect(() => {
+    if (!rooms.some((room) => room.id === roomID)) setRoomID(rooms[0]?.id ?? "");
+  }, [rooms, roomID]);
+
+  useEffect(() => {
+    if (!roomID) {
+      setAgents([]);
+      setPolicies([]);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    Promise.all([api.roomAgents(roomID), api.policies(roomID)])
+      .then(([agentResult, policyResult]) => {
+        if (cancelled) return;
+        setAgents(agentResult.agents);
+        setPolicies(policyResult.policies);
+        setAgentID((current) => (current && agentResult.agents.some((agent) => agent.id === current) ? current : ""));
+      })
+      .catch((err) => {
+        if (!cancelled) onError(err);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [roomID, onError]);
+
+  useEffect(() => {
+    const found = policies.find((policy) => (policy.agent_id ?? "") === agentID);
+    setDrafts((found?.rules ?? []).map(draftFromRule));
+    setPreview(null);
+  }, [policies, agentID]);
+
+  function updateRule(index: number, patch: Partial<RuleDraft>) {
+    setDrafts((current) => current.map((rule, i) => (i === index ? { ...rule, ...patch } : rule)));
+  }
+
+  function toggleWeekday(index: number, day: number) {
+    setDrafts((current) =>
+      current.map((rule, i) => {
+        if (i !== index) return rule;
+        const has = rule.weekdays.includes(day);
+        return { ...rule, weekdays: has ? rule.weekdays.filter((value) => value !== day) : [...rule.weekdays, day] };
+      }),
+    );
+  }
+
+  async function save() {
+    if (!roomID) return;
+    setSaving(true);
+    try {
+      const result = await api.savePolicy(roomID, agentID, drafts.map(cleanRule));
+      setPolicies((current) => [...current.filter((policy) => (policy.agent_id ?? "") !== agentID), result.policy]);
+      notify(t("policies.saved"));
+    } catch (err) {
+      onError(err);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove() {
+    if (!roomID || !window.confirm(t("policies.deleteConfirm"))) return;
+    try {
+      await api.deletePolicy(roomID, agentID);
+      setPolicies((current) => current.filter((policy) => (policy.agent_id ?? "") !== agentID));
+      setDrafts([]);
+      notify(t("policies.deleted"));
+    } catch (err) {
+      onError(err);
+    }
+  }
+
+  async function evaluate() {
+    if (!roomID) return;
+    setPreviewBusy(true);
+    try {
+      const result = await api.evaluatePolicy(roomID, agentID, {
+        kind: action.kind.trim() || "tool.call",
+        tool: action.tool.trim() || undefined,
+        target: action.target.trim() || undefined,
+        recipient: action.recipient.trim() || undefined,
+        amount: action.amount.trim() || undefined,
+        currency: action.currency.trim() || undefined,
+      });
+      setPreview(result);
+    } catch (err) {
+      onError(err);
+    } finally {
+      setPreviewBusy(false);
+    }
+  }
+
+  const hasSaved = policies.some((policy) => (policy.agent_id ?? "") === agentID);
+
+  return (
+    <div className="view policies-view">
+      <header className="view-header">
+        <div>
+          <p className="eyebrow">{t("policies.eyebrow")}</p>
+          <h1>{t("policies.title")}</h1>
+          <p className="muted">{t("policies.subtitle")}</p>
+        </div>
+        <div className="policy-actions">
+          {hasSaved && (
+            <button className="button ghost" onClick={() => void remove()}>
+              {t("policies.delete")}
+            </button>
+          )}
+          <button className="button primary" onClick={() => void save()} disabled={saving || !roomID}>
+            {saving ? t("policies.saving") : t("policies.save")}
+          </button>
+        </div>
+      </header>
+
+      <div className="policy-toolbar">
+        <label>
+          <span className="field-label">{t("policies.room")}</span>
+          <select value={roomID} onChange={(event) => setRoomID(event.target.value)}>
+            {rooms.map((room) => (
+              <option key={room.id} value={room.id}>
+                {room.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span className="field-label">{t("policies.target")}</span>
+          <select value={agentID} onChange={(event) => setAgentID(event.target.value)}>
+            <option value="">{t("policies.roomDefault")}</option>
+            {agents.map((agent) => (
+              <option key={agent.id} value={agent.id}>
+                {agent.name} · {shortID(agent.id)}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <p className="muted policy-semantics">{t("policies.semantics")}</p>
+
+      {loading ? (
+        <Spinner label={t("common.loading")} />
+      ) : (
+        <>
+          <section className="policy-rules">
+            {drafts.map((rule, index) => (
+              <article className={`policy-rule effect-${rule.effect}`} key={rule.key}>
+                <header className="policy-rule-head">
+                  <span className="policy-rule-index">
+                    {t("policies.rule")} {index + 1}
+                  </span>
+                  <label className="policy-effect">
+                    <span className="field-label">{t("policies.effect")}</span>
+                    <select
+                      value={rule.effect}
+                      onChange={(event) => updateRule(index, { effect: event.target.value as "allow" | "deny" })}
+                    >
+                      <option value="allow">{t("policies.allow")}</option>
+                      <option value="deny">{t("policies.deny")}</option>
+                    </select>
+                  </label>
+                  <input
+                    className="policy-note"
+                    value={rule.note}
+                    maxLength={200}
+                    placeholder={t("policies.note")}
+                    onChange={(event) => updateRule(index, { note: event.target.value })}
+                  />
+                  <button
+                    className="mini"
+                    aria-label={t("policies.remove")}
+                    title={t("policies.remove")}
+                    onClick={() => setDrafts((current) => current.filter((_, i) => i !== index))}
+                  >
+                    ×
+                  </button>
+                </header>
+                <div className="policy-grid">
+                  <label>
+                    <span>{t("policies.kind")}</span>
+                    <input value={rule.kind} maxLength={256} placeholder="tool.call" onChange={(event) => updateRule(index, { kind: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>{t("policies.tool")}</span>
+                    <input value={rule.tool} maxLength={256} placeholder="mail.*" onChange={(event) => updateRule(index, { tool: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>{t("policies.targetField")}</span>
+                    <input value={rule.target} maxLength={256} onChange={(event) => updateRule(index, { target: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>{t("policies.recipient")}</span>
+                    <input value={rule.recipient} maxLength={256} placeholder="*@example.com" onChange={(event) => updateRule(index, { recipient: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>{t("policies.amountMin")}</span>
+                    <input value={rule.amountMin} maxLength={64} inputMode="decimal" onChange={(event) => updateRule(index, { amountMin: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>{t("policies.amountMax")}</span>
+                    <input value={rule.amountMax} maxLength={64} inputMode="decimal" onChange={(event) => updateRule(index, { amountMax: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>{t("policies.currency")}</span>
+                    <input value={rule.currency} maxLength={16} placeholder="USD" onChange={(event) => updateRule(index, { currency: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>{t("policies.timezone")}</span>
+                    <input value={rule.timezone} maxLength={64} placeholder="Local" onChange={(event) => updateRule(index, { timezone: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>{t("policies.start")}</span>
+                    <input type="time" value={rule.start} onChange={(event) => updateRule(index, { start: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>{t("policies.end")}</span>
+                    <input type="time" value={rule.end} onChange={(event) => updateRule(index, { end: event.target.value })} />
+                  </label>
+                </div>
+                <div className="weekday-row" role="group" aria-label={t("policies.weekdays")}>
+                  <span className="field-label">{t("policies.weekdays")}</span>
+                  {weekdayKeys.map((key, position) => {
+                    const day = (position + 1) % 7;
+                    const active = rule.weekdays.includes(day);
+                    return (
+                      <button
+                        type="button"
+                        key={key}
+                        className={`weekday ${active ? "active" : ""}`}
+                        aria-pressed={active}
+                        onClick={() => toggleWeekday(index, day)}
+                      >
+                        {t(key)}
+                      </button>
+                    );
+                  })}
+                </div>
+              </article>
+            ))}
+            {drafts.length === 0 && (
+              <p className="empty-hint">{agentID ? t("policies.emptyAgent") : t("policies.none")}</p>
+            )}
+            <button className="button ghost policy-add" onClick={() => setDrafts((current) => [...current, blankRule()])}>
+              + {t("policies.addRule")}
+            </button>
+          </section>
+
+          <section className="policy-preview">
+            <div>
+              <h2>{t("policies.preview")}</h2>
+              <p className="muted">{t("policies.previewHint")}</p>
+            </div>
+            <div className="policy-grid">
+              <label>
+                <span>{t("policies.kind")}</span>
+                <input value={action.kind} onChange={(event) => setAction({ ...action, kind: event.target.value })} />
+              </label>
+              <label>
+                <span>{t("policies.tool")}</span>
+                <input value={action.tool} onChange={(event) => setAction({ ...action, tool: event.target.value })} />
+              </label>
+              <label>
+                <span>{t("policies.targetField")}</span>
+                <input value={action.target} onChange={(event) => setAction({ ...action, target: event.target.value })} />
+              </label>
+              <label>
+                <span>{t("policies.recipient")}</span>
+                <input value={action.recipient} onChange={(event) => setAction({ ...action, recipient: event.target.value })} />
+              </label>
+              <label>
+                <span>{t("policies.amountMax")}</span>
+                <input value={action.amount} inputMode="decimal" onChange={(event) => setAction({ ...action, amount: event.target.value })} />
+              </label>
+              <label>
+                <span>{t("policies.currency")}</span>
+                <input value={action.currency} onChange={(event) => setAction({ ...action, currency: event.target.value })} />
+              </label>
+            </div>
+            <div className="policy-preview-actions">
+              <button className="button" onClick={() => void evaluate()} disabled={previewBusy || !roomID}>
+                {previewBusy ? t("common.loading") : t("policies.runPreview")}
+              </button>
+              {preview && (
+                <span className={`policy-verdict effect-${preview.effect}`}>
+                  {preview.effect === "allow"
+                    ? t("policies.effectAllow")
+                    : preview.effect === "deny"
+                      ? t("policies.effectDeny")
+                      : t("policies.effectApproval")}
+                  {preview.rule_id ? ` · ${preview.rule_id}` : ""}
+                </span>
+              )}
+            </div>
+            {preview && <p className="muted">{preview.reason}</p>}
+          </section>
+        </>
+      )}
+    </div>
   );
 }
 

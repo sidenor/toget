@@ -32,6 +32,7 @@ import (
 	"github.com/sidenor/toget/internal/identity"
 	"github.com/sidenor/toget/internal/mdns"
 	"github.com/sidenor/toget/internal/node"
+	"github.com/sidenor/toget/internal/policy"
 	"github.com/sidenor/toget/internal/room"
 	"github.com/sidenor/toget/internal/session"
 	"github.com/sidenor/toget/internal/storage"
@@ -321,8 +322,9 @@ func runServe(ctx context.Context) error {
 	))
 	var nodeService *node.Service
 	agents := agent.New(db, rooms)
-	approvals := approval.New(db, rooms)
-	tools := tool.New(db, rooms, approvals)
+	policies := policy.New(db, rooms, agents)
+	approvals := approval.New(db, rooms, policies)
+	tools := tool.New(db, rooms, approvals, policies)
 	sessions := session.New(session.DefaultTTL)
 	go func() {
 		ticker := time.NewTicker(time.Minute)
@@ -412,6 +414,7 @@ func runServe(ctx context.Context) error {
 		Accounts:     accounts,
 		Rooms:        rooms,
 		Agents:       agents,
+		Policies:     policies,
 		Approvals:    approvals,
 		Tools:        tools,
 		Node:         apiNode,

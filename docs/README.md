@@ -8,6 +8,7 @@ Start here:
 | [Product](product.md) | What Toget is, who it is for, MVP scope, non-goals |
 | [Architecture](architecture.md) | Nodes, account hosts, rooms, relay tree, trust boundaries |
 | [Connectors](connectors.md) | Stable v1 command/connector protocol, Go SDK, compatibility, security |
+| [Agent policies](policies.md) | Allow/deny/review rules, matching, precedence, limits |
 | [Protocol](protocol.md) | Node protocol, end-to-end envelope, local API, versioning |
 | [Security model](security-model.md) | Assets, who can see what, threats, controls, limits |
 | [Account recovery](account-recovery.md) | Per-device vault recovery, password change, local reset, limits |
@@ -28,13 +29,14 @@ Start here:
 3. Architecture — how the pieces fit.
 4. Protocol — how nodes, devices, and relays talk.
 5. Connectors — how a local Agent runtime talks to the daemon.
-6. Security model — who can decrypt what, and what we do not protect yet.
-7. Account recovery — how passwords and local vault keys are recovered.
-8. Deployment — how a node is installed and operated.
-9. Signed updates — how releases are signed, served, installed, and rolled back.
-10. Tech stack — why these tools.
-11. Repository layout — where code goes.
-12. Roadmap — what to build next.
+6. Agent policies — how the node decides what an Agent may do.
+7. Security model — who can decrypt what, and what we do not protect yet.
+8. Account recovery — how passwords and local vault keys are recovered.
+9. Deployment — how a node is installed and operated.
+10. Signed updates — how releases are signed, served, installed, and rolled back.
+11. Tech stack — why these tools.
+12. Repository layout — where code goes.
+13. Roadmap — what to build next.
 
 ## Decision records
 

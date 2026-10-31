@@ -106,8 +106,9 @@ The daemon wakes the Agent on the mention, catches it up after its last run,
 resumes its Claude Code session, shows live partial output while it works,
 posts the reply, and shows status cards in the timeline. See
 [Agent runtime](docs/agent-runtime.md) for streaming, timeouts, sessions, and
-approvals, and [Connectors](docs/connectors.md) for the stable command
-protocol, Go SDK, and `toget connector check`.
+approvals, [Connectors](docs/connectors.md) for the stable command protocol, Go
+SDK, and `toget connector check`, and [Agent policies](docs/policies.md) for
+allow/deny rules that can pre-authorize routine work.
 
 To invite a second machine on the same LAN, keep `toget serve` running on both.
 On the inviter's machine:
@@ -217,6 +218,7 @@ rejects updates and deletes.
 - [Security model](docs/security-model.md) — who can see what, threats, controls, and limits
 - [Agent runtime](docs/agent-runtime.md) — mentions, sessions, Claude Code, and streaming
 - [Connectors](docs/connectors.md) — stable v1 command protocol, Go SDK, compatibility, and security
+- [Agent policies](docs/policies.md) — allow/deny/review rules, matching, precedence, and limits
 - [Relay and directory](docs/relay.md) — cross-network routing, trust boundaries, quotas, and limits
 - [LAN discovery](docs/discovery.md) — mDNS advertisement, verified lookup, privacy, and limits
 - [Business cards](docs/cards.md) — portable signed cards, QR codes, saved-card pinning, and limits
@@ -347,7 +349,7 @@ go run ./cmd/toget room add-agent <房间ID> <AgentID>
 go run ./cmd/toget send "@Claude 帮我总结一下刚才聊的"
 ```
 
-守护进程会在被 @ 时唤醒 Agent，补上它上次运行之后的消息，续接 Claude Code 会话，把回答发回房间，并在时间线里显示状态卡片。超时、会话重置和审批流程见 [Agent 运行时](docs/agent-runtime.md)；命令运行时遵循稳定的 [连接器协议 v1](docs/connectors.md)，附 Go SDK 和 `toget connector check` 自检命令。
+守护进程会在被 @ 时唤醒 Agent，补上它上次运行之后的消息，续接 Claude Code 会话，把回答发回房间，并在时间线里显示状态卡片。超时、会话重置和审批流程见 [Agent 运行时](docs/agent-runtime.md)；命令运行时遵循稳定的 [连接器协议 v1](docs/connectors.md)，附 Go SDK 和 `toget connector check` 自检命令。房间可以配置 [Agent 策略](docs/policies.md)：按工具、对象、收件人、金额、星期和时间窗放行或拒绝，未匹配的动作仍需人工审批。
 
 局域网邀请：邀请方保持 `toget serve` 运行，然后执行：
 
@@ -415,6 +417,7 @@ toget update rollback               # 放弃待确认更新，或回到上一版
 - [安全模型](docs/security-model.md)
 - [Agent 运行时](docs/agent-runtime.md)
 - [连接器协议](docs/connectors.md)
+- [Agent 策略](docs/policies.md)
 - [中继与目录](docs/relay.md)
 - [局域网发现](docs/discovery.md)
 - [名片与二维码](docs/cards.md)
@@ -424,6 +427,6 @@ toget update rollback               # 放弃待确认更新，或回到上一版
 - [代码结构](docs/repo-layout.md)
 - [路线图](docs/roadmap.md)
 
-**早期实现：本地、局域网和跨网络中继房间已经可用。** 当前版本有账号与设备身份、端到端加密的房间密钥代次、加密的哈希链事件日志、附件、备份恢复、本地 API、CLI 和双语 React 网页。同一局域网内的两个节点可以用邀请码加入房间、互发消息并同步历史；第二台设备可以通过配对恢复同一账号并同步房间，无需拷贝私钥。远程房间支持附件、自主退出和本地归档。Agent 可以注册、加入房间，并通过本地审批和工具回执卡片受控；本机 Agent 运行时，网页会显示有大小上限的临时过程输出，最终回答才是写入时间线的持久记录。可选的中继和签名目录已经能跨网络工作，支持直连优先、自动发现中继、多跳路由、环路检测、配额和有限的离线队列。同一局域网里的节点还能通过 mDNS 相互发现，不依赖目录也能用服务器代码找到对方；发现的地址仍会通过固定 TLS 证书和签名清单验证。名片可以复制成文本或显示为二维码，保存后会把完整服务器 ID 固定到对应的八位代码上。房间邀请码和设备配对码也可以显示成二维码，并从图片中识别。
+**早期实现：本地、局域网和跨网络中继房间已经可用。** 当前版本有账号与设备身份、端到端加密的房间密钥代次、加密的哈希链事件日志、附件、备份恢复、本地 API、CLI 和双语 React 网页。同一局域网内的两个节点可以用邀请码加入房间、互发消息并同步历史；第二台设备可以通过配对恢复同一账号并同步房间，无需拷贝私钥。远程房间支持附件、自主退出和本地归档。Agent 可以注册、加入房间，通过本地审批和工具回执卡片受控，也可以用房间策略按工具、对象、金额和时段预授权日常操作；本机 Agent 运行时，网页会显示有大小上限的临时过程输出，最终回答才是写入时间线的持久记录。可选的中继和签名目录已经能跨网络工作，支持直连优先、自动发现中继、多跳路由、环路检测、配额和有限的离线队列。同一局域网里的节点还能通过 mDNS 相互发现，不依赖目录也能用服务器代码找到对方；发现的地址仍会通过固定 TLS 证书和签名清单验证。名片可以复制成文本或显示为二维码，保存后会把完整服务器 ID 固定到对应的八位代码上。房间邀请码和设备配对码也可以显示成二维码，并从图片中识别。
 
-还没有实现：NAT 穿透与打洞、同一节点登录多个账号、自带模型，以及定时自动检查更新（更新命令和回滚已经可用）。守护进程会在被 @ 时在本地运行 Agent，可以用 Claude Code，也可以用任何实现了运行时协议的命令。很多地方仍会调整。欢迎开 issue 关注、分享场景，或直接参与建设。项目理念见 [docs/philosophy.md](docs/philosophy.md)，参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+还没有实现：NAT 穿透与打洞、同一节点登录多个账号、自带模型，以及面向官方托管账号的强制更新服务端执行（本地定时检查、更新命令和回滚已经可用）。守护进程会在被 @ 时在本地运行 Agent，可以用 Claude Code，也可以用任何实现了运行时协议的命令。很多地方仍会调整。欢迎开 issue 关注、分享场景，或直接参与建设。项目理念见 [docs/philosophy.md](docs/philosophy.md)，参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。

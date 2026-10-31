@@ -25,12 +25,13 @@ import {
   AuditView,
   CommonProps,
   DevicesView,
+  PoliciesView,
   SearchView,
   SettingsView,
   UpdateBanner,
 } from "./views";
 
-type View = "chat" | "approvals" | "agents" | "devices" | "audit" | "search" | "settings";
+type View = "chat" | "approvals" | "agents" | "policies" | "devices" | "audit" | "search" | "settings";
 
 function mergeEvents(previous: RoomEvent[], incoming: RoomEvent[]): RoomEvent[] {
   const seen = new Set(previous.map((event) => event.id));
@@ -378,6 +379,7 @@ export default function App() {
             badge={status.pending_approvals || undefined}
           />
           <NavButton active={view === "agents"} onClick={() => setView("agents")} glyph="✦" label={t("nav.agents")} />
+          <NavButton active={view === "policies"} onClick={() => setView("policies")} glyph="⚖" label={t("nav.policies")} />
           <NavButton active={view === "devices"} onClick={() => setView("devices")} glyph="▤" label={t("nav.devices")} />
           <NavButton active={view === "audit"} onClick={() => setView("audit")} glyph="⛓" label={t("nav.audit")} />
           <NavButton active={view === "search"} onClick={() => setView("search")} glyph="⌕" label={t("nav.search")} />
@@ -463,6 +465,7 @@ export default function App() {
           ))}
         {view === "approvals" && <ApprovalsView {...common} />}
         {view === "agents" && <AgentsView {...common} />}
+        {view === "policies" && <PoliciesView {...common} />}
         {view === "devices" && <DevicesView {...common} />}
         {view === "audit" && <AuditView {...common} />}
         {view === "search" && <SearchView {...common} />}
@@ -499,6 +502,8 @@ function viewTitle(view: View, t: (key: string) => string): string {
       return t("nav.approvals");
     case "agents":
       return t("nav.agents");
+    case "policies":
+      return t("nav.policies");
     case "devices":
       return t("nav.devices");
     case "audit":
@@ -1500,6 +1505,22 @@ function EventRow({
           })}
         />
       );
+    case "policy.updated": {
+      const target = String(payload.agent_id ?? "")
+        ? agentNames[String(payload.agent_id)] || shortID(String(payload.agent_id))
+        : t("policies.roomDefault");
+      return (
+        <SystemEvent
+          text={t("event.policyUpdated", { target, count: Number(payload.rule_count ?? 0) })}
+        />
+      );
+    }
+    case "policy.deleted": {
+      const target = String(payload.agent_id ?? "")
+        ? agentNames[String(payload.agent_id)] || shortID(String(payload.agent_id))
+        : t("policies.roomDefault");
+      return <SystemEvent text={t("event.policyDeleted", { target })} />;
+    }
     case "message.edited":
       return (
         <article className="message">

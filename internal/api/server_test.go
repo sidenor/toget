@@ -17,6 +17,7 @@ import (
 	"github.com/sidenor/toget/internal/agent"
 	"github.com/sidenor/toget/internal/api"
 	"github.com/sidenor/toget/internal/approval"
+	"github.com/sidenor/toget/internal/policy"
 	"github.com/sidenor/toget/internal/room"
 	"github.com/sidenor/toget/internal/session"
 	"github.com/sidenor/toget/internal/storage"
@@ -53,13 +54,15 @@ func newTestNodeWithOptions(t *testing.T, ui fs.FS, configure func(*api.Options)
 	accounts := account.New(db, v)
 	rooms := room.New(db, v, room.WithDataDir(dir))
 	agents := agent.New(db, rooms)
-	approvals := approval.New(db, rooms)
+	policies := policy.New(db, rooms, agents)
+	approvals := approval.New(db, rooms, policies)
 	opts := api.Options{
 		Accounts:  accounts,
 		Rooms:     rooms,
 		Agents:    agents,
+		Policies:  policies,
 		Approvals: approvals,
-		Tools:     tool.New(db, rooms, approvals),
+		Tools:     tool.New(db, rooms, approvals, policies),
 		Session:   session.New(session.DefaultTTL),
 		Version:   version.Current(),
 		Token:     testToken,

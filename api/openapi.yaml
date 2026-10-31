@@ -40,6 +40,7 @@ tags:
   - name: attachments
   - name: agents
   - name: approvals
+  - name: policies
   - name: tools
   - name: audit
   - name: search
@@ -2427,6 +2428,134 @@ paths:
         "423":
           $ref: "#/components/responses/Locked"
 
+  /api/v1/rooms/{id}/policies:
+    get:
+      tags: [policies]
+      operationId: listPolicies
+      summary: List room and per-Agent policies
+      description: |
+        Returns the room default policy first, then one policy per Agent that
+        has its own rule set. Any room member may read policies.
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      responses:
+        "200":
+          description: Policies for the room.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+    put:
+      tags: [policies]
+      operationId: savePolicy
+      summary: Replace a room or per-Agent policy
+      description: |
+        An empty `agent_id` replaces the room default policy; otherwise the
+        rules apply only to that Agent. Saving replaces the whole rule set.
+        The room owner may manage any policy; an Agent owner may manage that
+        Agent's policy. A matching allow pre-authorizes the action, a matching
+        deny always wins, and an unmatched action still needs human approval.
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SavePolicyRequest"
+      responses:
+        "200":
+          description: The saved policy and `policy.updated` event.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyWithEvent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "409":
+          description: The Agent is not an active member of the room.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "423":
+          $ref: "#/components/responses/Locked"
+    delete:
+      tags: [policies]
+      operationId: deletePolicy
+      summary: Delete a room or per-Agent policy
+      description: The Agent's actions then fall back to the room default.
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+        - name: agent_id
+          in: query
+          description: Omit or leave empty for the room default policy.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The `policy.deleted` event.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyDeletedView"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/rooms/{id}/policies/evaluate:
+    post:
+      tags: [policies]
+      operationId: evaluatePolicy
+      summary: Evaluate one action against a room's policies
+      description: |
+        Dry-run evaluation for UI previews. `at` is optional and defaults to
+        the node clock. The result does not create an approval or event.
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EvaluatePolicyRequest"
+      responses:
+        "200":
+          description: The policy decision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyDecision"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
   /api/v1/rooms/{id}/tools:
     get:
       tags: [tools]
@@ -4121,6 +4250,9 @@ components:
             - string
             - "null"
           format: date-time
+        policy_id:
+          type: string
+          description: Rule ID when a policy pre-authorizes the action.
         created_at:
           type: string
           format: date-time
@@ -4177,6 +4309,212 @@ components:
         digest:
           type: string
 
+    PolicyRule:
+      type: object
+      additionalProperties: false
+      required: [id, effect]
+      properties:
+        id:
+          type: string
+          maxLength: 64
+        effect:
+          type: string
+          enum: [allow, deny]
+        kind:
+          type: string
+          maxLength: 256
+          description: Action kind glob; empty matches any kind.
+        tool:
+          type: string
+          maxLength: 256
+        target:
+          type: string
+          maxLength: 256
+        recipient:
+          type: string
+          maxLength: 256
+        amount_min:
+          type: string
+          maxLength: 64
+          description: Exact decimal lower bound.
+        amount_max:
+          type: string
+          maxLength: 64
+        currency:
+          type: string
+          maxLength: 16
+        weekdays:
+          type: array
+          description: 0=Sunday through 6=Saturday; empty matches any day.
+          items:
+            type: integer
+            minimum: 0
+            maximum: 6
+        start:
+          type: string
+          pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+          description: Local start time. An end before start crosses midnight.
+        end:
+          type: string
+          pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+        timezone:
+          type: string
+          maxLength: 64
+          description: IANA zone or Local. Defaults to Local.
+        note:
+          type: string
+          maxLength: 200
+
+    PolicyRuleInput:
+      type: object
+      additionalProperties: false
+      required: [effect]
+      description: |
+        Rule input. Missing ids are generated; supplied ids must be unique.
+        Empty selector fields match anything. Globs support `*` and `?`.
+      properties:
+        id:
+          type: string
+          maxLength: 64
+        effect:
+          type: string
+          enum: [allow, deny]
+        kind:
+          type: string
+          maxLength: 256
+        tool:
+          type: string
+          maxLength: 256
+        target:
+          type: string
+          maxLength: 256
+        recipient:
+          type: string
+          maxLength: 256
+        amount_min:
+          type: string
+          maxLength: 64
+        amount_max:
+          type: string
+          maxLength: 64
+        currency:
+          type: string
+          maxLength: 16
+        weekdays:
+          type: array
+          items:
+            type: integer
+            minimum: 0
+            maximum: 6
+        start:
+          type: string
+          pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+        end:
+          type: string
+          pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+        timezone:
+          type: string
+          maxLength: 64
+        note:
+          type: string
+          maxLength: 200
+
+    Policy:
+      type: object
+      additionalProperties: false
+      required: [id, room_id, rules, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        room_id:
+          type: string
+        agent_id:
+          type: string
+          description: Empty for the room default policy.
+        rules:
+          type: array
+          maxItems: 64
+          items:
+            $ref: "#/components/schemas/PolicyRule"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    PolicyList:
+      type: object
+      additionalProperties: false
+      required: [policies]
+      properties:
+        policies:
+          type: array
+          items:
+            $ref: "#/components/schemas/Policy"
+
+    SavePolicyRequest:
+      type: object
+      additionalProperties: false
+      required: [rules]
+      properties:
+        agent_id:
+          type: string
+          description: Empty or omitted for the room default policy.
+        rules:
+          type: array
+          maxItems: 64
+          items:
+            $ref: "#/components/schemas/PolicyRuleInput"
+
+    PolicyWithEvent:
+      type: object
+      additionalProperties: false
+      required: [policy]
+      properties:
+        policy:
+          $ref: "#/components/schemas/Policy"
+        event:
+          $ref: "#/components/schemas/RoomEvent"
+
+    PolicyDeletedView:
+      type: object
+      additionalProperties: false
+      required: [event]
+      properties:
+        event:
+          $ref: "#/components/schemas/RoomEvent"
+
+    EvaluatePolicyRequest:
+      type: object
+      additionalProperties: false
+      required: [agent_id, action]
+      properties:
+        agent_id:
+          type: string
+        action:
+          $ref: "#/components/schemas/ApprovalAction"
+        at:
+          type: string
+          format: date-time
+          description: Evaluation time; defaults to the node clock.
+
+    PolicyDecision:
+      type: object
+      additionalProperties: false
+      required: [effect, reason]
+      properties:
+        effect:
+          type: string
+          enum: [allow, deny, approval]
+          description: Deny wins; allow pre-authorizes; approval needs a human.
+        rule_id:
+          type: string
+        agent_id:
+          type: string
+        reason:
+          type: string
+
     ToolReceipt:
       type: object
       additionalProperties: false
@@ -4202,6 +4540,9 @@ components:
         status:
           type: string
           enum: [requested, succeeded, failed]
+        policy_id:
+          type: string
+          description: Rule ID when a policy pre-authorizes the tool call.
         created_at:
           type: string
           format: date-time

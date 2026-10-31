@@ -22,6 +22,7 @@ import (
 	"github.com/sidenor/toget/internal/approval"
 	"github.com/sidenor/toget/internal/identity"
 	"github.com/sidenor/toget/internal/node"
+	"github.com/sidenor/toget/internal/policy"
 	"github.com/sidenor/toget/internal/room"
 	"github.com/sidenor/toget/internal/session"
 	"github.com/sidenor/toget/internal/tool"
@@ -51,6 +52,7 @@ type Options struct {
 	Accounts     *account.Service
 	Rooms        *room.Service
 	Agents       *agent.Service
+	Policies     *policy.Service
 	Approvals    *approval.Service
 	Tools        *tool.Service
 	Node         *node.Service
@@ -70,6 +72,7 @@ type Server struct {
 	accounts     *account.Service
 	rooms        *room.Service
 	agents       *agent.Service
+	policies     *policy.Service
 	approvals    *approval.Service
 	tools        *tool.Service
 	node         *node.Service
@@ -99,6 +102,7 @@ func New(opts Options) *Server {
 		accounts:     opts.Accounts,
 		rooms:        opts.Rooms,
 		agents:       opts.Agents,
+		policies:     opts.Policies,
 		approvals:    opts.Approvals,
 		tools:        opts.Tools,
 		node:         opts.Node,
@@ -210,6 +214,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/rooms/{id}/agent-streams", s.data(s.handleListAgentStreams))
 	mux.HandleFunc("POST /api/v1/rooms/{id}/agents", s.data(s.handleJoinAgent))
 	mux.HandleFunc("DELETE /api/v1/rooms/{id}/agents/{agentID}", s.data(s.handleLeaveAgent))
+
+	mux.HandleFunc("GET /api/v1/rooms/{id}/policies", s.data(s.handleListPolicies))
+	mux.HandleFunc("PUT /api/v1/rooms/{id}/policies", s.data(s.handlePutPolicy))
+	mux.HandleFunc("DELETE /api/v1/rooms/{id}/policies", s.data(s.handleDeletePolicy))
+	mux.HandleFunc("POST /api/v1/rooms/{id}/policies/evaluate", s.data(s.handleEvaluatePolicy))
 
 	mux.HandleFunc("GET /api/v1/rooms/{id}/approvals", s.data(s.handleListApprovals))
 	mux.HandleFunc("POST /api/v1/rooms/{id}/approvals", s.data(s.handleRequestApproval))
@@ -1036,6 +1045,8 @@ func writeApprovalError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "agent_revoked", "agent has been revoked")
 	case errors.Is(err, approval.ErrNotInRoom):
 		writeError(w, http.StatusConflict, "agent_not_in_room", "agent is not in this room")
+	case errors.Is(err, approval.ErrPolicyDenied):
+		writeError(w, http.StatusForbidden, "policy_denied", "a policy rule refuses this action")
 	default:
 		if writeRemoteFailure(w, err) {
 			return
@@ -1062,6 +1073,8 @@ func writeToolError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "agent_revoked", "agent has been revoked")
 	case errors.Is(err, tool.ErrNotInRoom):
 		writeError(w, http.StatusConflict, "agent_not_in_room", "agent is not in this room")
+	case errors.Is(err, tool.ErrPolicyDenied):
+		writeError(w, http.StatusForbidden, "policy_denied", "a policy rule refuses this tool call")
 	case errors.Is(err, approval.ErrExpired), errors.Is(err, approval.ErrConsumed),
 		errors.Is(err, approval.ErrDigestMismatch), errors.Is(err, approval.ErrNotGranted):
 		writeApprovalError(w, err)

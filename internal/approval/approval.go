@@ -18,6 +18,7 @@ import (
 
 	"github.com/sidenor/toget/internal/agent"
 	"github.com/sidenor/toget/internal/identity"
+	"github.com/sidenor/toget/internal/policy"
 	"github.com/sidenor/toget/internal/room"
 )
 
@@ -45,6 +46,8 @@ var (
 
 	// ErrInvalidDecision means the decision is not granted/rejected.
 	ErrInvalidDecision = errors.New("invalid approval decision")
+	// ErrPolicyDenied means a policy rule refuses the action.
+	ErrPolicyDenied = errors.New("denied by policy")
 )
 
 const (
@@ -174,6 +177,7 @@ type Approval struct {
 	DecidedBy    string     `json:"decided_by,omitempty"`
 	DecidedAt    *time.Time `json:"decided_at,omitempty"`
 	ConsumedAt   *time.Time `json:"consumed_at,omitempty"`
+	PolicyID     string     `json:"policy_id,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
 }
 
@@ -191,14 +195,16 @@ type Store interface {
 
 // Service owns approval rules.
 type Service struct {
-	store Store
-	rooms *room.Service
-	now   func() time.Time
+	store    Store
+	rooms    *room.Service
+	policies *policy.Service
+	now      func() time.Time
 }
 
-// New creates an approval service.
-func New(store Store, rooms *room.Service) *Service {
-	return &Service{store: store, rooms: rooms, now: time.Now}
+// New creates an approval service. policies may be nil, in which case every
+// risky action needs a human decision.
+func New(store Store, rooms *room.Service, policies *policy.Service) *Service {
+	return &Service{store: store, rooms: rooms, policies: policies, now: time.Now}
 }
 
 // Request creates a pending approval and writes it to the room log.
@@ -239,6 +245,19 @@ func (s *Service) Request(ctx context.Context, roomID, agentID string, actor roo
 	}
 
 	now := s.now().UTC().Truncate(time.Millisecond)
+	decision := policy.Decision{Effect: policy.EffectReview}
+	if s.policies != nil {
+		decision, err = s.policies.Evaluate(ctx, roomID, agentID, policy.Action{
+			Kind: normalized.Kind, Tool: normalized.Tool, Target: normalized.Target,
+			Recipient: normalized.Recipient, Amount: normalized.Amount, Currency: normalized.Currency,
+		}, now)
+		if err != nil {
+			return nil, nil, err
+		}
+		if decision.Effect == policy.EffectDeny {
+			return nil, nil, ErrPolicyDenied
+		}
+	}
 	a := &Approval{
 		ID:           identity.NewID(),
 		RoomID:       roomID,
@@ -251,8 +270,24 @@ func (s *Service) Request(ctx context.Context, roomID, agentID string, actor roo
 		ExpiresAt:    now.Add(ttl),
 		CreatedAt:    now,
 	}
+	if decision.Effect == policy.EffectAllow {
+		a.Status = StatusGranted
+		a.DecidedBy = "policy:" + decision.RuleID
+		a.DecidedAt = &now
+		a.PolicyID = decision.RuleID
+	}
 	if err := s.store.CreateApproval(ctx, a); err != nil {
 		return nil, nil, err
+	}
+	if a.Status == StatusGranted {
+		event, err := s.rooms.Append(ctx, roomID, actor, room.EventApprovalGranted, room.ApprovalDecidedPayload{
+			ApprovalID: a.ID, AgentID: a.AgentID, Decision: DecisionGrant,
+			By: a.DecidedBy, Digest: a.ActionDigest, PolicyID: a.PolicyID,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		return a, event, nil
 	}
 	event, err := s.rooms.Append(ctx, roomID, actor, room.EventApprovalRequested, room.ApprovalRequestedPayload{
 		ApprovalID: a.ID, AgentID: a.AgentID, ActionDigest: a.ActionDigest,

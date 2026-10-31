@@ -246,7 +246,41 @@ export type ToolReceipt = {
   input: unknown;
   output?: string;
   status: string;
+  policy_id?: string;
   created_at: string;
+};
+
+export type PolicyRule = {
+  id: string;
+  effect: "allow" | "deny";
+  kind?: string;
+  tool?: string;
+  target?: string;
+  recipient?: string;
+  amount_min?: string;
+  amount_max?: string;
+  currency?: string;
+  weekdays?: number[];
+  start?: string;
+  end?: string;
+  timezone?: string;
+  note?: string;
+};
+
+export type Policy = {
+  id: string;
+  room_id: string;
+  agent_id?: string;
+  rules: PolicyRule[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type PolicyDecision = {
+  effect: "allow" | "deny" | "approval" | string;
+  rule_id?: string;
+  agent_id?: string;
+  reason: string;
 };
 
 export type Attachment = {

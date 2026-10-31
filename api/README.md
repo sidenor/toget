@@ -22,7 +22,7 @@ The local API is what a user or a local program can inspect and script. The node
 The implementation covers health, updates, session, account, password change
 and recovery, devices, rooms, events, messages, invites, node sync, business
 cards and QR codes, attachments, search, read cursors, audit, Agents,
-approvals, and tools. `openapi.yaml`
+approvals, Agent policies, and tools. `openapi.yaml`
 documents every route currently registered in `internal/api/server.go`. When
 the two disagree, the route table is authoritative; update the YAML in the
 same change.

@@ -2990,3 +2990,180 @@ select {
     flex: 1;
   }
 }
+
+/* Policies */
+.policies-view {
+  max-width: 1120px;
+}
+
+.policy-actions,
+.policy-preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.policy-toolbar {
+  display: flex;
+  align-items: end;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin: 8px 0 12px;
+}
+
+.policy-toolbar label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 200px;
+}
+
+.policy-toolbar select {
+  min-width: 220px;
+}
+
+.policy-semantics {
+  margin: 0 0 24px;
+  max-width: 760px;
+}
+
+.policy-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-bottom: 28px;
+}
+
+.policy-rule {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 16px;
+  box-shadow: 0 6px 18px rgba(42, 52, 48, 0.04);
+}
+
+.policy-rule.effect-deny {
+  border-left-color: var(--danger);
+}
+
+.policy-rule-head {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.policy-rule-index {
+  font-weight: 650;
+  color: var(--ink-soft);
+  padding-bottom: 8px;
+}
+
+.policy-effect {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.policy-note {
+  flex: 1;
+  min-width: 160px;
+}
+
+.policy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.policy-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+
+.policy-grid input,
+.policy-grid select {
+  width: 100%;
+}
+
+.weekday-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.weekday-row .field-label {
+  margin-right: 4px;
+}
+
+.weekday {
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  color: var(--ink-soft);
+  border-radius: 999px;
+  min-width: 38px;
+  padding: 4px 9px;
+  font-size: 0.82rem;
+}
+
+.weekday.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 650;
+}
+
+.policy-add {
+  align-self: flex-start;
+}
+
+.policy-preview {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.policy-preview h2 {
+  margin: 0 0 4px;
+  font-size: 1.1rem;
+}
+
+.policy-preview .policy-grid {
+  max-width: 900px;
+}
+
+.policy-verdict {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 0.85rem;
+  font-weight: 650;
+  background: var(--panel-soft);
+  color: var(--ink-soft);
+  border: 1px solid var(--line);
+}
+
+.policy-verdict.effect-allow {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  border-color: transparent;
+}
+
+.policy-verdict.effect-deny {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: transparent;
+}

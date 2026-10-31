@@ -11,6 +11,7 @@ import (
 	"github.com/sidenor/toget/internal/agent"
 	"github.com/sidenor/toget/internal/approval"
 	"github.com/sidenor/toget/internal/identity"
+	"github.com/sidenor/toget/internal/policy"
 	"github.com/sidenor/toget/internal/room"
 	"github.com/sidenor/toget/internal/storage"
 	"github.com/sidenor/toget/internal/tool"
@@ -20,6 +21,7 @@ import (
 type fixture struct {
 	tools     *tool.Service
 	approvals *approval.Service
+	policies  *policy.Service
 	agents    *agent.Service
 	rooms     *room.Service
 	actor     room.Actor
@@ -41,8 +43,9 @@ func setup(t *testing.T) *fixture {
 	t.Cleanup(func() { db.Close() })
 	rooms := room.New(db, v)
 	agents := agent.New(db, rooms)
-	approvals := approval.New(db, rooms)
-	tools := tool.New(db, rooms, approvals)
+	policies := policy.New(db, rooms, agents)
+	approvals := approval.New(db, rooms, policies)
+	tools := tool.New(db, rooms, approvals, policies)
 
 	_, devPriv, err := identity.NewDeviceKey()
 	if err != nil {
@@ -69,7 +72,7 @@ func setup(t *testing.T) *fixture {
 	if _, _, err := agents.JoinRoom(context.Background(), ag.ID, r.ID, actor); err != nil {
 		t.Fatal(err)
 	}
-	return &fixture{tools: tools, approvals: approvals, agents: agents, rooms: rooms,
+	return &fixture{tools: tools, approvals: approvals, policies: policies, agents: agents, rooms: rooms,
 		actor: actor, room: r, agent: ag}
 }
 
@@ -168,5 +171,32 @@ func TestValidationAndReceiptList(t *testing.T) {
 	}
 	if !tool.RequiresApproval(tool.KindExternal) || tool.RequiresApproval(tool.KindRead) {
 		t.Fatal("approval policy mismatch")
+	}
+}
+
+func TestPolicyAllowSkipsApprovalAndDenyWins(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t)
+	if _, _, err := f.policies.Save(ctx, f.room.ID, f.agent.ID, []policy.Rule{
+		{Effect: policy.EffectAllow, Kind: "tool.call", Tool: "mail.send"},
+		{Effect: policy.EffectDeny, Kind: "tool.call", Tool: "shell.exec"},
+	}, f.actor); err != nil {
+		t.Fatal(err)
+	}
+	r, event, err := f.tools.Request(ctx, f.room.ID, f.agent.ID, f.actor, tool.KindExternal, "mail.send",
+		json.RawMessage(`{"to":"a@example.com"}`), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.PolicyID == "" || event.Type != room.EventToolRequested {
+		t.Fatalf("policy receipt = %#v %#v", r, event)
+	}
+	if _, _, err := f.tools.Request(ctx, f.room.ID, f.agent.ID, f.actor, tool.KindShell, "shell.exec",
+		json.RawMessage(`{"cmd":"true"}`), ""); !errors.Is(err, tool.ErrPolicyDenied) {
+		t.Fatalf("deny = %v", err)
+	}
+	if _, _, err := f.tools.Request(ctx, f.room.ID, f.agent.ID, f.actor, tool.KindExternal, "other.call",
+		json.RawMessage(`{}`), ""); !errors.Is(err, tool.ErrApprovalRequired) {
+		t.Fatalf("unmatched = %v", err)
 	}
 }

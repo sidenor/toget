@@ -13,6 +13,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/sidenor/toget/internal/version"
 )
 
 type testArchiveEntry struct {
@@ -133,7 +135,7 @@ func writeZip(t *testing.T, path string, entries []testArchiveEntry) {
 }
 
 func fakeBinary(app string) []byte {
-	return fakeBinaryWithSchema(app, 9)
+	return fakeBinaryWithSchema(app, version.Schema)
 }
 
 func fakeBinaryWithSchema(app string, schema int) []byte {
@@ -180,7 +182,7 @@ func buildTestRelease(t *testing.T, dir, release, baseURL string, root, key *Sig
 		BaseURL:     baseURL,
 		Executable:  "toget",
 		Protocol:    1,
-		Schema:      9,
+		Schema:      version.Schema,
 		MinApp:      "0.1.0",
 		MinProtocol: 1,
 		Level:       LevelRecommended,

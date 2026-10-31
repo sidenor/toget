@@ -54,8 +54,8 @@ func TestRemoteRoomAgentEvents(t *testing.T) {
 	}
 
 	agents := agent.New(guest.db, guest.rooms)
-	approvals := approval.New(guest.db, guest.rooms)
-	tools := tool.New(guest.db, guest.rooms, approvals)
+	approvals := approval.New(guest.db, guest.rooms, nil)
+	tools := tool.New(guest.db, guest.rooms, approvals, nil)
 	created, err := agents.Register(ctx, guest.snapshot.Account.ID, "Remote Claude", "echo", json.RawMessage(`{"shell":false}`))
 	if err != nil {
 		t.Fatal(err)

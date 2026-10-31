@@ -17,6 +17,9 @@ import type {
   NodeInfo,
   PairingView,
   PairJoinView,
+  Policy,
+  PolicyDecision,
+  PolicyRule,
   RecoveryCredential,
   RecoveryStatus,
   Room,
@@ -200,6 +203,24 @@ export const api = {
     request<{ approval: Approval; event: RoomEvent }>(`/api/v1/approvals/${encodeURIComponent(id)}/decide`, json({ decision })),
   consumeApproval: (id: string, digest: string) =>
     request<{ approval: Approval; event: RoomEvent }>(`/api/v1/approvals/${encodeURIComponent(id)}/consume`, json({ digest })),
+
+  policies: (roomID: string) =>
+    request<{ policies: Policy[] }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/policies`),
+  savePolicy: (roomID: string, agentID: string, rules: PolicyRule[]) =>
+    request<{ policy: Policy; event: RoomEvent }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/policies`, {
+      method: "PUT",
+      body: JSON.stringify({ agent_id: agentID, rules }),
+    }),
+  deletePolicy: (roomID: string, agentID: string) =>
+    request<{ event: RoomEvent }>(
+      `/api/v1/rooms/${encodeURIComponent(roomID)}/policies?agent_id=${encodeURIComponent(agentID)}`,
+      { method: "DELETE" },
+    ),
+  evaluatePolicy: (roomID: string, agentID: string, action: ApprovalAction) =>
+    request<PolicyDecision>(`/api/v1/rooms/${encodeURIComponent(roomID)}/policies/evaluate`, {
+      method: "POST",
+      body: JSON.stringify({ agent_id: agentID, action }),
+    }),
 
   tools: (roomID: string, limit = 100) =>
     request<{ receipts: ToolReceipt[] }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/tools?limit=${limit}`),

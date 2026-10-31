@@ -9,10 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sidenor/toget/internal/version"
 )
 
 func requireExecutableScripts(t *testing.T) {
@@ -64,7 +67,7 @@ func newInstallTestManager(t *testing.T, rs *releaseServer) (*Manager, string) {
 
 func checkInstalledRelease(t *testing.T, manager *Manager, app string) *CheckResult {
 	t.Helper()
-	result, err := manager.Client.Check(context.Background(), Current{App: app, Protocol: 1, Schema: 9}, "install-test-rollout-0123456789", CheckOptions{})
+	result, err := manager.Client.Check(context.Background(), Current{App: app, Protocol: 1, Schema: version.Schema}, "install-test-rollout-0123456789", CheckOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +76,7 @@ func checkInstalledRelease(t *testing.T, manager *Manager, app string) *CheckRes
 
 func validApplyResult(t *testing.T, rs *releaseServer) *CheckResult {
 	t.Helper()
-	result, err := rs.client().Check(context.Background(), Current{App: "1.0.0", Protocol: 1, Schema: 9}, "install-test-rollout-0123456789", CheckOptions{})
+	result, err := rs.client().Check(context.Background(), Current{App: "1.0.0", Protocol: 1, Schema: version.Schema}, "install-test-rollout-0123456789", CheckOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +144,7 @@ func TestManagerApplyFinishRollback(t *testing.T) {
 	}
 
 	current := mustManagedCurrent(t, manager)
-	if current.App != "1.0.0" || current.Protocol != 1 || current.Schema != 9 {
+	if current.App != "1.0.0" || current.Protocol != 1 || current.Schema != version.Schema {
 		t.Fatalf("current before finish = %+v", current)
 	}
 	assertRootLink(t, manager.Root, "current", "versions/v1.1.0")
@@ -469,14 +472,14 @@ func TestManagerReconcileOnStartup(t *testing.T) {
 	if _, err := manager.Apply(context.Background(), result); err != nil {
 		t.Fatal(err)
 	}
-	reconciled, err := manager.ReconcileOnStartup(Current{App: "0.9.0", Protocol: 1, Schema: 9})
+	reconciled, err := manager.ReconcileOnStartup(Current{App: "0.9.0", Protocol: 1, Schema: version.Schema})
 	if err == nil {
 		t.Fatalf("unexpected version reconciled: %+v", reconciled)
 	}
 	if status, _ := manager.Status(); status.State.Pending == nil {
 		t.Fatal("failed reconciliation cleared the pending marker")
 	}
-	reconciled, err = manager.ReconcileOnStartup(Current{App: "1.1.0", Protocol: 1, Schema: 9})
+	reconciled, err = manager.ReconcileOnStartup(Current{App: "1.1.0", Protocol: 1, Schema: version.Schema})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -496,7 +499,7 @@ func TestManagerReconcileOnStartup(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertRootLink(t, manager.Root, "current", "versions/v1.2.0")
-	reconciled, err = manager.ReconcileOnStartup(Current{App: "1.1.0", Protocol: 1, Schema: 9})
+	reconciled, err = manager.ReconcileOnStartup(Current{App: "1.1.0", Protocol: 1, Schema: version.Schema})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -557,7 +560,7 @@ func TestManagerReconcileRepairsIdleLinks(t *testing.T) {
 		if err := removeRootLink(root, "previous"); err != nil {
 			t.Fatal(err)
 		}
-		reconciled, err := manager.ReconcileOnStartup(Current{App: "1.1.0", Protocol: 1, Schema: 9})
+		reconciled, err := manager.ReconcileOnStartup(Current{App: "1.1.0", Protocol: 1, Schema: version.Schema})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -576,7 +579,7 @@ func TestManagerReconcileRepairsIdleLinks(t *testing.T) {
 		if err := switchLinks(root, "1.0.0", "1.1.0"); err != nil {
 			t.Fatal(err)
 		}
-		reconciled, err := manager.ReconcileOnStartup(Current{App: "1.0.0", Protocol: 1, Schema: 9})
+		reconciled, err := manager.ReconcileOnStartup(Current{App: "1.0.0", Protocol: 1, Schema: version.Schema})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -608,7 +611,7 @@ func TestManagerReconcileRepairsIdleLinks(t *testing.T) {
 		if err := manager.saveState(root, state); err != nil {
 			t.Fatal(err)
 		}
-		reconciled, err := manager.ReconcileOnStartup(Current{App: "1.1.0", Protocol: 1, Schema: 9})
+		reconciled, err := manager.ReconcileOnStartup(Current{App: "1.1.0", Protocol: 1, Schema: version.Schema})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -640,7 +643,7 @@ func TestManagerReconcileRemovesOrphanLinks(t *testing.T) {
 	if err := manager.saveState(managerRoot, state); err != nil {
 		t.Fatal(err)
 	}
-	reconciled, err := manager.ReconcileOnStartup(Current{App: "1.0.0", Protocol: 1, Schema: 9})
+	reconciled, err := manager.ReconcileOnStartup(Current{App: "1.0.0", Protocol: 1, Schema: version.Schema})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -803,10 +806,13 @@ func TestManagerLockContention(t *testing.T) {
 }
 
 func TestManagerWarnsOnSchemaUpgrade(t *testing.T) {
-	rs := newReleaseServer(t, "1.1.0", fakeBinaryWithSchema("1.1.0", 10))
-	manager, _ := newInstallTestManager(t, rs)
+	rs := newReleaseServer(t, "1.1.0", fakeBinaryWithSchema("1.1.0", version.Schema))
+	manager, oldPath := newInstallTestManager(t, rs)
+	if err := os.WriteFile(oldPath, fakeBinaryWithSchema("1.0.0", version.Schema-1), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	result := checkInstalledRelease(t, manager, "1.0.0")
-	result.Manifest.Schema = result.Current.Schema + 1
+	result.Current.Schema = version.Schema - 1
 	applied, err := manager.Apply(context.Background(), result)
 	if err != nil {
 		t.Fatal(err)
@@ -896,7 +902,7 @@ func TestManagerAdoptionFailures(t *testing.T) {
 	t.Run("missing current protocol", func(t *testing.T) {
 		manager, _ := newInstallTestManager(t, rs)
 		result := checkInstalledRelease(t, manager, "1.0.0")
-		result.Current = Current{App: "1.0.0", Schema: 9}
+		result.Current = Current{App: "1.0.0", Schema: version.Schema}
 		if _, err := manager.Apply(context.Background(), result); err == nil || !strings.Contains(err.Error(), "protocol and schema versions") {
 			t.Fatalf("apply error = %v", err)
 		}
@@ -904,7 +910,7 @@ func TestManagerAdoptionFailures(t *testing.T) {
 	t.Run("unclean current version", func(t *testing.T) {
 		manager, _ := newInstallTestManager(t, rs)
 		result := checkInstalledRelease(t, manager, "1.0.0")
-		result.Current = Current{App: "v1.0.0", Protocol: 1, Schema: 9}
+		result.Current = Current{App: "v1.0.0", Protocol: 1, Schema: version.Schema}
 		if _, err := manager.Apply(context.Background(), result); err == nil || !strings.Contains(err.Error(), "current app version") {
 			t.Fatalf("apply error = %v", err)
 		}
@@ -942,8 +948,9 @@ func TestManagerRestartCommand(t *testing.T) {
 
 func TestManagerHealthCheck(t *testing.T) {
 	requireExecutableScripts(t)
-	want := HealthExpectation{Release: "1.1.0", Protocol: 1, Schema: 9}
-	validJSON := fmt.Sprintf(`{"app":"1.1.0","protocol":1,"schema":9,"os":%q,"arch":%q}`, runtime.GOOS, runtime.GOARCH)
+	want := HealthExpectation{Release: "1.1.0", Protocol: 1, Schema: version.Schema}
+	schema := strconv.Itoa(version.Schema)
+	validJSON := fmt.Sprintf(`{"app":"1.1.0","protocol":1,"schema":%s,"os":%q,"arch":%q}`, schema, runtime.GOOS, runtime.GOARCH)
 	cases := []struct {
 		name    string
 		body    string
@@ -951,12 +958,12 @@ func TestManagerHealthCheck(t *testing.T) {
 		wantErr string
 	}{
 		{name: "valid", body: "echo '" + validJSON + "'"},
-		{name: "no os or arch", body: `echo '{"app":"1.1.0","protocol":1,"schema":9}'`},
-		{name: "wrong app", body: `echo '{"app":"9.9.9","protocol":1,"schema":9}'`, wantErr: "reports version"},
-		{name: "wrong protocol", body: `echo '{"app":"1.1.0","protocol":2,"schema":9}'`, wantErr: "protocol"},
-		{name: "wrong schema", body: `echo '{"app":"1.1.0","protocol":1,"schema":10}'`, wantErr: "schema"},
-		{name: "wrong os", body: `echo '{"app":"1.1.0","protocol":1,"schema":9,"os":"plan9"}'`, wantErr: "os"},
-		{name: "wrong arch", body: `echo '{"app":"1.1.0","protocol":1,"schema":9,"arch":"mips"}'`, wantErr: "arch"},
+		{name: "no os or arch", body: `echo '{"app":"1.1.0","protocol":1,"schema":` + schema + `}'`},
+		{name: "wrong app", body: `echo '{"app":"9.9.9","protocol":1,"schema":` + schema + `}'`, wantErr: "reports version"},
+		{name: "wrong protocol", body: `echo '{"app":"1.1.0","protocol":2,"schema":` + schema + `}'`, wantErr: "protocol"},
+		{name: "wrong schema", body: `echo '{"app":"1.1.0","protocol":1,"schema":` + strconv.Itoa(version.Schema+1) + `}'`, wantErr: "schema"},
+		{name: "wrong os", body: `echo '{"app":"1.1.0","protocol":1,"schema":` + schema + `,"os":"plan9"}'`, wantErr: "os"},
+		{name: "wrong arch", body: `echo '{"app":"1.1.0","protocol":1,"schema":` + schema + `,"arch":"mips"}'`, wantErr: "arch"},
 		{name: "invalid json", body: `echo 'not json'`, wantErr: "invalid JSON"},
 		{name: "exit failure", body: "echo broken >&2; exit 4", wantErr: "version check failed"},
 		{name: "timeout", body: "exec sleep 5", timeout: 50 * time.Millisecond, wantErr: "timed out"},
@@ -985,7 +992,7 @@ func TestManagerHealthCheck(t *testing.T) {
 	}
 
 	manager := &Manager{HealthTimeout: 2 * time.Second}
-	executable := writeHealthExecutable(t, `case "$1" in --ready) echo '{"app":"1.1.0","protocol":1,"schema":9}';; *) exit 2;; esac`)
+	executable := writeHealthExecutable(t, `case "$1" in --ready) echo '{"app":"1.1.0","protocol":1,"schema":`+schema+`}';; *) exit 2;; esac`)
 	manager.HealthCommand = []string{"--ready"}
 	if err := manager.healthCheck(context.Background(), executable, want); err != nil {
 		t.Fatalf("custom health command: %v", err)

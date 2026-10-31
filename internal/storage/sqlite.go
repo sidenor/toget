@@ -22,7 +22,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const schemaVersion = 9
+const schemaVersion = 10
 
 // CurrentSchemaVersion is the newest database schema this build understands.
 // Backup/restore uses it to reject archives from newer builds.
@@ -94,7 +94,7 @@ func (d *DB) migrate(ctx context.Context) error {
 	}
 	migrations := []func(context.Context) error{
 		d.migrateV1, d.migrateV2, d.migrateV3, d.migrateV4, d.migrateV5, d.migrateV6, d.migrateV7,
-		d.migrateV8,
+		d.migrateV8, d.migrateV9,
 	}
 	for from := version; from < schemaVersion; from++ {
 		if from < 1 || from > len(migrations) {
@@ -349,6 +349,58 @@ func (d *DB) migrateV7(ctx context.Context) error {
 		return fmt.Errorf("storage: commit v7 migration: %w", err)
 	}
 	return nil
+}
+
+// migrateV9 adds policy attribution to approvals and tool receipts and the
+// policy table. Existing rows keep an empty policy id and fall back to the
+// configured policy on their next request.
+func (d *DB) migrateV9(ctx context.Context) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("storage: begin v9 migration: %w", err)
+	}
+	defer tx.Rollback()
+	for table, statement := range map[string]string{
+		"approvals":     `ALTER TABLE approvals ADD COLUMN policy_id TEXT NOT NULL DEFAULT ''`,
+		"tool_receipts": `ALTER TABLE tool_receipts ADD COLUMN policy_id TEXT NOT NULL DEFAULT ''`,
+	} {
+		exists, err := tableExists(ctx, tx, table)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, statement); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("storage: migrate v9 %s: %w", table, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS policies (
+			id         TEXT PRIMARY KEY,
+			room_id    TEXT NOT NULL REFERENCES rooms(id),
+			agent_id   TEXT NOT NULL DEFAULT '',
+			rules      TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL)`); err != nil {
+		return fmt.Errorf("storage: migrate v9 policies: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS policies_room_agent ON policies(room_id, agent_id)`); err != nil {
+		return fmt.Errorf("storage: migrate v9 policy index: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storage: commit v9 migration: %w", err)
+	}
+	return nil
+}
+
+func tableExists(ctx context.Context, tx *sql.Tx, name string) (bool, error) {
+	var n int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&n); err != nil {
+		return false, fmt.Errorf("storage: check table %s: %w", name, err)
+	}
+	return n > 0, nil
 }
 
 // migrateV8 adds the home node's projection of remote Agents. Existing rooms

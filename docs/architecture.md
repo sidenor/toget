@@ -351,6 +351,5 @@ Open details: deterministic relay switching for existing rooms, multi-hop offlin
 - Multi-hop offline queueing and byte-based per-sender quotas.
 - Room home-node failover: read-only, queue, or elect a new home.
 - Directory replication, signed directory responses, and collision resolution.
-- The smallest useful policy language for Agent permissions.
 - How much of the official service can be stateless.
 - The first mobile client: responsive web, PWA, or native shell.

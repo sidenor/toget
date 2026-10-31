@@ -13,6 +13,7 @@ import (
 	"github.com/sidenor/toget/internal/agent"
 	"github.com/sidenor/toget/internal/approval"
 	"github.com/sidenor/toget/internal/identity"
+	"github.com/sidenor/toget/internal/policy"
 	"github.com/sidenor/toget/internal/room"
 )
 
@@ -33,6 +34,8 @@ var (
 	ErrAgentRevoked = errors.New("agent is revoked")
 	// ErrNotAgentOwner means the caller does not own the Agent.
 	ErrNotAgentOwner = errors.New("caller does not own this agent")
+	// ErrPolicyDenied means a policy rule refuses the tool call.
+	ErrPolicyDenied = approval.ErrPolicyDenied
 )
 
 // Tool classes. Everything except KindRead requires a human approval.
@@ -62,6 +65,7 @@ type Receipt struct {
 	Input      json.RawMessage `json:"input"`
 	Output     string          `json:"output,omitempty"`
 	Status     string          `json:"status"`
+	PolicyID   string          `json:"policy_id,omitempty"`
 	CreatedAt  time.Time       `json:"created_at"`
 }
 
@@ -80,12 +84,14 @@ type Service struct {
 	store     Store
 	rooms     *room.Service
 	approvals *approval.Service
+	policies  *policy.Service
 	now       func() time.Time
 }
 
-// New creates a tool service.
-func New(store Store, rooms *room.Service, approvals *approval.Service) *Service {
-	return &Service{store: store, rooms: rooms, approvals: approvals, now: time.Now}
+// New creates a tool service. policies may be nil, in which case every risky
+// tool call needs a human approval.
+func New(store Store, rooms *room.Service, approvals *approval.Service, policies *policy.Service) *Service {
+	return &Service{store: store, rooms: rooms, approvals: approvals, policies: policies, now: time.Now}
 }
 
 // Request records a tool call. Risky tool kinds require a granted, unconsumed
@@ -129,7 +135,17 @@ func (s *Service) Request(ctx context.Context, roomID, agentID string, actor roo
 		Tool:       name,
 		Parameters: map[string]any{"input": value},
 	}
-	if requiresApproval(kind) && approvalID == "" {
+	decision := policy.Decision{Effect: policy.EffectReview}
+	if s.policies != nil {
+		decision, err = s.policies.Evaluate(ctx, roomID, agentID, toolPolicyAction(name, canonicalInput), s.now())
+		if err != nil {
+			return nil, nil, err
+		}
+		if decision.Effect == policy.EffectDeny {
+			return nil, nil, ErrPolicyDenied
+		}
+	}
+	if requiresApproval(kind) && approvalID == "" && decision.Effect != policy.EffectAllow {
 		return nil, nil, ErrApprovalRequired
 	}
 	if approvalID != "" {
@@ -150,6 +166,10 @@ func (s *Service) Request(ctx context.Context, roomID, agentID string, actor roo
 	}
 
 	now := s.now().UTC().Truncate(time.Millisecond)
+	policyID := ""
+	if decision.Effect == policy.EffectAllow {
+		policyID = decision.RuleID
+	}
 	r := &Receipt{
 		ID:         identity.NewID(),
 		RoomID:     roomID,
@@ -159,6 +179,7 @@ func (s *Service) Request(ctx context.Context, roomID, agentID string, actor roo
 		Tool:       name,
 		Input:      canonicalInput,
 		Status:     StatusRequested,
+		PolicyID:   policyID,
 		CreatedAt:  now,
 	}
 	if err := s.store.CreateToolReceipt(ctx, r); err != nil {
@@ -166,7 +187,7 @@ func (s *Service) Request(ctx context.Context, roomID, agentID string, actor roo
 	}
 	event, err := s.rooms.Append(ctx, roomID, actor, room.EventToolRequested, room.ToolEventPayload{
 		ReceiptID: r.ID, AgentID: agentID, Tool: name, Status: StatusRequested,
-		Input: canonicalInput, ApprovalID: approvalID,
+		Input: canonicalInput, ApprovalID: approvalID, PolicyID: policyID,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -202,7 +223,7 @@ func (s *Service) Complete(ctx context.Context, receiptID string, actor room.Act
 	r.Output = output
 	event, err := s.rooms.Append(ctx, r.RoomID, actor, eventType, room.ToolEventPayload{
 		ReceiptID: r.ID, AgentID: r.AgentID, Tool: r.Tool, Status: status,
-		Input: r.Input, Output: output, ApprovalID: r.ApprovalID,
+		Input: r.Input, Output: output, ApprovalID: r.ApprovalID, PolicyID: r.PolicyID,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -221,6 +242,49 @@ func (s *Service) List(ctx context.Context, roomID string, limit int) ([]Receipt
 		limit = 100
 	}
 	return s.store.ListToolReceipts(ctx, roomID, limit)
+}
+
+// toolPolicyAction adds conventional top-level input fields to the policy
+// view. The approval digest still covers the full canonical input; these
+// fields only let rules match recipient, target, amount, and currency.
+func toolPolicyAction(name string, input json.RawMessage) policy.Action {
+	action := policy.Action{Kind: "tool.call", Tool: name}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(input, &fields); err != nil {
+		return action
+	}
+	action.Target = policyString(fields["target"])
+	action.Recipient = policyString(fields["recipient"])
+	action.Currency = policyString(fields["currency"])
+	action.Amount = policyAmount(fields["amount"])
+	return action
+}
+
+func policyString(raw json.RawMessage) string {
+	var value string
+	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil {
+		return ""
+	}
+	return value
+}
+
+func policyAmount(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	if value := policyString(raw); value != "" {
+		return value
+	}
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.UseNumber()
+	var value any
+	if err := dec.Decode(&value); err != nil {
+		return ""
+	}
+	if number, ok := value.(json.Number); ok {
+		return number.String()
+	}
+	return ""
 }
 
 // RequiresApproval reports whether a tool kind is gated.

@@ -162,6 +162,8 @@ const (
 	EventAgentJoined         = "agent.joined"
 	EventAgentLeft           = "agent.left"
 	EventAgentStatus         = "agent.status"
+	EventPolicyUpdated       = "policy.updated"
+	EventPolicyDeleted       = "policy.deleted"
 )
 
 // Payloads for the event types above.
@@ -224,6 +226,7 @@ type ApprovalRequestedPayload struct {
 	ActionDigest string `json:"action_digest"`
 	Description  string `json:"description"`
 	ExpiresAt    string `json:"expires_at"`
+	PolicyID     string `json:"policy_id,omitempty"`
 }
 
 type ApprovalDecidedPayload struct {
@@ -232,6 +235,7 @@ type ApprovalDecidedPayload struct {
 	Decision   string `json:"decision"`
 	By         string `json:"by"`
 	Digest     string `json:"digest"`
+	PolicyID   string `json:"policy_id,omitempty"`
 }
 
 type ApprovalConsumedPayload struct {
@@ -248,6 +252,7 @@ type ToolEventPayload struct {
 	Input      json.RawMessage `json:"input,omitempty"`
 	Output     string          `json:"output,omitempty"`
 	ApprovalID string          `json:"approval_id,omitempty"`
+	PolicyID   string          `json:"policy_id,omitempty"`
 }
 
 type AgentJoinedPayload struct {
@@ -267,6 +272,13 @@ type AgentStatusPayload struct {
 	AgentID string `json:"agent_id"`
 	Status  string `json:"status"`
 	Detail  string `json:"detail,omitempty"`
+}
+
+type PolicyUpdatedPayload struct {
+	PolicyID  string `json:"policy_id,omitempty"`
+	AgentID   string `json:"agent_id,omitempty"`
+	RuleCount int    `json:"rule_count,omitempty"`
+	Change    string `json:"change,omitempty"`
 }
 
 type HistoryAttachedPayload struct {

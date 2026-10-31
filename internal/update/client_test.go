@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sidenor/toget/internal/version"
 )
 
 type releaseServer struct {
@@ -103,7 +105,7 @@ func TestClientCheckDowngrade(t *testing.T) {
 	if !result.Available || !result.Downgrade || result.Reason != "downgrade" {
 		t.Fatalf("downgrade result = %+v", result)
 	}
-	result, err = client.Check(context.Background(), Current{App: "2.0.0", Protocol: 1, Schema: 10}, "rollout-id-123456", CheckOptions{AllowDowngrade: true})
+	result, err = client.Check(context.Background(), Current{App: "2.0.0", Protocol: 1, Schema: version.Schema + 1}, "rollout-id-123456", CheckOptions{AllowDowngrade: true})
 	if err != nil {
 		t.Fatal(err)
 	}

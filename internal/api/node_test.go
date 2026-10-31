@@ -65,7 +65,7 @@ func newTestNodeWithLAN(t *testing.T) *testNode {
 		},
 	))
 	agents := agent.New(db, rooms)
-	approvals := approval.New(db, rooms)
+	approvals := approval.New(db, rooms, nil)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	lan, err = node.New(node.Options{
 		Accounts: accounts, Rooms: rooms, Paths: paths,
@@ -88,7 +88,7 @@ func newTestNodeWithLAN(t *testing.T) *testNode {
 		Rooms:     rooms,
 		Agents:    agents,
 		Approvals: approvals,
-		Tools:     tool.New(db, rooms, approvals),
+		Tools:     tool.New(db, rooms, approvals, nil),
 		Node:      lan,
 		Session:   session.New(session.DefaultTTL),
 		Version:   version.Current(),

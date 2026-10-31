@@ -19,11 +19,11 @@ func (d *DB) CreateApproval(ctx context.Context, a *approval.Approval) error {
 	}
 	_, err = d.db.ExecContext(ctx, `
 		INSERT INTO approvals (id, room_id, agent_id, requested_by, action, action_digest,
-			description, status, expires_at, decided_by, decided_at, consumed_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			description, status, expires_at, decided_by, decided_at, consumed_at, policy_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.ID, a.RoomID, a.AgentID, a.RequestedBy, string(action), a.ActionDigest,
 		a.Description, a.Status, toMillis(a.ExpiresAt), nullableString(a.DecidedBy),
-		nullableMillis(a.DecidedAt), nullableMillis(a.ConsumedAt), toMillis(a.CreatedAt))
+		nullableMillis(a.DecidedAt), nullableMillis(a.ConsumedAt), a.PolicyID, toMillis(a.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("storage: create approval: %w", err)
 	}
@@ -34,7 +34,7 @@ func (d *DB) CreateApproval(ctx context.Context, a *approval.Approval) error {
 func (d *DB) GetApproval(ctx context.Context, id string) (*approval.Approval, error) {
 	row := d.db.QueryRowContext(ctx, `
 		SELECT id, room_id, agent_id, requested_by, action, action_digest, description,
-		       status, expires_at, decided_by, decided_at, consumed_at, created_at
+		       status, expires_at, decided_by, decided_at, consumed_at, policy_id, created_at
 		FROM approvals WHERE id = ?`, id)
 	a, err := scanApproval(row)
 	if err != nil {
@@ -50,7 +50,7 @@ func (d *DB) GetApproval(ctx context.Context, id string) (*approval.Approval, er
 func (d *DB) ListApprovals(ctx context.Context, roomID, status string) ([]approval.Approval, error) {
 	query := `
 		SELECT id, room_id, agent_id, requested_by, action, action_digest, description,
-		       status, expires_at, decided_by, decided_at, consumed_at, created_at
+		       status, expires_at, decided_by, decided_at, consumed_at, policy_id, created_at
 		FROM approvals WHERE 1 = 1`
 	var args []any
 	if roomID != "" {
@@ -138,7 +138,7 @@ func scanApproval(row rowScanner) (*approval.Approval, error) {
 	var decidedAt, consumedAt sql.NullInt64
 	if err := row.Scan(&a.ID, &a.RoomID, &a.AgentID, &a.RequestedBy, &action,
 		&a.ActionDigest, &a.Description, &a.Status, &expires, &decidedBy,
-		&decidedAt, &consumedAt, &created); err != nil {
+		&decidedAt, &consumedAt, &a.PolicyID, &created); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal([]byte(action), &a.Action); err != nil {

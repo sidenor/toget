@@ -354,7 +354,7 @@ Controls:
 - Tool results and external content are labeled as untrusted in the Agent context.
 - Actions that cross a trust boundary require approval: `external.send`, `money.spend`, `destructive`.
 - Approval cards show the concrete target, parameters, and amount from the canonical action, not a model-written summary.
-- Policies restrict which domains, recipients, and tools an Agent may use.
+- Policies restrict which domains, recipients, tools, amounts, weekdays, and time windows an Agent may use. Deny wins; an explicit allow is a single-use pre-authorization; unmatched risky actions still need a human decision (see [policies.md](policies.md)).
 - The timeline records where an instruction came from when the source is known.
 
 ### Approval phishing

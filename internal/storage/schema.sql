@@ -197,6 +197,7 @@ CREATE TABLE approvals (
     decided_by     TEXT,
     decided_at     INTEGER,
     consumed_at    INTEGER,
+    policy_id      TEXT NOT NULL DEFAULT '',
     created_at     INTEGER NOT NULL
 );
 
@@ -212,6 +213,7 @@ CREATE TABLE tool_receipts (
     input        TEXT NOT NULL DEFAULT '{}',
     output       TEXT NOT NULL DEFAULT '',
     status       TEXT NOT NULL,
+    policy_id    TEXT NOT NULL DEFAULT '',
     created_at   INTEGER NOT NULL
 );
 
@@ -275,6 +277,8 @@ CREATE TABLE policies (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
+
+CREATE UNIQUE INDEX policies_room_agent ON policies(room_id, agent_id);
 
 CREATE TABLE settings (
     key   TEXT PRIMARY KEY,

@@ -19,6 +19,7 @@ import (
 
 	"github.com/sidenor/toget/internal/api"
 	"github.com/sidenor/toget/internal/update"
+	"github.com/sidenor/toget/internal/version"
 )
 
 func writeTestTarGz(t *testing.T, path string, body []byte) {
@@ -84,8 +85,8 @@ func newSignedReleaseServer(t *testing.T) (*httptest.Server, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	binary := []byte(fmt.Sprintf("#!/bin/sh\necho '{\"app\":\"1.1.0\",\"protocol\":1,\"schema\":9,\"os\":%q,\"arch\":%q}'\n",
-		runtime.GOOS, runtime.GOARCH))
+	binary := []byte(fmt.Sprintf("#!/bin/sh\necho '{\"app\":\"1.1.0\",\"protocol\":1,\"schema\":%d,\"os\":%q,\"arch\":%q}'\n",
+		version.Schema, runtime.GOOS, runtime.GOARCH))
 	archive := filepath.Join(dir, "daemon", runtime.GOOS+"-"+runtime.GOARCH, "v1.1.0", "toget.tar.gz")
 	writeTestTarGz(t, archive, binary)
 
@@ -95,7 +96,7 @@ func newSignedReleaseServer(t *testing.T) (*httptest.Server, string) {
 		BaseURL:     server.URL,
 		Executable:  "toget",
 		Protocol:    1,
-		Schema:      9,
+		Schema:      version.Schema,
 		MinApp:      "0.0.1",
 		MinProtocol: 1,
 		Level:       update.LevelRecommended,

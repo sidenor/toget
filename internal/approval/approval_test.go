@@ -12,6 +12,7 @@ import (
 	"github.com/sidenor/toget/internal/agent"
 	"github.com/sidenor/toget/internal/approval"
 	"github.com/sidenor/toget/internal/identity"
+	"github.com/sidenor/toget/internal/policy"
 	"github.com/sidenor/toget/internal/room"
 	"github.com/sidenor/toget/internal/storage"
 	"github.com/sidenor/toget/internal/vault"
@@ -19,6 +20,7 @@ import (
 
 type fixture struct {
 	approvals *approval.Service
+	policies  *policy.Service
 	agents    *agent.Service
 	rooms     *room.Service
 	db        *storage.DB
@@ -41,6 +43,7 @@ func setup(t *testing.T) *fixture {
 	t.Cleanup(func() { db.Close() })
 	rooms := room.New(db, v)
 	agents := agent.New(db, rooms)
+	policies := policy.New(db, rooms, agents)
 
 	devPub, devPriv, err := identity.NewDeviceKey()
 	if err != nil {
@@ -69,7 +72,7 @@ func setup(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	return &fixture{
-		approvals: approval.New(db, rooms), agents: agents, rooms: rooms, db: db,
+		approvals: approval.New(db, rooms, policies), policies: policies, agents: agents, rooms: rooms, db: db,
 		actor: actor, room: r, agent: ag,
 	}
 }
@@ -187,5 +190,35 @@ func TestAgentMustBeInRoom(t *testing.T) {
 	}
 	if _, _, err := f.approvals.Request(ctx, r2.ID, f.agent.ID, f.actor, approval.Action{Kind: "x"}, time.Hour); !errors.Is(err, approval.ErrNotInRoom) {
 		t.Fatalf("agent not in room = %v", err)
+	}
+}
+
+func TestPolicyAllowAutoGrantsAndDenyRefuses(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t)
+	if _, _, err := f.policies.Save(ctx, f.room.ID, f.agent.ID, []policy.Rule{
+		{Effect: policy.EffectAllow, Kind: "tool.call", Tool: "mail.send"},
+		{Effect: policy.EffectDeny, Kind: "tool.call", Tool: "shell.exec"},
+	}, f.actor); err != nil {
+		t.Fatal(err)
+	}
+	allowed := approval.Action{Kind: "tool.call", Tool: "mail.send", Recipient: "a@example.com"}
+	a, event, err := f.approvals.Request(ctx, f.room.ID, f.agent.ID, f.actor, allowed, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Status != approval.StatusGranted || a.PolicyID == "" || a.DecidedBy == "" || event.Type != room.EventApprovalGranted {
+		t.Fatalf("auto grant = %#v %#v", a, event)
+	}
+	digest, err := approval.Digest(allowed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.approvals.Consume(ctx, a.ID, digest, f.actor); err != nil {
+		t.Fatalf("consume auto grant = %v", err)
+	}
+	if _, _, err := f.approvals.Request(ctx, f.room.ID, f.agent.ID, f.actor,
+		approval.Action{Kind: "tool.call", Tool: "shell.exec"}, time.Hour); !errors.Is(err, approval.ErrPolicyDenied) {
+		t.Fatalf("deny = %v", err)
 	}
 }

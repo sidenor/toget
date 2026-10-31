@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sidenor/toget/internal/version"
 )
 
 func testMonitorLogger() *slog.Logger {
@@ -31,7 +33,7 @@ func newMonitorFixture(t *testing.T, mode string) *monitorFixture {
 	rs := newReleaseServer(t, "1.1.0", fakeBinary("1.1.0"))
 	// The in-process version is 0.1.0-dev, so keep the minimum supported app
 	// below it while exercising the monitor.
-	rs.publishManifest(t, "1.1.0", 1, 9, 1, "0.0.1")
+	rs.publishManifest(t, "1.1.0", 1, version.Schema, 1, "0.0.1")
 	manager, _ := newInstallTestManager(t, rs)
 	// The manager adopts the running binary before the first update. Make the
 	// fake executable report the same development version as this process.
