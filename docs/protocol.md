@@ -253,8 +253,14 @@ The outer envelope deliberately does not carry the room ID, the sender's account
 | `body` | Text or structured payload |
 | `attachments` | Object IDs and per-file keys |
 | `mentions` | Account IDs or Agent IDs |
+| `agent_id` | Optional display attribution to a local Agent owned by the sender |
 | `reply_to` | Optional parent message |
 | `created_at` | Sender timestamp |
+
+`agent_id` is routing and display metadata, not a new author identity: the
+payload is still signed by the owning account's device. A receiving endpoint
+must not treat it as proof that the Agent itself approved or authored the
+content.
 
 ### Encryption
 
@@ -435,9 +441,14 @@ The local API is how the local web UI, the CLI, and Agents talk to the daemon.
 - An Agent is registered on a device with its own identity and scoped permissions.
 - The first runtime is Claude Code, driven by `toget` CLI commands and a skill.
 - A session is created per (Agent, Room); it catches up on missed messages when invoked.
-- An Agent is not invoked unless mentioned or addressed, unless a room policy says otherwise.
+- An Agent is not invoked unless mentioned or addressed, unless a room policy says otherwise. A mention is either an explicit Agent ID in `mentions` or `@Name` in the message text, matched case-insensitively at a word boundary.
+- Agent-authored messages (payload `agent_id` set) never trigger another run. Runs are serialized per Agent; at most one mention is claimed per scan.
+- A run receives the trigger, the events since the last completed run, the room and Agent metadata, the resumed runtime session, and the per-Agent workspace. The runtime returns reply text, an optional format, and an optional runtime session ID.
+- The scan cursor advances before the run, so a crash cannot repeat a side effect. The completed-run cursor advances only after a successful reply; a failed mention remains in the next catch-up context. A restart marks an interrupted run as interrupted instead of silently replaying it.
 - Tool calls and results are reported as `tool.*` events, so the work is visible in the timeline.
 - Risky actions wait for an approval; the Agent is suspended until the decision arrives.
+- Session cursors are local state and are never sent to other members. `GET /api/v1/agents/{id}/sessions` and `DELETE /api/v1/agents/{id}/sessions/{roomID}` inspect and reset them. `POST /api/v1/agents/{id}/stop` cancels the active runtime process; the mention is not marked complete, so it stays in the next catch-up context.
+- A room hosted by another node accepts only `message.posted` from remote members. Agent status, approval, and tool events therefore remain a home-node capability; remote-room Agent execution is not supported yet.
 
 ## Approval binding
 

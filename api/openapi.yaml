@@ -1390,6 +1390,93 @@ paths:
         "423":
           $ref: "#/components/responses/Locked"
 
+  /api/v1/agents/{id}/sessions:
+    get:
+      tags: [agents]
+      operationId: listAgentSessions
+      summary: List an Agent's per-room runtime sessions
+      description: |
+        Sessions are local runtime state, not room events. They track the
+        catch-up cursor, the resumed runtime conversation, run count, and the
+        last error for each (Agent, Room) pair.
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+      responses:
+        "200":
+          description: Runtime sessions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentSessionList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/agents/{id}/sessions/{roomID}:
+    delete:
+      tags: [agents]
+      operationId: resetAgentSession
+      summary: Reset an Agent's runtime session in a room
+      description: |
+        Clears the runtime conversation and moves both cursors to the current
+        room head. The Agent starts fresh on its next mention. If a run is
+        active in that room, it is stopped first.
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+        - $ref: "#/components/parameters/AgentRoomID"
+      responses:
+        "200":
+          description: The reset session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentSession"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/agents/{id}/stop:
+    post:
+      tags: [agents]
+      operationId: stopAgent
+      summary: Stop an Agent's active run
+      description: |
+        Cancels the local runtime process. The mention is not marked complete,
+        so it stays in the next catch-up context. Returns 409 when no run is
+        active.
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+      responses:
+        "200":
+          description: The run was cancelled.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [stopped]
+                properties:
+                  stopped:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "423":
+          $ref: "#/components/responses/Locked"
+
   /api/v1/rooms/{id}/agents:
     get:
       tags: [agents]
@@ -1808,6 +1895,13 @@ components:
       description: Agent ID.
       schema:
         type: string
+    AgentRoomID:
+      name: roomID
+      in: path
+      required: true
+      description: Room ID of the Agent's runtime session.
+      schema:
+        type: string
     ApprovalID:
       name: id
       in: path
@@ -1901,6 +1995,12 @@ components:
             $ref: "#/components/schemas/Error"
     Forbidden:
       description: This account or device is not allowed to perform the operation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: The request conflicts with the current state, such as an Agent that is not in the room.
       content:
         application/json:
           schema:
@@ -2603,6 +2703,56 @@ components:
           items:
             $ref: "#/components/schemas/Agent"
 
+    AgentSession:
+      type: object
+      additionalProperties: false
+      required: [agent_id, room_id, last_seen_seq, last_run_seq, run_count, status, updated_at]
+      properties:
+        agent_id:
+          type: string
+        room_id:
+          type: string
+        room_name:
+          type: string
+        last_seen_seq:
+          type: integer
+          format: int64
+          description: Highest room event scanned for mentions.
+        last_run_seq:
+          type: integer
+          format: int64
+          description: Highest event included in a completed run; the next run catches up after it.
+        active_event_id:
+          type: string
+          description: The mention currently executing, if any.
+        active_seq:
+          type: integer
+          format: int64
+        runtime_session:
+          type: string
+          description: Opaque runtime conversation ID used to resume.
+        run_count:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum: [idle, running, waiting_approval, offline]
+        last_error:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+
+    AgentSessionList:
+      type: object
+      additionalProperties: false
+      required: [sessions]
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentSession"
+
     AgentWithEvent:
       type: object
       additionalProperties: false
@@ -2954,6 +3104,13 @@ components:
         reply_to:
           type: string
           description: Event ID being replied to.
+        agent_id:
+          type: string
+          description: |
+            Attribute the message to a local Agent owned by this account. The
+            cryptographic author remains the account's device. The Agent must
+            be a member of the room and must not be revoked. Mentions written
+            in the text are detected automatically and merged into `mentions`.
 
     EditMessageRequest:
       type: object

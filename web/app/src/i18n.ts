@@ -75,6 +75,7 @@ const strings: Record<string, [string, string]> = {
   "conversation.attachLimit": ["Up to 25 MiB per file", "每个文件最大 25 MiB"],
   "conversation.mentionsHint": ["Type @name to mention an Agent", "输入 @名字 可以召唤 Agent"],
   "conversation.edited": ["edited", "已编辑"],
+  "conversation.agentBadge": ["Agent", "Agent"],
   "conversation.download": ["Download", "下载"],
   "conversation.showMore": ["Show earlier", "显示更早"],
 
@@ -86,6 +87,7 @@ const strings: Record<string, [string, string]> = {
   "event.epoch": ["Room key rotated to epoch {epoch}", "房间密钥已轮换到第 {epoch} 代"],
   "event.settings": ["Room settings updated", "房间设置已更新"],
   "event.agentStatus": ["{name} is {status}", "{name} 状态：{status}"],
+  "event.sharedAgent": ["Shared by {name} — the owner can see this room", "由 {name} 共享——所有者可以看到这个房间"],
   "event.tool": ["Tool {tool}: {status}", "工具 {tool}：{status}"],
   "event.archived": ["Room archived", "房间已归档"],
 
@@ -155,6 +157,13 @@ const strings: Record<string, [string, string]> = {
   "agents.offline": ["offline", "离线"],
   "agents.owner": ["Owned by you", "由你拥有"],
   "agents.notInRoom": ["Not in any room", "尚未加入房间"],
+  "agents.sessions": ["Runtime sessions", "运行会话"],
+  "agents.runs": ["{count} runs", "{count} 次运行"],
+  "agents.stop": ["Stop run", "停止运行"],
+  "agents.stopped": ["Agent run stopped", "已停止 Agent 运行"],
+  "agents.resetSession": ["Reset session", "重置会话"],
+  "agents.resetConfirm": ["Reset this Agent's conversation and catch-up cursor? The next mention starts a fresh session.", "重置这个 Agent 的对话和补读进度？下一条 @ 会从全新会话开始。"],
+  "agents.resetDone": ["Session reset", "会话已重置"],
 
   "devices.title": ["Devices", "设备"],
   "devices.subtitle": ["Every device has its own key. Revoke one and it can no longer sign.", "每台设备都有自己的密钥；撤销后就不能再签名。"],

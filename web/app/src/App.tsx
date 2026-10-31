@@ -1096,8 +1096,15 @@ function EventRow({
       );
     case "room.epoch_rotated":
       return <SystemEvent text={t("event.epoch", { epoch: Number(payload.epoch ?? event.epoch) })} />;
-    case "agent.joined":
-      return <SystemEvent text={`${String(payload.name ?? payload.agent_id)} + ${t("nav.chat")}`} />;
+    case "agent.joined": {
+      const name = String(payload.name ?? payload.agent_id);
+      const ownerID = String(payload.owner_id ?? "");
+      const sharedNote =
+        ownerID && ownerID !== account.id
+          ? ` · ${t("event.sharedAgent", { name: memberNames[ownerID] || shortID(ownerID) })}`
+          : "";
+      return <SystemEvent text={`${name} + ${t("nav.chat")}${sharedNote}`} />;
+    }
     case "agent.left":
       return <SystemEvent text={`${String(payload.name ?? payload.agent_id)} − ${t("nav.chat")}`} />;
     case "agent.status":
@@ -1123,19 +1130,33 @@ function EventRow({
         </article>
       );
     case "message.posted": {
-      const mine = event.author_id === account.id;
+      const agentID = typeof payload.agent_id === "string" ? payload.agent_id : "";
+      const isAgent = agentID !== "";
+      const mine = !isAgent && event.author_id === account.id;
+      const authorName = isAgent
+        ? agentNames[agentID] || shortID(agentID)
+        : mine
+          ? account.name
+          : memberNames[event.author_id] || shortID(event.author_id);
       const body = String(payload.text ?? "");
       const attachmentIDs = Array.isArray(payload.attachments) ? (payload.attachments as string[]) : [];
       const mentions = Array.isArray(payload.mentions) ? (payload.mentions as string[]) : [];
       return (
-        <article className={`message ${mine ? "mine" : ""}`}>
+        <article className={`message ${mine ? "mine" : ""} ${isAgent ? "agent" : ""}`}>
           <div className="message-meta">
-            <span>{mine ? account.name : memberNames[event.author_id] || shortID(event.author_id)}</span>
+            <span>
+              {authorName}
+              {isAgent && <span className="agent-badge">{t("conversation.agentBadge")}</span>}
+            </span>
             <time>{formatTime(event.created_at, locale)}</time>
           </div>
           <div className="bubble">
             {body && (payload.format === "markdown" ? <Markdown text={body} /> : <p className="plain-text">{body}</p>)}
-            {mentions.length > 0 && <p className="fine-print">@ {mentions.join(" ")}</p>}
+            {mentions.length > 0 && (
+              <p className="fine-print">
+                @ {mentions.map((id) => agentNames[id] || memberNames[id] || shortID(id)).join(" ")}
+              </p>
+            )}
             {attachmentIDs.length > 0 && (
               <div className="attachment-list">
                 {attachmentIDs.map((id) => {

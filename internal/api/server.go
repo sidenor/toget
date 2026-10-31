@@ -33,6 +33,11 @@ const (
 	maxBodyBytes = 2 << 20
 )
 
+// AgentRunController controls in-flight Agent runs. The runner implements it.
+type AgentRunController interface {
+	Stop(agentID string) bool
+}
+
 // Options configures the local API.
 type Options struct {
 	Accounts  *account.Service
@@ -42,6 +47,7 @@ type Options struct {
 	Tools     *tool.Service
 	Node      *node.Service
 	Session   *session.Manager
+	AgentRuns AgentRunController
 	Version   version.Info
 	Token     string
 	Listen    string
@@ -58,6 +64,7 @@ type Server struct {
 	tools     *tool.Service
 	node      *node.Service
 	session   *session.Manager
+	agentRuns AgentRunController
 	version   version.Info
 	token     string
 	listen    string
@@ -84,6 +91,7 @@ func New(opts Options) *Server {
 		tools:     opts.Tools,
 		node:      opts.Node,
 		session:   sessions,
+		agentRuns: opts.AgentRuns,
 		version:   opts.Version,
 		token:     opts.Token,
 		listen:    opts.Listen,
@@ -157,6 +165,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/agents/{id}", s.data(s.handleUpdateAgent))
 	mux.HandleFunc("POST /api/v1/agents/{id}/revoke", s.data(s.handleRevokeAgent))
 	mux.HandleFunc("GET /api/v1/agents/{id}/rooms", s.data(s.handleAgentRooms))
+	mux.HandleFunc("GET /api/v1/agents/{id}/sessions", s.data(s.handleListAgentSessions))
+	mux.HandleFunc("DELETE /api/v1/agents/{id}/sessions/{roomID}", s.data(s.handleResetAgentSession))
+	mux.HandleFunc("POST /api/v1/agents/{id}/stop", s.data(s.handleStopAgent))
 	mux.HandleFunc("GET /api/v1/rooms/{id}/agents", s.data(s.handleListRoomAgents))
 	mux.HandleFunc("POST /api/v1/rooms/{id}/agents", s.data(s.handleJoinAgent))
 	mux.HandleFunc("DELETE /api/v1/rooms/{id}/agents/{agentID}", s.data(s.handleLeaveAgent))

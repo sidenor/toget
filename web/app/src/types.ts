@@ -129,6 +129,21 @@ export type Agent = {
   revoked_at?: string;
 };
 
+export type AgentSession = {
+  agent_id: string;
+  room_id: string;
+  room_name?: string;
+  last_seen_seq: number;
+  last_run_seq: number;
+  active_event_id?: string;
+  active_seq?: number;
+  runtime_session?: string;
+  run_count: number;
+  status: string;
+  last_error?: string;
+  updated_at: string;
+};
+
 export type ApprovalAction = {
   kind: string;
   tool?: string;

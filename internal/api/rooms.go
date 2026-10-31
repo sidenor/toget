@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sidenor/toget/internal/agent"
 	"github.com/sidenor/toget/internal/node"
 	"github.com/sidenor/toget/internal/room"
 )
@@ -154,6 +155,9 @@ type postMessageRequest struct {
 	Attachments []string `json:"attachments"`
 	Mentions    []string `json:"mentions"`
 	ReplyTo     string   `json:"reply_to"`
+	// AgentID attributes this message to a local Agent owned by the account.
+	// The signed author remains the account's device.
+	AgentID string `json:"agent_id"`
 }
 
 func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
@@ -175,9 +179,34 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_format", "format must be plain or markdown")
 		return
 	}
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID != "" {
+		owned, err := s.ownedAgent(r, agentID)
+		if err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		if owned.RevokedAt != nil {
+			writeAgentError(w, agent.ErrRevoked)
+			return
+		}
+		inRoom, err := s.agents.IsInRoom(r.Context(), agentID, r.PathValue("id"))
+		if err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		if !inRoom {
+			writeAgentError(w, agent.ErrNotInRoom)
+			return
+		}
+	}
+	mentions := req.Mentions
+	if roomAgents, err := s.agents.ListInRoom(r.Context(), r.PathValue("id")); err == nil {
+		mentions = mergeMentions(mentions, agent.DetectMentions(req.Text, roomAgents))
+	}
 	body := room.MessagePostedPayload{
 		Text: req.Text, Format: format, Attachments: req.Attachments,
-		Mentions: req.Mentions, ReplyTo: req.ReplyTo,
+		Mentions: mentions, ReplyTo: req.ReplyTo, AgentID: agentID,
 	}
 	var event *room.Event
 	if s.node != nil {
@@ -190,6 +219,22 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, event)
+}
+
+func mergeMentions(explicit, detected []string) []string {
+	seen := make(map[string]bool, len(explicit)+len(detected))
+	var out []string
+	for _, list := range [][]string{explicit, detected} {
+		for _, id := range list {
+			id = strings.TrimSpace(id)
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 type editMessageRequest struct {

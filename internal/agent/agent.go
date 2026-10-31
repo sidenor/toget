@@ -163,6 +163,7 @@ func (s *Service) JoinRoom(ctx context.Context, agentID, roomID string, actor ro
 	if err := s.store.AddAgentRoom(ctx, agentID, roomID, s.now().UTC()); err != nil {
 		return nil, nil, err
 	}
+	s.ensureSessionAfterJoin(ctx, agentID, roomID, event.Seq)
 	return a, event, nil
 }
 
@@ -182,6 +183,7 @@ func (s *Service) LeaveRoom(ctx context.Context, agentID, roomID string, actor r
 	if err := s.store.RemoveAgentRoom(ctx, agentID, roomID); err != nil {
 		return nil, err
 	}
+	_ = s.DeleteSession(ctx, agentID, roomID)
 	return event, nil
 }
 

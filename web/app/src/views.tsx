@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { formatAccountID, formatTime, shortID } from "./format";
 import type { Lang, Translate } from "./i18n";
-import type { Agent, Approval, AuditResponse, Device, NodeInfo, PairingView, Room, SearchHit } from "./types";
+import type { Agent, AgentSession, Approval, AuditResponse, Device, NodeInfo, PairingView, Room, SearchHit } from "./types";
 import { Badge, CopyButton, Modal, Spinner } from "./ui";
 
 export type CommonProps = {
@@ -148,6 +148,7 @@ export function ApprovalsView({ t, rooms, notify, onError, openRoom }: CommonPro
 export function AgentsView({ t, rooms, notify, onError, onRoomsChanged, openRoom }: CommonProps) {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [membership, setMembership] = useState<Record<string, string[]>>({});
+  const [sessions, setSessions] = useState<Record<string, AgentSession[]>>({});
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [name, setName] = useState("");
@@ -161,11 +162,12 @@ export function AgentsView({ t, rooms, notify, onError, onRoomsChanged, openRoom
       setAgents(result.agents);
       const pairs = await Promise.all(
         result.agents.map(async (agent) => {
-          const refs = await api.agentRooms(agent.id);
-          return [agent.id, refs.rooms.map((room) => room.room_id)] as const;
+          const [refs, state] = await Promise.all([api.agentRooms(agent.id), api.agentSessions(agent.id)]);
+          return [agent.id, refs.rooms.map((room) => room.room_id), state.sessions] as const;
         }),
       );
-      setMembership(Object.fromEntries(pairs));
+      setMembership(Object.fromEntries(pairs.map(([id, roomIDs]) => [id, roomIDs])));
+      setSessions(Object.fromEntries(pairs.map(([id, , list]) => [id, list])));
     } catch (err) {
       onError(err);
     } finally {
@@ -227,6 +229,27 @@ export function AgentsView({ t, rooms, notify, onError, onRoomsChanged, openRoom
     }
   }
 
+  async function stop(agent: Agent) {
+    try {
+      await api.stopAgent(agent.id);
+      notify(t("agents.stopped"));
+      await load();
+    } catch (err) {
+      onError(err);
+    }
+  }
+
+  async function resetSession(agent: Agent, roomID: string) {
+    if (!window.confirm(t("agents.resetConfirm"))) return;
+    try {
+      await api.resetAgentSession(agent.id, roomID);
+      notify(t("agents.resetDone"));
+      await load();
+    } catch (err) {
+      onError(err);
+    }
+  }
+
   async function revoke(agent: Agent) {
     if (!window.confirm(t("agents.revoke") + " " + agent.name + "?")) return;
     try {
@@ -254,6 +277,7 @@ export function AgentsView({ t, rooms, notify, onError, onRoomsChanged, openRoom
       <div className="agent-grid">
         {agents.map((agent) => {
           const shared = membership[agent.id] ?? [];
+          const agentSessions = sessions[agent.id] ?? [];
           const available = rooms.filter((room) => !shared.includes(room.id));
           return (
             <article className={`agent-card status-${agent.status}`} key={agent.id}>
@@ -296,6 +320,43 @@ export function AgentsView({ t, rooms, notify, onError, onRoomsChanged, openRoom
                   );
                 })}
               </div>
+              {agentSessions.length > 0 && (
+                <div className="agent-rooms">
+                  <span className="field-label">{t("agents.sessions")}</span>
+                  {agentSessions.map((session) => {
+                    const room = rooms.find((item) => item.id === session.room_id);
+                    return (
+                      <span className="room-chip session-chip" key={session.room_id}>
+                        <button className="link" onClick={() => openRoom(session.room_id)}>
+                          {session.room_name || room?.name || shortID(session.room_id)}
+                        </button>
+                        <span className="session-meta">
+                          {t("agents.runs", { count: session.run_count })}
+                          {session.status !== "idle" ? ` · ${statusLabel(t, session.status)}` : ""}
+                        </span>
+                        {session.status === "running" && (
+                          <button
+                            className="mini"
+                            onClick={() => void stop(agent)}
+                            aria-label={t("agents.stop")}
+                            title={t("agents.stop")}
+                          >
+                            ■
+                          </button>
+                        )}
+                        <button
+                          className="mini"
+                          onClick={() => void resetSession(agent, session.room_id)}
+                          aria-label={t("agents.resetSession")}
+                          title={t("agents.resetSession")}
+                        >
+                          ↺
+                        </button>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
               {agent.status !== "revoked" && (
                 <div className="agent-actions">
                   <select value={available[0]?.id ?? ""} onChange={(event) => void join(agent.id, event.target.value)}>

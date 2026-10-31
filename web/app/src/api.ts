@@ -1,6 +1,7 @@
 import type {
   Account,
   Agent,
+  AgentSession,
   Approval,
   ApprovalAction,
   Attachment,
@@ -129,6 +130,15 @@ export const api = {
     request<void>(`/api/v1/agents/${encodeURIComponent(id)}/revoke`, { method: "POST" }),
   agentRooms: (id: string) =>
     request<{ rooms: { room_id: string; joined_at: string }[] }>(`/api/v1/agents/${encodeURIComponent(id)}/rooms`),
+  agentSessions: (id: string) =>
+    request<{ sessions: AgentSession[] }>(`/api/v1/agents/${encodeURIComponent(id)}/sessions`),
+  stopAgent: (id: string) =>
+    request<{ stopped: boolean }>(`/api/v1/agents/${encodeURIComponent(id)}/stop`, { method: "POST" }),
+  resetAgentSession: (id: string, roomID: string) =>
+    request<AgentSession>(
+      `/api/v1/agents/${encodeURIComponent(id)}/sessions/${encodeURIComponent(roomID)}`,
+      { method: "DELETE" },
+    ),
   roomAgents: (roomID: string) =>
     request<{ agents: Agent[] }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/agents`),
   joinAgent: (roomID: string, agentID: string) =>

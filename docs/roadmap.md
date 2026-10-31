@@ -60,19 +60,22 @@ plaintext.
 **Goal:** make the room useful for real work.
 
 - [x] Agent identity and registration on a device
-- [ ] Claude Code as the first runtime, driven by `toget` CLI and a skill
-- [ ] Session per (Agent, Room) with catch-up on missed messages
-- [ ] Mention-based invocation; no invocation without a mention
+- [x] Claude Code as the first runtime, driven by `toget` CLI and a skill
+- [x] Session per (Agent, Room) with catch-up on missed messages
+- [x] Mention-based invocation; no invocation without a mention
 - [x] Tool receipts in the timeline: `tool.requested`, `tool.result`, `tool.failed`
 - [x] Permission scopes and approval gates for external/shell/write/native actions
 - [x] Action digest binding, expiry, single-use approvals
 - [x] Agent status cards: idle, running, waiting for approval
-- [ ] Shared Agent: owner visibility warning on join
+- [x] Stop an active run from the CLI or web UI
+- [x] Shared Agent: owner visibility warning on join
 
-**Status:** the control plane exists — Agents can register, join rooms, show
-status, request approvals, and record tool receipts. The runtime loop (wake
-on mention, catch up, execute, stream results) is not implemented; a local
-program drives those APIs today.
+**Status:** the runtime loop is implemented. The daemon wakes an Agent on a
+mention, serializes runs, catches up after the last completed run, resumes the
+Claude Code session, posts the reply to the thread, and shows idle, running,
+waiting, and offline status. A configurable command runtime is available for
+other tools. Remaining: streaming partial output, remote-room agents, and a
+stable connector SDK. See [agent-runtime.md](agent-runtime.md).
 
 **Done when:** a user asks an Agent in a room to do a task, the Agent proposes a risky action, the user approves it in the conversation, and the result appears in the same thread with a complete audit trail.
 

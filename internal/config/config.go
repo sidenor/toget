@@ -20,7 +20,23 @@ const (
 	DefaultNodeListen = "0.0.0.0:7717"
 	// NodeListenOff disables the LAN node transport.
 	NodeListenOff = "off"
+
+	// DefaultAgentTimeoutSeconds bounds one Agent runtime invocation.
+	DefaultAgentTimeoutSeconds = 900
+	// DefaultAgentHistoryLimit is the number of recent events given to an
+	// Agent when it catches up.
+	DefaultAgentHistoryLimit = 200
 )
+
+// AgentRuntimeConfig describes how to start an external Agent runtime. The
+// command receives a JSON RunRequest on stdin and writes a JSON RunResult (or
+// plain reply text) on stdout.
+type AgentRuntimeConfig struct {
+	Command string   `json:"command,omitempty"`
+	Args    []string `json:"args,omitempty"`
+	Workdir string   `json:"workdir,omitempty"`
+	Model   string   `json:"model,omitempty"`
+}
 
 // Config is stored in config.json inside the data directory.
 type Config struct {
@@ -31,6 +47,15 @@ type Config struct {
 	// NodeAdvertise overrides the host:port placed in invitation codes and
 	// room home addresses when the bind address is not reachable by peers.
 	NodeAdvertise string `json:"node_advertise,omitempty"`
+	// AgentRuntimes maps an Agent's runtime name to a local command. The
+	// built-in echo and claude-code runtimes do not need an entry unless they
+	// should be overridden.
+	AgentRuntimes map[string]AgentRuntimeConfig `json:"agent_runtimes,omitempty"`
+	// AgentTimeoutSeconds bounds one runtime invocation. Zero uses the
+	// default.
+	AgentTimeoutSeconds int `json:"agent_timeout_seconds,omitempty"`
+	// AgentHistoryLimit is the number of recent events handed to an Agent.
+	AgentHistoryLimit int `json:"agent_history_limit,omitempty"`
 }
 
 // Paths describes the files a local node owns.
@@ -117,6 +142,7 @@ func Load(paths Paths) (Config, error) {
 	cfg := Config{Listen: DefaultListen, NodeListen: DefaultNodeListen}
 	data, err := os.ReadFile(paths.Config)
 	if errors.Is(err, os.ErrNotExist) {
+		cfg.applyDefaults()
 		if err := Save(paths, cfg); err != nil {
 			return Config{}, err
 		}
@@ -131,7 +157,22 @@ func Load(paths Paths) (Config, error) {
 	if cfg.Listen == "" {
 		cfg.Listen = DefaultListen
 	}
+	cfg.applyDefaults()
 	return cfg, nil
+}
+
+func (c *Config) applyDefaults() {
+	if c.AgentTimeoutSeconds <= 0 {
+		c.AgentTimeoutSeconds = DefaultAgentTimeoutSeconds
+	}
+	if c.AgentHistoryLimit <= 0 {
+		c.AgentHistoryLimit = DefaultAgentHistoryLimit
+	}
+	if c.AgentRuntimes == nil {
+		c.AgentRuntimes = map[string]AgentRuntimeConfig{
+			"claude-code": {Command: "claude"},
+		}
+	}
 }
 
 // Save writes config.json atomically.

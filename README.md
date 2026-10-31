@@ -69,6 +69,19 @@ go run ./cmd/toget send "hello from this machine"
 go run ./cmd/toget messages
 ```
 
+If `claude` is installed and authenticated, give the room an Agent:
+
+```bash
+go run ./cmd/toget agent add --name Claude --runtime claude-code
+go run ./cmd/toget room add-agent <room-id> <agent-id>
+go run ./cmd/toget send "@Claude summarize what we talked about"
+```
+
+The daemon wakes the Agent on the mention, catches it up after its last run,
+resumes its Claude Code session, posts the reply, and shows status cards in the
+timeline. See [Agent runtime](docs/agent-runtime.md) for command runtimes,
+timeouts, sessions, and approvals.
+
 To invite a second machine on the same LAN, keep `toget serve` running on both.
 On the inviter's machine:
 
@@ -129,6 +142,7 @@ rejects updates and deletes.
 - [Architecture](docs/architecture.md) — nodes, account hosts, rooms, relay tree, and trust boundaries
 - [Protocol](docs/protocol.md) — node protocol, end-to-end envelope, local API, versioning
 - [Security model](docs/security-model.md) — who can see what, threats, controls, and limits
+- [Agent runtime](docs/agent-runtime.md) — mentions, sessions, Claude Code, and command runtimes
 - [Deployment](docs/deployment.md) — self-hosted, official-hosted, relay, and offline modes
 - [Technology stack](docs/tech-stack.md) — choices, rationale, and rejected alternatives
 - [Repository layout](docs/repo-layout.md) — where every kind of code belongs
@@ -144,14 +158,14 @@ LAN can join a room with a portable invite code, exchange messages, and sync
 history. A second device can pair with an existing one to recover the same
 account without copying private keys, then sync its rooms from their homes.
 Remote rooms support attachments, self-leave, and local archival. Agents can be
-registered, joined to rooms, and gated through local approval and tool-receipt
-cards.
+registered, joined to rooms, run locally when mentioned, and gated through
+local approval and tool-receipt cards.
 
 Not implemented yet: a hosted relay or directory, NAT traversal, public-network
 connectivity, account-key rotation, account-record sync between paired
-devices, multiple accounts on one node, and a built-in model runtime.
-Agents are controlled through the local API; an external runtime has to drive
-them. Many parts will change as we learn.
+devices, multiple accounts on one node, and a bundled model. The daemon runs
+Agents locally on a mention, through Claude Code or any command that speaks the
+runtime protocol. Many parts will change as we learn.
 That is exactly why the project is open this early. If you care about
 local-first software, privacy, open protocols, or humans and Agents working
 together, you are welcome to help shape it. You do not need to be an expert in
@@ -218,6 +232,16 @@ go run ./cmd/toget send "你好"
 go run ./cmd/toget messages
 ```
 
+如果本机装好并登录了 `claude`，可以让 Agent 加入房间：
+
+```bash
+go run ./cmd/toget agent add --name Claude --runtime claude-code
+go run ./cmd/toget room add-agent <房间ID> <AgentID>
+go run ./cmd/toget send "@Claude 帮我总结一下刚才聊的"
+```
+
+守护进程会在被 @ 时唤醒 Agent，补上它上次运行之后的消息，续接 Claude Code 会话，把回答发回房间，并在时间线里显示状态卡片。命令运行时、超时、会话重置和审批流程见 [Agent 运行时](docs/agent-runtime.md)。
+
 局域网邀请：邀请方保持 `toget serve` 运行，然后执行：
 
 ```bash
@@ -258,6 +282,7 @@ toget pair approve <pairing-id>
 - [架构](docs/architecture.md)
 - [协议](docs/protocol.md)
 - [安全模型](docs/security-model.md)
+- [Agent 运行时](docs/agent-runtime.md)
 - [部署](docs/deployment.md)
 - [技术栈](docs/tech-stack.md)
 - [代码结构](docs/repo-layout.md)
@@ -265,4 +290,4 @@ toget pair approve <pairing-id>
 
 **早期实现：本地和同局域网房间已经可用。** 当前版本有账号与设备身份、端到端加密的房间密钥代次、加密的哈希链事件日志、附件、备份恢复、本地 API、CLI 和双语 React 网页。同一局域网内的两个节点可以用邀请码加入房间、互发消息并同步历史；第二台设备可以通过配对恢复同一账号并同步房间，无需拷贝私钥。远程房间支持附件、自主退出和本地归档。Agent 可以注册、加入房间，并通过本地审批和工具回执卡片受控。
 
-还没有实现：托管中继或目录、NAT 穿透、公网直连、账号密钥轮换、配对设备之间的账号记录同步、同一节点登录多个账号，以及内置模型运行时。Agent 通过本地 API 受控，需要外部运行时来驱动。很多地方仍会调整。欢迎开 issue 关注、分享场景，或直接参与建设。项目理念见 [docs/philosophy.md](docs/philosophy.md)，参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+还没有实现：托管中继或目录、NAT 穿透、公网直连、账号密钥轮换、配对设备之间的账号记录同步、同一节点登录多个账号，以及自带模型。守护进程会在被 @ 时在本地运行 Agent，可以用 Claude Code，也可以用任何实现了运行时协议的命令。很多地方仍会调整。欢迎开 issue 关注、分享场景，或直接参与建设。项目理念见 [docs/philosophy.md](docs/philosophy.md)，参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。

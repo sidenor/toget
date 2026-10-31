@@ -21,7 +21,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const schemaVersion = 4
+const schemaVersion = 5
 
 // CurrentSchemaVersion is the newest database schema this build understands.
 // Backup/restore uses it to reject archives from newer builds.
@@ -97,6 +97,9 @@ func (d *DB) migrate(ctx context.Context) error {
 		if err := d.migrateV3(ctx); err != nil {
 			return err
 		}
+		if err := d.migrateV4(ctx); err != nil {
+			return err
+		}
 		if _, err := d.db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
 			return fmt.Errorf("storage: set schema version: %w", err)
 		}
@@ -107,11 +110,24 @@ func (d *DB) migrate(ctx context.Context) error {
 		if err := d.migrateV3(ctx); err != nil {
 			return err
 		}
+		if err := d.migrateV4(ctx); err != nil {
+			return err
+		}
 		if _, err := d.db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
 			return fmt.Errorf("storage: set schema version: %w", err)
 		}
 	case version == 3:
 		if err := d.migrateV3(ctx); err != nil {
+			return err
+		}
+		if err := d.migrateV4(ctx); err != nil {
+			return err
+		}
+		if _, err := d.db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
+			return fmt.Errorf("storage: set schema version: %w", err)
+		}
+	case version == 4:
+		if err := d.migrateV4(ctx); err != nil {
 			return err
 		}
 		if _, err := d.db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
@@ -264,6 +280,39 @@ func (d *DB) migrateV3(ctx context.Context) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("storage: commit v3 migration: %w", err)
+	}
+	return nil
+}
+
+// migrateV4 adds per-(Agent, Room) runtime sessions and their catch-up
+// cursors. Runtime state is local; it is never written to the room log.
+func (d *DB) migrateV4(ctx context.Context) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("storage: begin v4 migration: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS agent_sessions (
+			agent_id        TEXT NOT NULL REFERENCES agents(id),
+			room_id         TEXT NOT NULL REFERENCES rooms(id),
+			last_seen_seq   INTEGER NOT NULL DEFAULT 0,
+			last_run_seq    INTEGER NOT NULL DEFAULT 0,
+			active_event_id TEXT NOT NULL DEFAULT '',
+			active_seq      INTEGER NOT NULL DEFAULT 0,
+			runtime_session TEXT NOT NULL DEFAULT '',
+			run_count       INTEGER NOT NULL DEFAULT 0,
+			status          TEXT NOT NULL DEFAULT 'idle',
+			last_error      TEXT NOT NULL DEFAULT '',
+			updated_at      INTEGER NOT NULL,
+			PRIMARY KEY (agent_id, room_id))`); err != nil {
+		return fmt.Errorf("storage: migrate v4: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS agent_sessions_room ON agent_sessions(room_id)`); err != nil {
+		return fmt.Errorf("storage: migrate v4 index: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storage: commit v4 migration: %w", err)
 	}
 	return nil
 }

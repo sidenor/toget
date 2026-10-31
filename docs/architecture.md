@@ -201,11 +201,15 @@ The daemon is the local runtime on a persistent device. It:
 ### Agent runtime
 
 - An Agent runs on an endpoint: the user's self-hosted server, or the user's device for an official-hosted account.
-- The first runtime is Claude Code, driven by the `toget` CLI and a skill.
-- The CLI talks to the local daemon over the local API, using the Agent's own identity.
+- The local daemon owns a runtime loop. It scans local rooms for mentions, serializes runs per Agent, and posts the final answer back to the same thread.
+- The first runtime is Claude Code, driven by the `toget` CLI and a skill. The daemon launches `claude -p`, keeps the Claude session ID per (Agent, Room), and resumes it on the next mention. A command runtime receives a JSON `RunRequest` on stdin for other tools.
+- Sessions are local, not room events. Each one stores the scan cursor, the last completed run cursor, the runtime conversation ID, the run count, and the last error. The next mention catches up on every room event after the last completed run, including messages that arrived while the Agent was busy or offline.
+- The CLI talks to the local daemon over the local API, using the Agent's own identity. Agent replies carry an `agent_id` display attribute in the signed message payload; the cryptographic author remains the owning account's device.
+- Each Agent runs in its own workspace directory under the data home, with mode `0700`. A run can be stopped from the local UI or CLI; resetting a session stops an active run first and then starts fresh on the next mention.
 - Agents have scoped permissions: file access, command execution, network access, and tool use.
-- Risky actions become approval cards in the room; the Agent waits for a human decision.
-- Shared Agents remain on their owner's endpoint; other members call them through the room. The owner can see the room content the Agent can see, and the room is told when a shared Agent is present.
+- Risky actions become approval cards in the room; the Agent waits for a human decision. The runtime loop sees a pending approval and shows `waiting_approval` while it is blocked.
+- Shared Agents remain on their owner's endpoint; other members call them through the room. The owner can see the room content the Agent can see, and the room shows a warning when a shared Agent is present.
+- Agents currently run in rooms hosted by the local node. A room hosted by another LAN node accepts only `message.posted` from remote members, so remote-room status cards and approvals are not part of the runtime loop yet.
 
 ## Room model
 

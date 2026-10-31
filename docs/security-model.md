@@ -178,7 +178,23 @@ Controls:
 - Agents cannot read each other's credentials.
 - The daemon applies resource limits and a restricted environment.
 - Risky actions require approval and are rate-limited.
-- An Agent can be stopped and revoked from the local UI or the room.
+- An active run can be stopped from the local UI or CLI, and the Agent can be
+  revoked. Room messages cannot stop or control another member's Agent.
+
+### Agent runtime loop
+
+Controls:
+
+- A run starts only from a mention. Agent-authored messages never trigger another run, and runs are serialized per Agent.
+- The runtime command is chosen by local configuration, never by room content.
+- The Claude Code prompt labels room messages, files, web pages, and tool results as untrusted and tells the Agent not to follow instructions from them to reveal secrets or exceed its permissions.
+- Each Agent gets its own workspace directory with mode `0700`. Commands run without a shell, with a bounded timeout, bounded output, and a killed process group.
+- `agent_id` on a message is display metadata. It is not a signature by the Agent, and other members must not treat it as proof of the Agent's consent.
+- Session cursors, runtime session IDs, and last errors stay on the endpoint. They are not replicated to the room.
+- A stop cancels the runtime's process group. A finishing run can update a
+  session only while its trigger is still active, so a reset or a newer run
+  cannot be overwritten by a stale goroutine.
+- A room hosted by another node accepts only `message.posted` from remote members, so status and approval events do not cross that boundary today. Agents run in locally hosted rooms.
 
 ### Prompt injection
 

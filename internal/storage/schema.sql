@@ -147,6 +147,23 @@ CREATE TABLE agent_rooms (
     PRIMARY KEY (agent_id, room_id)
 );
 
+CREATE TABLE agent_sessions (
+    agent_id        TEXT NOT NULL REFERENCES agents(id),
+    room_id         TEXT NOT NULL REFERENCES rooms(id),
+    last_seen_seq   INTEGER NOT NULL DEFAULT 0,
+    last_run_seq    INTEGER NOT NULL DEFAULT 0,
+    active_event_id TEXT NOT NULL DEFAULT '',
+    active_seq      INTEGER NOT NULL DEFAULT 0,
+    runtime_session TEXT NOT NULL DEFAULT '',
+    run_count       INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'idle',
+    last_error      TEXT NOT NULL DEFAULT '',
+    updated_at      INTEGER NOT NULL,
+    PRIMARY KEY (agent_id, room_id)
+);
+
+CREATE INDEX agent_sessions_room ON agent_sessions(room_id);
+
 CREATE TABLE approvals (
     id             TEXT PRIMARY KEY,
     room_id        TEXT NOT NULL REFERENCES rooms(id),

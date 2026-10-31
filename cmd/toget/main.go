@@ -29,6 +29,7 @@ import (
 	"github.com/sidenor/toget/internal/approval"
 	"github.com/sidenor/toget/internal/backup"
 	"github.com/sidenor/toget/internal/config"
+	"github.com/sidenor/toget/internal/identity"
 	"github.com/sidenor/toget/internal/node"
 	"github.com/sidenor/toget/internal/room"
 	"github.com/sidenor/toget/internal/session"
@@ -311,6 +312,52 @@ func runServe(ctx context.Context) error {
 		apiNode = nodeService
 	}
 
+	localActor := func(ctx context.Context) (room.Actor, error) {
+		if nodeService != nil {
+			return nodeService.LocalActor(ctx)
+		}
+		return localRoomActor(ctx, accounts)
+	}
+	agentRunner := agent.NewRunner(agent.RunnerOptions{
+		Agents: agents,
+		Rooms:  rooms,
+		Actor:  localActor,
+		Post: func(ctx context.Context, roomID string, actor room.Actor, body room.MessagePostedPayload) (*room.Event, error) {
+			if nodeService != nil {
+				return nodeService.PostRemoteMessage(ctx, roomID, actor, body)
+			}
+			return rooms.PostMessage(ctx, roomID, actor, body)
+		},
+		SetStatus: func(ctx context.Context, agentID, status, detail, roomID string) error {
+			if roomID != "" && nodeService != nil {
+				if remote, err := nodeService.IsRemoteRoom(ctx, roomID); err == nil && remote {
+					_, _, statusErr := agents.SetStatus(ctx, agentID, status, detail, "", room.Actor{})
+					return statusErr
+				}
+			}
+			actor, err := localActor(ctx)
+			if err != nil {
+				return err
+			}
+			_, _, err = agents.SetStatus(ctx, agentID, status, detail, roomID, actor)
+			return err
+		},
+		PendingApprovals: func(ctx context.Context, roomID, agentID string) (bool, error) {
+			return pendingAgentApproval(ctx, approvals, roomID, agentID)
+		},
+		Home:         paths.Home,
+		Workdir:      func(agentID string) string { return filepath.Join(paths.Home, "agents", agentID) },
+		Runtimes:     buildAgentRuntimes(cfg, logger),
+		RunTimeout:   time.Duration(cfg.AgentTimeoutSeconds) * time.Second,
+		HistoryLimit: cfg.AgentHistoryLimit,
+		Logger:       logger,
+	})
+	if err := agentRunner.Start(signalCtx); err != nil {
+		logger.Warn("Agent runtime loop did not start", "error", err)
+	} else {
+		defer agentRunner.Close()
+	}
+
 	handler := api.New(api.Options{
 		Accounts:  accounts,
 		Rooms:     rooms,
@@ -319,6 +366,7 @@ func runServe(ctx context.Context) error {
 		Tools:     tools,
 		Node:      apiNode,
 		Session:   sessions,
+		AgentRuns: agentRunner,
 		Version:   version.Current(),
 		Token:     token,
 		Listen:    cfg.Listen,
@@ -371,6 +419,95 @@ func runServe(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func localRoomActor(ctx context.Context, accounts *account.Service) (room.Actor, error) {
+	snapshot, err := accounts.Get(ctx)
+	if err != nil {
+		return room.Actor{}, err
+	}
+	if snapshot.Device.RevokedAt != nil {
+		return room.Actor{}, errors.New("this device has been revoked")
+	}
+	cert, err := identity.VerifyDeviceCertificate([]byte(snapshot.Device.Certificate), snapshot.Account.PublicKey)
+	if err != nil {
+		return room.Actor{}, fmt.Errorf("device certificate: %w", err)
+	}
+	if cert.DeviceID != snapshot.Device.ID || cert.AccountID != snapshot.Account.ID {
+		return room.Actor{}, errors.New("device certificate does not match the local device")
+	}
+	key, err := accounts.UnsealDeviceKey(snapshot.Device)
+	if err != nil {
+		return room.Actor{}, err
+	}
+	return room.Actor{
+		AccountID: snapshot.Account.ID, DeviceID: snapshot.Device.ID,
+		DisplayName: snapshot.Account.Name, SigningKey: key,
+		AccountPublicKey:    snapshot.Account.PublicKey,
+		EncryptionPublicKey: snapshot.Device.EncryptionPublicKey,
+	}, nil
+}
+
+// buildAgentRuntimes maps configured runtime names to local adapters. Echo is
+// always available for demos; claude-code uses Claude Code's print mode and
+// session resume. Other names run a command with the request on stdin.
+func buildAgentRuntimes(cfg config.Config, logger *slog.Logger) map[string]agent.Runtime {
+	runtimes := map[string]agent.Runtime{"echo": agent.EchoRuntime{}}
+	env := runtimeSubprocessEnv()
+	names := make([]string, 0, len(cfg.AgentRuntimes))
+	for name := range cfg.AgentRuntimes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		rc := cfg.AgentRuntimes[name]
+		command := strings.TrimSpace(rc.Command)
+		if command == "" {
+			logger.Warn("Agent runtime has no command", "runtime", name)
+			continue
+		}
+		if name == "claude-code" {
+			runtimes[name] = agent.NewClaudeCodeRuntime(agent.ClaudeCodeOptions{
+				Binary: command, Args: rc.Args, Workdir: rc.Workdir,
+				Model: rc.Model, Env: env,
+			})
+			continue
+		}
+		runtimes[name] = agent.NewCommandRuntime(name, agent.CommandOptions{
+			Command: command, Args: rc.Args, Workdir: rc.Workdir, Env: env,
+		})
+	}
+	return runtimes
+}
+
+func runtimeSubprocessEnv() []string {
+	executable, err := os.Executable()
+	if err != nil || executable == "" {
+		return nil
+	}
+	env := []string{"TOGET_BIN=" + executable}
+	dir := filepath.Dir(executable)
+	path := os.Getenv("PATH")
+	if path == "" {
+		env = append(env, "PATH="+dir)
+	} else {
+		env = append(env, "PATH="+dir+string(os.PathListSeparator)+path)
+	}
+	return env
+}
+
+func pendingAgentApproval(ctx context.Context, approvals *approval.Service, roomID, agentID string) (bool, error) {
+	list, err := approvals.List(ctx, roomID, approval.StatusPending)
+	if err != nil {
+		return false, err
+	}
+	now := time.Now()
+	for _, item := range list {
+		if item.AgentID == agentID && item.ExpiresAt.After(now) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func newStatusCommand() *cobra.Command {
@@ -1165,7 +1302,7 @@ func newRoomReadCommand() *cobra.Command {
 }
 
 func newSendCommand() *cobra.Command {
-	var roomID, format string
+	var roomID, format, agentID string
 	var files []string
 	cmd := &cobra.Command{
 		Use:   "send [text...]",
@@ -1183,6 +1320,9 @@ func newSendCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if agentID == "" {
+				agentID = os.Getenv("TOGET_AGENT_ID")
+			}
 			text := strings.Join(args, " ")
 			attachments, err := uploadFiles(cmd.Context(), c, roomID, files)
 			if err != nil {
@@ -1190,6 +1330,9 @@ func newSendCommand() *cobra.Command {
 			}
 			var event room.Event
 			body := map[string]any{"text": text, "format": format}
+			if agentID != "" {
+				body["agent_id"] = agentID
+			}
 			if len(attachments) > 0 {
 				body["attachments"] = attachments
 			}
@@ -1203,8 +1346,9 @@ func newSendCommand() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&roomID, "room", "", "room ID (defaults to the only room)")
+	cmd.Flags().StringVar(&roomID, "room", "", "room ID (defaults to $TOGET_ROOM_ID or the only room)")
 	cmd.Flags().StringVar(&format, "format", "plain", "plain or markdown")
+	cmd.Flags().StringVar(&agentID, "agent", "", "attribute the message to an Agent (defaults to $TOGET_AGENT_ID)")
 	cmd.Flags().StringArrayVar(&files, "file", nil, "attach a file (repeatable)")
 	return cmd
 }
@@ -1440,6 +1584,9 @@ func newAgentCommand() *cobra.Command {
 	cmd.AddCommand(newAgentListCommand())
 	cmd.AddCommand(newAgentShowCommand())
 	cmd.AddCommand(newAgentStatusCommand())
+	cmd.AddCommand(newAgentStopCommand())
+	cmd.AddCommand(newAgentSessionsCommand())
+	cmd.AddCommand(newAgentResetSessionCommand())
 	cmd.AddCommand(newAgentRevokeCommand())
 	return cmd
 }
@@ -1527,6 +1674,64 @@ func newAgentShowCommand() *cobra.Command {
 	}
 }
 
+func newAgentSessionsCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "sessions <agent-id>",
+		Short: "Show an Agent's per-room runtime sessions",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			var result struct {
+				Sessions []struct {
+					agent.Session
+					RoomName string `json:"room_name,omitempty"`
+				} `json:"sessions"`
+			}
+			if err := c.Get(cmd.Context(), "/api/v1/agents/"+args[0]+"/sessions", &result); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(result.Sessions)
+			}
+			for _, session := range result.Sessions {
+				name := session.RoomName
+				if name == "" {
+					name = session.RoomID
+				}
+				fmt.Printf("%s  %-20s %-16s seen %d  run %d  %d runs\n",
+					session.RoomID, name, session.Status, session.LastSeenSeq, session.LastRunSeq, session.RunCount)
+			}
+			return nil
+		},
+	}
+}
+
+func newAgentResetSessionCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "reset-session <agent-id> <room-id>",
+		Short: "Clear an Agent's runtime conversation and catch-up cursor in a room",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			var session agent.Session
+			if err := c.Delete(cmd.Context(), "/api/v1/agents/"+args[0]+"/sessions/"+args[1], &session); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(session)
+			}
+			fmt.Printf("Session reset at #%d. The Agent will start a fresh runtime conversation on the next mention.\n", session.LastSeenSeq)
+			return nil
+		},
+	}
+}
+
 func newAgentStatusCommand() *cobra.Command {
 	var detail, roomID string
 	cmd := &cobra.Command{
@@ -1549,6 +1754,25 @@ func newAgentStatusCommand() *cobra.Command {
 	cmd.Flags().StringVar(&detail, "detail", "", "short status detail")
 	cmd.Flags().StringVar(&roomID, "room", "", "also post a status event in this room")
 	return cmd
+}
+
+func newAgentStopCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "stop <agent-id>",
+		Short: "Stop the Agent's active run",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			if err := c.Post(cmd.Context(), "/api/v1/agents/"+args[0]+"/stop", nil, nil); err != nil {
+				return err
+			}
+			fmt.Println("Agent run stopped.")
+			return nil
+		},
+	}
 }
 
 func newAgentRevokeCommand() *cobra.Command {
@@ -1654,7 +1878,10 @@ func newApprovalRequestCommand() *cobra.Command {
 				return err
 			}
 			if agentID == "" {
-				return errors.New("--agent is required")
+				agentID = os.Getenv("TOGET_AGENT_ID")
+			}
+			if agentID == "" {
+				return errors.New("--agent is required (or set $TOGET_AGENT_ID)")
 			}
 			values := map[string]any{}
 			for _, p := range params {
@@ -1782,8 +2009,14 @@ func newToolRequestCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if agentID == "" || name == "" {
-				return errors.New("--agent and --tool are required")
+			if agentID == "" {
+				agentID = os.Getenv("TOGET_AGENT_ID")
+			}
+			if agentID == "" {
+				return errors.New("--agent is required (or set $TOGET_AGENT_ID)")
+			}
+			if name == "" {
+				return errors.New("--tool is required")
 			}
 			raw := json.RawMessage(input)
 			if len(raw) == 0 {
@@ -1917,6 +2150,9 @@ func localClient() (*api.Client, config.Paths, config.Config, error) {
 }
 
 func resolveRoom(ctx context.Context, c *api.Client, roomID string) (string, error) {
+	if roomID == "" {
+		roomID = os.Getenv("TOGET_ROOM_ID")
+	}
 	if roomID != "" {
 		return roomID, nil
 	}

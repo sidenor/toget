@@ -206,6 +206,10 @@ type MessagePostedPayload struct {
 	Attachments []string `json:"attachments,omitempty"`
 	Mentions    []string `json:"mentions,omitempty"`
 	ReplyTo     string   `json:"reply_to,omitempty"`
+	// AgentID marks the message as an Agent's reply. The cryptographic author
+	// remains the owning account's device; this field is display and routing
+	// metadata, validated by the local daemon at the origin.
+	AgentID string `json:"agent_id,omitempty"`
 }
 
 type MessageEditedPayload struct {

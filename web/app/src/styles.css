@@ -695,6 +695,25 @@ p {
   font-weight: 600;
 }
 
+.message.agent .bubble {
+  background: color-mix(in srgb, var(--panel-soft) 82%, var(--accent) 18%);
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
+}
+
+.message-meta .agent-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+}
+
 .bubble {
   max-width: min(680px, 76%);
   padding: 11px 15px;
@@ -1487,6 +1506,15 @@ pre,
 
 .room-chip .link {
   font-size: 11px;
+}
+
+.session-chip {
+  gap: 5px;
+}
+
+.session-meta {
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .agent-actions {

@@ -133,6 +133,84 @@ func (s *Server) handleAgentRooms(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"rooms": rooms})
 }
 
+type agentSessionResponse struct {
+	agent.Session
+	RoomName string `json:"room_name,omitempty"`
+}
+
+func (s *Server) handleListAgentSessions(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.ownedAgent(r, r.PathValue("id")); err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	sessions, err := s.agents.Sessions(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	out := make([]agentSessionResponse, 0, len(sessions))
+	for _, session := range sessions {
+		view := agentSessionResponse{Session: session}
+		if record, err := s.rooms.GetRoom(r.Context(), session.RoomID); err == nil {
+			view.RoomName = record.Name
+		}
+		out = append(out, view)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
+}
+
+func (s *Server) handleResetAgentSession(w http.ResponseWriter, r *http.Request) {
+	actor, _, err := s.actor(r.Context())
+	if err != nil {
+		writeActorError(w, err)
+		return
+	}
+	if _, err := s.ownedAgent(r, r.PathValue("id")); err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	roomID := r.PathValue("roomID")
+	agentID := r.PathValue("id")
+	if err := s.rooms.RequireMember(r.Context(), roomID, actor); err != nil {
+		writeRoomError(w, err)
+		return
+	}
+	// A reset abandons the in-flight answer for this room. Stop the run first;
+	// the runner only persists a finishing run if its trigger is still active.
+	if session, err := s.agents.Session(r.Context(), agentID, roomID); err == nil &&
+		session.Status == agent.StatusRunning && s.agentRuns != nil {
+		s.agentRuns.Stop(agentID)
+	}
+	session, err := s.agents.ResetSession(r.Context(), agentID, roomID)
+	if err != nil {
+		if errors.Is(err, room.ErrNotFound) {
+			writeRoomError(w, err)
+			return
+		}
+		writeAgentError(w, err)
+		return
+	}
+	record, err := s.rooms.GetRoom(r.Context(), roomID)
+	if err != nil {
+		writeRoomError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, agentSessionResponse{Session: *session, RoomName: record.Name})
+}
+
+func (s *Server) handleStopAgent(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("id")
+	if _, err := s.ownedAgent(r, agentID); err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	if s.agentRuns == nil || !s.agentRuns.Stop(agentID) {
+		writeError(w, http.StatusConflict, "agent_not_running", "agent has no active run")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"stopped": true})
+}
+
 func (s *Server) handleListRoomAgents(w http.ResponseWriter, r *http.Request) {
 	actor, _, err := s.actor(r.Context())
 	if err != nil {
