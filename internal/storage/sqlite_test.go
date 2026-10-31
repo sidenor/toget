@@ -143,6 +143,35 @@ func TestUnknownRoomAndEvent(t *testing.T) {
 	}
 }
 
+func TestListEventsByTypes(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	seedRoom(t, db)
+	now := time.Now().UTC()
+	for i, eventType := range []string{room.EventAgentJoined, room.EventMessagePosted, room.EventAgentStatus} {
+		if err := db.AppendEvent(ctx, &room.Event{
+			ID: "event-" + string(rune('a'+i)), RoomID: "room-1", Seq: int64(i + 2),
+			Type: eventType, AuthorID: "account-1", Payload: []byte(`{}`),
+			CreatedAt: now.Add(time.Duration(i) * time.Second), Hash: "hash-" + string(rune('a'+i)),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events, err := db.ListEventsByTypes(ctx, "room-1", []string{room.EventAgentJoined, room.EventAgentStatus})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Type != room.EventAgentJoined || events[1].Type != room.EventAgentStatus {
+		t.Fatalf("filtered events = %#v", events)
+	}
+	if events, err := db.ListEventsByTypes(ctx, "room-1", nil); err != nil || events != nil {
+		t.Fatalf("empty type list = %#v, %v", events, err)
+	}
+	if events, err := db.ListEventsByTypes(ctx, "missing", []string{room.EventAgentJoined}); err != nil || len(events) != 0 {
+		t.Fatalf("missing room = %#v, %v", events, err)
+	}
+}
+
 func TestMigrateV5AddsDeviceNodeURL(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "toget.db")
 	raw, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
@@ -176,6 +205,22 @@ func TestMigrateV5AddsDeviceNodeURL(t *testing.T) {
 			last_seen_at INTEGER,
 			created_at INTEGER NOT NULL,
 			local INTEGER NOT NULL DEFAULT 0
+		);
+		CREATE TABLE events (
+			id TEXT PRIMARY KEY,
+			room_id TEXT NOT NULL,
+			seq INTEGER NOT NULL,
+			epoch INTEGER NOT NULL DEFAULT 1,
+			type TEXT NOT NULL,
+			author_id TEXT NOT NULL,
+			author_device TEXT NOT NULL DEFAULT '',
+			payload BLOB NOT NULL,
+			created_at INTEGER NOT NULL,
+			prev_id TEXT NOT NULL DEFAULT '',
+			prev_hash TEXT NOT NULL DEFAULT '',
+			hash TEXT NOT NULL,
+			signature TEXT NOT NULL DEFAULT '',
+			UNIQUE(room_id, seq)
 		);
 		PRAGMA user_version = 5;`)
 	if err != nil {

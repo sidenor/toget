@@ -1051,8 +1051,6 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/RoomNotFound"
-        "409":
-          $ref: "#/components/responses/RemoteReadOnly"
         "413":
           $ref: "#/components/responses/MessageTooLong"
         "423":
@@ -1090,10 +1088,10 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/RoomNotFound"
-        "409":
-          $ref: "#/components/responses/RemoteReadOnly"
         "423":
           $ref: "#/components/responses/Locked"
+        "502":
+          $ref: "#/components/responses/BadGateway"
 
   /api/v1/rooms/{id}/members:
     get:
@@ -1793,6 +1791,11 @@ paths:
       tags: [agents]
       operationId: listRoomAgents
       summary: List Agents that belong to a room
+      description: |
+        Returns this node's Agent records plus Agents announced in the room
+        log by other members. Remote entries carry the name, runtime, owner,
+        and last status from their `agent.joined` and `agent.status` events;
+        the local registry wins when both describe the same Agent.
       parameters:
         - $ref: "#/components/parameters/RoomID"
       responses:
@@ -1837,10 +1840,10 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/RoomNotFound"
-        "409":
-          $ref: "#/components/responses/RemoteReadOnly"
         "423":
           $ref: "#/components/responses/Locked"
+        "502":
+          $ref: "#/components/responses/BadGateway"
 
   /api/v1/rooms/{id}/agents/{agentID}:
     delete:
@@ -1867,10 +1870,10 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/RoomNotFound"
-        "409":
-          $ref: "#/components/responses/RemoteReadOnly"
         "423":
           $ref: "#/components/responses/Locked"
+        "502":
+          $ref: "#/components/responses/BadGateway"
 
   /api/v1/rooms/{id}/approvals:
     get:

@@ -33,9 +33,14 @@ The LAN path is real and covered by tests in `internal/node` and
    posts it to the home node, and installs the accepted event locally. A
    sequence conflict returns `409` with the current head and the sender
    retries once after syncing.
-5. Remote rooms are read-only locally except for messages, attachments, and
-   self-leave. Other local-only mutations are rejected so the home node
-   remains the single log writer.
+5. Remote rooms accept messages, attachments, self-leave, and Agent events
+   for Agents owned by the sending account. Other local-only mutations are
+   rejected so the home node remains the single log writer. The home node
+   keeps an Agent ownership projection from `agent.joined` / `agent.left` and
+   rejects status, tool, approval, and Agent-attributed message events for an
+   Agent the author does not own or that is not active in the room. Because
+   `agent.joined` carries the Agent's name and runtime, every member rebuilds
+   the same read-only presence view from the room log.
 6. Attachments in remote rooms are sealed with the current room-epoch key on
    the sender, then uploaded as opaque ciphertext to the home node. Metadata
    travels in the signed request URI. Other devices sync the metadata and
@@ -571,7 +576,7 @@ The local API is how the local web UI, the CLI, and Agents talk to the daemon.
 - Tool calls and results are reported as `tool.*` events, so the work is visible in the timeline.
 - Risky actions wait for an approval; the Agent is suspended until the decision arrives.
 - Session cursors are local state and are never sent to other members. `GET /api/v1/agents/{id}/sessions` and `DELETE /api/v1/agents/{id}/sessions/{roomID}` inspect and reset them. `POST /api/v1/agents/{id}/stop` cancels the active runtime process; the mention is not marked complete, so it stays in the next catch-up context.
-- A room hosted by another node accepts only `message.posted` from remote members. Agent status, approval, and tool events therefore remain a home-node capability; remote-room Agent execution is not supported yet.
+- A room hosted by another node accepts Agent status, approval, and tool events from the account that owns the Agent. The home node verifies ownership against accepted `agent.joined` events. Approval decisions are currently made on the Agent owner's node; other members see the cards in the timeline, but their local approval list is not yet projected from events.
 
 ## Approval binding
 

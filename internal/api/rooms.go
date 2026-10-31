@@ -201,7 +201,7 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	mentions := req.Mentions
-	if roomAgents, err := s.agents.ListInRoom(r.Context(), r.PathValue("id")); err == nil {
+	if roomAgents, err := s.listRoomAgents(r.Context(), r.PathValue("id")); err == nil {
 		mentions = mergeMentions(mentions, agent.DetectMentions(req.Text, roomAgents))
 	}
 	body := room.MessagePostedPayload{

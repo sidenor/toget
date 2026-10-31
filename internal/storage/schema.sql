@@ -117,6 +117,7 @@ CREATE TABLE events (
 );
 
 CREATE INDEX events_room_seq ON events(room_id, seq);
+CREATE INDEX events_room_type_seq ON events(room_id, type, seq);
 
 CREATE TRIGGER events_no_update
 BEFORE UPDATE ON events
@@ -150,6 +151,21 @@ CREATE TABLE agent_rooms (
     joined_at   INTEGER NOT NULL,
     PRIMARY KEY (agent_id, room_id)
 );
+
+-- Remote Agents owned by other accounts. The home node never creates rows in
+-- agents for them; this table is only an authorization projection built from
+-- accepted agent.joined and agent.left events.
+CREATE TABLE room_agents (
+    room_id     TEXT NOT NULL REFERENCES rooms(id),
+    agent_id    TEXT NOT NULL,
+    account_id  TEXT NOT NULL,
+    active      INTEGER NOT NULL DEFAULT 1,
+    joined_seq  INTEGER NOT NULL,
+    left_seq    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (room_id, agent_id)
+);
+
+CREATE INDEX room_agents_account ON room_agents(account_id);
 
 CREATE TABLE agent_sessions (
     agent_id        TEXT NOT NULL REFERENCES agents(id),

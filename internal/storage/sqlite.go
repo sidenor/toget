@@ -22,7 +22,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const schemaVersion = 8
+const schemaVersion = 9
 
 // CurrentSchemaVersion is the newest database schema this build understands.
 // Backup/restore uses it to reject archives from newer builds.
@@ -94,6 +94,7 @@ func (d *DB) migrate(ctx context.Context) error {
 	}
 	migrations := []func(context.Context) error{
 		d.migrateV1, d.migrateV2, d.migrateV3, d.migrateV4, d.migrateV5, d.migrateV6, d.migrateV7,
+		d.migrateV8,
 	}
 	for from := version; from < schemaVersion; from++ {
 		if from < 1 || from > len(migrations) {
@@ -346,6 +347,38 @@ func (d *DB) migrateV7(ctx context.Context) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("storage: commit v7 migration: %w", err)
+	}
+	return nil
+}
+
+// migrateV8 adds the home node's projection of remote Agents. Existing rooms
+// cannot have remote Agents: remote Agent events were not accepted before this
+// schema, so the table starts empty.
+func (d *DB) migrateV8(ctx context.Context) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("storage: begin v8 migration: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS room_agents (
+			room_id     TEXT NOT NULL REFERENCES rooms(id),
+			agent_id    TEXT NOT NULL,
+			account_id  TEXT NOT NULL,
+			active      INTEGER NOT NULL DEFAULT 1,
+			joined_seq  INTEGER NOT NULL,
+			left_seq    INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (room_id, agent_id))`); err != nil {
+		return fmt.Errorf("storage: migrate v8: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS room_agents_account ON room_agents(account_id)`); err != nil {
+		return fmt.Errorf("storage: migrate v8 index: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS events_room_type_seq ON events(room_id, type, seq)`); err != nil {
+		return fmt.Errorf("storage: migrate v8 event index: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storage: commit v8 migration: %w", err)
 	}
 	return nil
 }
@@ -834,6 +867,43 @@ func (d *DB) ListEvents(ctx context.Context, roomID string, after int64, limit i
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("storage: list events: %w", err)
+	}
+	return out, nil
+}
+
+// ListEventsByTypes returns every event of the given types in sequence order.
+// It backs projections that only need one kind of event (for example the
+// shared Agent presence view) without loading the whole room log.
+func (d *DB) ListEventsByTypes(ctx context.Context, roomID string, types []string) ([]room.Event, error) {
+	if len(types) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(types))
+	args := make([]any, 0, len(types)+1)
+	args = append(args, roomID)
+	for i, eventType := range types {
+		placeholders[i] = "?"
+		args = append(args, eventType)
+	}
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT id, room_id, seq, epoch, type, author_id, author_device, payload, created_at,
+		       prev_id, prev_hash, hash, signature
+		FROM events WHERE room_id = ? AND type IN (`+strings.Join(placeholders, ", ")+`)
+		ORDER BY seq ASC`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("storage: list events by type: %w", err)
+	}
+	defer rows.Close()
+	var out []room.Event
+	for rows.Next() {
+		event, err := scanEvent(rows)
+		if err != nil {
+			return nil, fmt.Errorf("storage: scan event: %w", err)
+		}
+		out = append(out, *event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: list events by type: %w", err)
 	}
 	return out, nil
 }

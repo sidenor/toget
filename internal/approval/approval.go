@@ -300,7 +300,7 @@ func (s *Service) Decide(ctx context.Context, id string, actor room.Actor, decis
 		}
 		a.Status = StatusExpired
 		if _, err := s.rooms.Append(ctx, a.RoomID, actor, room.EventApprovalExpired, room.ApprovalDecidedPayload{
-			ApprovalID: a.ID, Decision: "expired", By: actor.AccountID, Digest: a.ActionDigest,
+			ApprovalID: a.ID, AgentID: a.AgentID, Decision: "expired", By: actor.AccountID, Digest: a.ActionDigest,
 		}); err != nil {
 			return nil, nil, err
 		}
@@ -317,7 +317,7 @@ func (s *Service) Decide(ctx context.Context, id string, actor room.Actor, decis
 		eventType = room.EventApprovalRejected
 	}
 	event, err := s.rooms.Append(ctx, a.RoomID, actor, eventType, room.ApprovalDecidedPayload{
-		ApprovalID: a.ID, Decision: decision, By: actor.AccountID, Digest: a.ActionDigest,
+		ApprovalID: a.ID, AgentID: a.AgentID, Decision: decision, By: actor.AccountID, Digest: a.ActionDigest,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -363,7 +363,7 @@ func (s *Service) Consume(ctx context.Context, id, digest string, actor room.Act
 	}
 	a.ConsumedAt = &now
 	event, err := s.rooms.Append(ctx, a.RoomID, actor, room.EventApprovalConsumed, room.ApprovalConsumedPayload{
-		ApprovalID: a.ID, Digest: a.ActionDigest,
+		ApprovalID: a.ID, AgentID: a.AgentID, Digest: a.ActionDigest,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -392,7 +392,7 @@ func (s *Service) ExpireDue(ctx context.Context, roomID string, actor room.Actor
 			return expired, err
 		}
 		if _, err := s.rooms.Append(ctx, a.RoomID, actor, room.EventApprovalExpired, room.ApprovalDecidedPayload{
-			ApprovalID: a.ID, Decision: "expired", By: "system", Digest: a.ActionDigest,
+			ApprovalID: a.ID, AgentID: a.AgentID, Decision: "expired", By: "system", Digest: a.ActionDigest,
 		}); err != nil {
 			return expired, err
 		}

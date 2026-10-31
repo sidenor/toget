@@ -776,25 +776,34 @@ func writeRoomError(w http.ResponseWriter, err error) {
 	case errors.Is(err, room.ErrCorruptEvent):
 		writeError(w, http.StatusInternalServerError, "corrupt_event", "an event failed its integrity check")
 	default:
-		if errors.Is(err, node.ErrUnreachable) {
-			writeError(w, http.StatusBadGateway, "home_unreachable", "could not reach the room's home node")
-			return
-		}
-		var remoteErr *node.RemoteError
-		if errors.As(err, &remoteErr) {
-			status := remoteErr.Status
-			if status < 400 || status > 599 {
-				status = http.StatusBadGateway
-			}
-			code := remoteErr.Code
-			if code == "" {
-				code = "home_node_error"
-			}
-			writeError(w, status, code, remoteErr.Message)
+		if writeRemoteFailure(w, err) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "internal", "could not complete the room request")
 	}
+}
+
+// writeRemoteFailure maps failures forwarded by a room's home node. It reports
+// whether it wrote a response.
+func writeRemoteFailure(w http.ResponseWriter, err error) bool {
+	if errors.Is(err, node.ErrUnreachable) {
+		writeError(w, http.StatusBadGateway, "home_unreachable", "could not reach the room's home node")
+		return true
+	}
+	var remoteErr *node.RemoteError
+	if errors.As(err, &remoteErr) {
+		status := remoteErr.Status
+		if status < 400 || status > 599 {
+			status = http.StatusBadGateway
+		}
+		code := remoteErr.Code
+		if code == "" {
+			code = "home_node_error"
+		}
+		writeError(w, status, code, remoteErr.Message)
+		return true
+	}
+	return false
 }
 
 func writeAgentError(w http.ResponseWriter, err error) {
@@ -811,7 +820,12 @@ func writeAgentError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "agent_already_in_room", "agent already joined this room")
 	case errors.Is(err, agent.ErrRevoked):
 		writeError(w, http.StatusConflict, "agent_revoked", "agent has been revoked")
+	case errors.Is(err, agent.ErrNotAgentOwner):
+		writeError(w, http.StatusForbidden, "not_agent_owner", "the agent belongs to another account")
 	default:
+		if writeRemoteFailure(w, err) {
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "internal", "could not complete the agent request")
 	}
 }
@@ -841,6 +855,9 @@ func writeApprovalError(w http.ResponseWriter, err error) {
 	case errors.Is(err, approval.ErrNotInRoom):
 		writeError(w, http.StatusConflict, "agent_not_in_room", "agent is not in this room")
 	default:
+		if writeRemoteFailure(w, err) {
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "internal", "could not complete the approval request")
 	}
 }
@@ -867,6 +884,9 @@ func writeToolError(w http.ResponseWriter, err error) {
 		errors.Is(err, approval.ErrDigestMismatch), errors.Is(err, approval.ErrNotGranted):
 		writeApprovalError(w, err)
 	default:
+		if writeRemoteFailure(w, err) {
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "internal", "could not complete the tool request")
 	}
 }

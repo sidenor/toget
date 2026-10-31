@@ -228,6 +228,7 @@ type ApprovalRequestedPayload struct {
 
 type ApprovalDecidedPayload struct {
 	ApprovalID string `json:"approval_id"`
+	AgentID    string `json:"agent_id,omitempty"`
 	Decision   string `json:"decision"`
 	By         string `json:"by"`
 	Digest     string `json:"digest"`
@@ -235,6 +236,7 @@ type ApprovalDecidedPayload struct {
 
 type ApprovalConsumedPayload struct {
 	ApprovalID string `json:"approval_id"`
+	AgentID    string `json:"agent_id,omitempty"`
 	Digest     string `json:"digest"`
 }
 
@@ -254,6 +256,11 @@ type AgentJoinedPayload struct {
 	OwnerID     string `json:"owner_id"`
 	Runtime     string `json:"runtime"`
 	DisplayName string `json:"display_name"`
+}
+
+type AgentLeftPayload struct {
+	AgentID string `json:"agent_id"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 type AgentStatusPayload struct {
@@ -339,16 +346,53 @@ type Store interface {
 	GetAttachment(ctx context.Context, id string) (*Attachment, error)
 	ListAttachments(ctx context.Context, roomID string) ([]Attachment, error)
 	AttachToEvent(ctx context.Context, eventID string, attachmentIDs []string) error
+	// GetRoomAgent returns the home node's view of a remote Agent that joined
+	// the room. Local Agents are tracked in the agent store, not here.
+	GetRoomAgent(ctx context.Context, roomID, agentID string) (*RoomAgent, error)
+	// AppendEventWithRoomAgent atomically appends an event and records the
+	// Agent membership it establishes or closes.
+	AppendEventWithRoomAgent(ctx context.Context, event *Event, agent *RoomAgent) error
+	// ListEventsByTypes returns stored events of the given types, oldest first.
+	ListEventsByTypes(ctx context.Context, roomID string, types []string) ([]Event, error)
 }
+
+// RoomAgent is the home node's projection of an Agent that belongs to a remote
+// room member. It is built only from accepted agent.joined and agent.left
+// events, so a member cannot post status, tools, or approvals for an Agent
+// another account owns.
+type RoomAgent struct {
+	RoomID    string `json:"room_id"`
+	AgentID   string `json:"agent_id"`
+	AccountID string `json:"account_id"`
+	Active    bool   `json:"active"`
+	JoinedSeq int64  `json:"joined_seq"`
+	LeftSeq   int64  `json:"left_seq,omitempty"`
+}
+
+// AgentPresence is a read-only projection of Agents that joined a room,
+// rebuilt from the event log. It lets every member see and name shared Agents
+// without replicating the owner's local Agent registry.
+type AgentPresence struct {
+	AgentID   string    `json:"agent_id"`
+	AccountID string    `json:"account_id"`
+	Name      string    `json:"name"`
+	Runtime   string    `json:"runtime"`
+	Status    string    `json:"status"`
+	JoinedAt  time.Time `json:"joined_at"`
+}
+
+// RemoteAppendFunc forwards an event to the node that hosts a remote room.
+type RemoteAppendFunc func(ctx context.Context, roomID string, actor Actor, eventType string, payload any) (*Event, error)
 
 // Service owns room rules.
 type Service struct {
-	store      Store
-	vault      *vault.Vault
-	now        func() time.Time
-	mu         sync.Mutex
-	dataDir    string
-	writeGuard func(ctx context.Context, roomID, eventType string) error
+	store        Store
+	vault        *vault.Vault
+	now          func() time.Time
+	mu           sync.Mutex
+	dataDir      string
+	writeGuard   func(ctx context.Context, roomID, eventType string) error
+	remoteAppend RemoteAppendFunc
 }
 
 // Option configures a room service.
@@ -359,6 +403,15 @@ type Option func(*Service)
 // only blocks operations that would fork the home node's log.
 func WithWriteGuard(guard func(ctx context.Context, roomID, eventType string) error) Option {
 	return func(s *Service) { s.writeGuard = guard }
+}
+
+// SetRemoteAppend installs the transport that lets Agent, approval, and tool
+// events reach a room hosted by another node. The node service installs it
+// after construction; without it, Append keeps returning ErrRemoteReadOnly.
+func (s *Service) SetRemoteAppend(fn RemoteAppendFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.remoteAppend = fn
 }
 
 func (s *Service) checkWritable(ctx context.Context, roomID, eventType string) error {
@@ -550,40 +603,65 @@ func (s *Service) Append(ctx context.Context, roomID string, actor Actor, eventT
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if err := s.checkWritable(ctx, roomID, eventType); err != nil {
+		forward := s.remoteAppend
+		s.mu.Unlock()
+		if errors.Is(err, ErrRemoteReadOnly) && forward != nil {
+			return forward(ctx, roomID, actor, eventType, payload)
+		}
 		return nil, err
 	}
-	if err := s.RequireMember(ctx, roomID, actor); err != nil {
+	plain, sealed, err := s.prepareLocalLocked(ctx, roomID, actor, eventType, payload)
+	if err == nil {
+		err = s.store.AppendEvent(ctx, sealed)
+	}
+	s.mu.Unlock()
+	if err != nil {
 		return nil, err
+	}
+	return plain, nil
+}
+
+// Prepare builds and seals an event at the next local sequence without
+// appending it. A remote node posts the event to the room home and installs
+// the accepted copy with AppendRemote.
+func (s *Service) Prepare(ctx context.Context, roomID string, actor Actor, eventType string, payload any) (*Event, error) {
+	if eventType == "" {
+		return nil, ErrInvalidEvent
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, sealed, err := s.prepareLocalLocked(ctx, roomID, actor, eventType, payload)
+	return sealed, err
+}
+
+func (s *Service) prepareLocalLocked(ctx context.Context, roomID string, actor Actor, eventType string, payload any) (*Event, *Event, error) {
+	if err := s.RequireMember(ctx, roomID, actor); err != nil {
+		return nil, nil, err
 	}
 	last, err := s.store.LastEvent(ctx, roomID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	now := s.now().UTC().Truncate(time.Millisecond)
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("encode %s: %w", eventType, err)
+		return nil, nil, fmt.Errorf("encode %s: %w", eventType, err)
 	}
 	epoch, key, err := s.latestRoomKeyLocked(ctx, roomID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	event, err := s.buildEvent(roomID, last.Seq+1, last, eventType, actor, raw, now)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	event.Epoch = epoch
 	stored, err := s.sealEvent(event, epoch, key)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if err := s.store.AppendEvent(ctx, stored); err != nil {
-		return nil, err
-	}
-	return event, nil
+	return event, stored, nil
 }
 
 // AppendRemote stores an event received from another node. The caller must
@@ -592,10 +670,15 @@ func (s *Service) Append(ctx context.Context, roomID string, actor Actor, eventT
 func (s *Service) AppendRemote(ctx context.Context, event *Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.appendRemoteLocked(ctx, event)
+	return s.appendRemoteLocked(ctx, event, nil)
 }
 
-func (s *Service) appendRemoteLocked(ctx context.Context, event *Event) error {
+// remoteEventValidator inspects a decrypted event whose signature has already
+// been checked. It returns a membership change to commit with the event, or
+// nil when the event does not change the Agent projection.
+type remoteEventValidator func(ctx context.Context, plain *Event) (*RoomAgent, error)
+
+func (s *Service) appendRemoteLocked(ctx context.Context, event *Event, validate remoteEventValidator) error {
 	if event == nil || event.RoomID == "" || event.ID == "" || event.Seq <= 0 || event.Type == "" {
 		return ErrInvalidEvent
 	}
@@ -643,6 +726,13 @@ func (s *Service) appendRemoteLocked(ctx context.Context, event *Event) error {
 	if err := VerifyEvent(&plain, device.PublicKey); err != nil {
 		return err
 	}
+	var binding *RoomAgent
+	if validate != nil {
+		binding, err = validate(ctx, &plain)
+		if err != nil {
+			return err
+		}
+	}
 	var attachmentIDs []string
 	if event.Type == EventMessagePosted {
 		var body MessagePostedPayload
@@ -669,7 +759,11 @@ func (s *Service) appendRemoteLocked(ctx context.Context, event *Event) error {
 		}
 		stored = storedCopy
 	}
-	if err := s.store.AppendEvent(ctx, stored); err != nil {
+	if binding != nil {
+		if err := s.store.AppendEventWithRoomAgent(ctx, stored, binding); err != nil {
+			return err
+		}
+	} else if err := s.store.AppendEvent(ctx, stored); err != nil {
 		return err
 	}
 	if len(attachmentIDs) > 0 {

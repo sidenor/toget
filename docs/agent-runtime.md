@@ -236,9 +236,17 @@ run.
 
 ## Current limits
 
-- Agents run in rooms hosted by the local node. Remote LAN rooms accept only
-  `message.posted` from remote members, so Agent status cards, approvals, and
-  tool receipts do not cross that boundary yet.
+- Agents can also belong to rooms hosted by another node. The Agent owner's
+  daemon forwards `agent.joined`, status, approval, and tool events to the
+  home node, which verifies against its `agent.joined` projection that the
+  sender owns the Agent. Approval decisions are made on the owner's node;
+  other members see the cards in the timeline but do not yet have a projected
+  local approval list. Agent names, runtime, owner, and status are projected
+  from the room log, so every member with the relevant history sees shared
+  Agents in the room Agent list and mention detection without querying the
+  owner's node. Revocation is local to the owner's node: it hides the Agent
+  there but does not yet emit `agent.left`, so other members can keep seeing
+  its last announced presence until the owner removes it from the room.
 - Replies are posted when the run finishes; partial streaming is not
   implemented.
 - A shared Agent's owner can see what the Agent can see. Joining a shared Agent

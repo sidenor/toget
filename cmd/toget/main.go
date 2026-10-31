@@ -374,12 +374,6 @@ func runServe(ctx context.Context) error {
 			return rooms.PostMessage(ctx, roomID, actor, body)
 		},
 		SetStatus: func(ctx context.Context, agentID, status, detail, roomID string) error {
-			if roomID != "" && nodeService != nil {
-				if remote, err := nodeService.IsRemoteRoom(ctx, roomID); err == nil && remote {
-					_, _, statusErr := agents.SetStatus(ctx, agentID, status, detail, "", room.Actor{})
-					return statusErr
-				}
-			}
 			actor, err := localActor(ctx)
 			if err != nil {
 				return err

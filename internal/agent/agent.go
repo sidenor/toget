@@ -26,6 +26,8 @@ var (
 	ErrAlreadyInRoom = errors.New("agent already joined the room")
 	// ErrRevoked means the Agent has been revoked.
 	ErrRevoked = errors.New("agent is revoked")
+	// ErrNotAgentOwner means the caller's account does not own the Agent.
+	ErrNotAgentOwner = errors.New("caller does not own this agent")
 )
 
 const (
@@ -146,6 +148,9 @@ func (s *Service) JoinRoom(ctx context.Context, agentID, roomID string, actor ro
 	if a.RevokedAt != nil {
 		return nil, nil, ErrRevoked
 	}
+	if a.AccountID != actor.AccountID {
+		return nil, nil, ErrNotAgentOwner
+	}
 	exists, err := s.store.IsAgentInRoom(ctx, agentID, roomID)
 	if err != nil {
 		return nil, nil, err
@@ -169,6 +174,13 @@ func (s *Service) JoinRoom(ctx context.Context, agentID, roomID string, actor ro
 
 // LeaveRoom removes an Agent from a room and records the change.
 func (s *Service) LeaveRoom(ctx context.Context, agentID, roomID string, actor room.Actor) (*room.Event, error) {
+	a, err := s.store.GetAgent(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if a.AccountID != actor.AccountID {
+		return nil, ErrNotAgentOwner
+	}
 	exists, err := s.store.IsAgentInRoom(ctx, agentID, roomID)
 	if err != nil {
 		return nil, err
@@ -176,7 +188,7 @@ func (s *Service) LeaveRoom(ctx context.Context, agentID, roomID string, actor r
 	if !exists {
 		return nil, ErrNotInRoom
 	}
-	event, err := s.rooms.Append(ctx, roomID, actor, room.EventAgentLeft, map[string]string{"agent_id": agentID})
+	event, err := s.rooms.Append(ctx, roomID, actor, room.EventAgentLeft, room.AgentLeftPayload{AgentID: agentID})
 	if err != nil {
 		return nil, err
 	}
@@ -198,6 +210,9 @@ func (s *Service) SetStatus(ctx context.Context, agentID, status, detail, roomID
 	}
 	if a.RevokedAt != nil {
 		return nil, nil, ErrRevoked
+	}
+	if a.AccountID != actor.AccountID {
+		return nil, nil, ErrNotAgentOwner
 	}
 	now := s.now().UTC().Truncate(time.Millisecond)
 	a.Status = status

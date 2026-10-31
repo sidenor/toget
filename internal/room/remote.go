@@ -756,10 +756,11 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, event *Event) error {
 	if event == nil || event.RoomID == "" || event.AuthorDevice == "" {
 		return ErrInvalidEvent
 	}
-	// A remote member may propose messages, but membership, key rotation, and
-	// room settings are home-node decisions. Without this allowlist a member
-	// holding the room key could forge a member.left or epoch event.
-	if event.Type != EventMessagePosted {
+	// A remote member may propose messages and events about Agents it owns.
+	// Membership, key rotation, and room settings remain home-node decisions.
+	// Without this allowlist a member holding the room key could forge a
+	// member.left or epoch event.
+	if !remoteEventAllowed(event.Type) {
 		return fmt.Errorf("%w: remote event type is not accepted", ErrForbidden)
 	}
 	device, err := s.store.GetRoomDevice(ctx, event.RoomID, event.AuthorDevice)
@@ -773,7 +774,22 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, event *Event) error {
 	if err != nil || member.Status != "active" {
 		return ErrNotMember
 	}
-	return s.AppendRemote(ctx, event)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.appendRemoteLocked(ctx, event, s.validateRemoteEvent)
+}
+
+func remoteEventAllowed(eventType string) bool {
+	switch eventType {
+	case EventMessagePosted,
+		EventAgentJoined, EventAgentLeft, EventAgentStatus,
+		EventToolRequested, EventToolResult, EventToolFailed,
+		EventApprovalRequested, EventApprovalGranted, EventApprovalRejected,
+		EventApprovalExpired, EventApprovalConsumed:
+		return true
+	default:
+		return false
+	}
 }
 
 // GetOpenedEvent returns one decrypted, verified event by ID.
@@ -936,7 +952,7 @@ func (s *Service) AcceptRemoteLeave(ctx context.Context, event *Event) error {
 	if err := json.Unmarshal(plain, &body); err != nil || body.AccountID != event.AuthorID {
 		return fmt.Errorf("%w: leave payload does not match its author", ErrInvalidEvent)
 	}
-	if err := s.appendRemoteLocked(ctx, event); err != nil {
+	if err := s.appendRemoteLocked(ctx, event, nil); err != nil {
 		return err
 	}
 	now := s.now().UTC().Truncate(time.Millisecond)
@@ -960,7 +976,7 @@ func (s *Service) ApplyRemoteLeave(ctx context.Context, event *Event) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.appendRemoteLocked(ctx, event); err != nil {
+	if err := s.appendRemoteLocked(ctx, event, nil); err != nil {
 		return err
 	}
 	member, err := s.store.GetMember(ctx, event.RoomID, event.AuthorID)

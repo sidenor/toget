@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -221,12 +222,69 @@ func (s *Server) handleListRoomAgents(w http.ResponseWriter, r *http.Request) {
 		writeRoomError(w, err)
 		return
 	}
-	agents, err := s.agents.ListInRoom(r.Context(), r.PathValue("id"))
+	agents, err := s.listRoomAgents(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeAgentError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agents": agents})
+}
+
+// listRoomAgents returns this node's Agents plus Agents announced in the room
+// log by other members. The local registry wins for a matching ID because it
+// carries the live record; remote entries come from the event-log projection.
+func (s *Server) listRoomAgents(ctx context.Context, roomID string) ([]agent.Agent, error) {
+	local, err := s.agents.ListInRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	presence, err := s.rooms.ListAgentPresence(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	// Revocation does not write agent.left, and ListInRoom omits revoked
+	// Agents. Read the full owned list so the log projection cannot bring a
+	// locally revoked Agent back into view.
+	snapshot, err := s.accounts.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	owned, err := s.agents.List(ctx, snapshot.Account.ID)
+	if err != nil {
+		return nil, err
+	}
+	revoked := make(map[string]bool)
+	for _, a := range owned {
+		if a.RevokedAt != nil {
+			revoked[a.ID] = true
+		}
+	}
+	return mergeRoomAgents(local, presence, revoked), nil
+}
+
+// mergeRoomAgents folds event-log presence into the local registry view. The
+// local row wins on an ID collision because it holds live status and settings.
+func mergeRoomAgents(local []agent.Agent, presence []room.AgentPresence, revoked map[string]bool) []agent.Agent {
+	seen := make(map[string]bool, len(local))
+	for _, a := range local {
+		seen[a.ID] = true
+	}
+	out := make([]agent.Agent, 0, len(local)+len(presence))
+	out = append(out, local...)
+	for _, p := range presence {
+		if seen[p.AgentID] || revoked[p.AgentID] {
+			continue
+		}
+		status := p.Status
+		if status == "" {
+			status = "idle"
+		}
+		out = append(out, agent.Agent{
+			ID: p.AgentID, AccountID: p.AccountID, Name: p.Name, Runtime: p.Runtime,
+			Status: status, Permissions: json.RawMessage(`{}`), CreatedAt: p.JoinedAt,
+		})
+	}
+	return out
 }
 
 type joinAgentRequest struct {

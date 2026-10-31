@@ -239,7 +239,7 @@ The daemon is the local runtime on a persistent device. It:
 - Agents have scoped permissions: file access, command execution, network access, and tool use.
 - Risky actions become approval cards in the room; the Agent waits for a human decision. The runtime loop sees a pending approval and shows `waiting_approval` while it is blocked.
 - Shared Agents remain on their owner's endpoint; other members call them through the room. The owner can see the room content the Agent can see, and the room shows a warning when a shared Agent is present.
-- Agents currently run in rooms hosted by the local node. A room hosted by another LAN node accepts only `message.posted` from remote members, so remote-room status cards and approvals are not part of the runtime loop yet.
+- Agents can run in rooms hosted by another node. The owner's daemon posts `agent.joined`, status, tool, and approval events to the home node, which accepts them only after checking that the author account owns the Agent and that the Agent has not left. Approval decisions remain on the owner's node for now; other members see the audit trail in the timeline.
 
 ## Room model
 

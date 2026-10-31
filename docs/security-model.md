@@ -71,8 +71,17 @@ Two Toget nodes on the same LAN currently talk over HTTPS on `7717`:
 - Room payloads remain sealed with the room epoch key; the node transport
   does not unwrap them.
 - A remote room is read-only locally except for sending messages, uploading
-  attachments, leaving, and local archival. The home node remains the only log
-  writer, preventing a local mutation from forking the append-only hash chain.
+  attachments, leaving, local archival, and events about Agents the local
+  account owns. The home node remains the only log writer, preventing a local
+  mutation from forking the append-only hash chain.
+- The home node accepts an Agent event from a remote member only when an
+  earlier `agent.joined` event bound that Agent ID to the same account, and the
+  Agent has not left. A member cannot post status, tool receipts, approvals, or
+  Agent-attributed messages for another account's Agent.
+- Agent name, runtime, owner, and status travel in the signed room log, so any
+  member who can decrypt that part of the history can see which shared Agents
+  are present. This is deliberate: Agents are room participants. No separate
+  directory entry or cross-node lookup is involved.
 - Device pairing is explicit and visible. The new device proves possession of
   the keys it submits; the existing device displays a fingerprint and requires
   local approval. The account private key is sealed to the new device with
@@ -324,7 +333,7 @@ Controls:
 - A stop cancels the runtime's process group. A finishing run can update a
   session only while its trigger is still active, so a reset or a newer run
   cannot be overwritten by a stale goroutine.
-- A room hosted by another node accepts only `message.posted` from remote members, so status and approval events do not cross that boundary today. Agents run in locally hosted rooms.
+- A room hosted by another node accepts messages and Agent events from the Agent owner. Approval decisions are currently produced by the owner's node; other members see the approval cards only in the timeline and cannot decide them from their own node. The home node enforces Agent ownership for every accepted event.
 
 ### Prompt injection
 

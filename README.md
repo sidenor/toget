@@ -206,8 +206,13 @@ loopback API, the CLI, and a bilingual React web UI. Two nodes on the same
 LAN can join a room with a portable invite code, exchange messages, and sync
 history. A second device can pair with an existing one to recover the same
 account without copying private keys, then sync its rooms from their homes.
-Remote rooms support attachments, self-leave, and local archival. Agents can be
-registered, joined to rooms, run locally when mentioned, and gated through
+Remote rooms support attachments, self-leave, local archival, and Agents owned
+by a remote member: an Agent can join a room hosted by another node, post
+status, approval, and tool events, and have those events accepted only after
+the home verifies that the event author owns the Agent. Shared Agent names and
+status are projected from the room log, so every member with that history sees
+them by name. Agents can be registered, joined to rooms, run locally when
+mentioned, and gated through
 local approval and tool-receipt cards. An optional relay and signed-manifest
 directory work across networks, with direct-first fallback, automatic relay
 discovery, multi-hop routes, loop detection, quotas, and a bounded offline
@@ -218,8 +223,8 @@ business cards can be copied as text or shown as a QR code, and a saved card
 pins the full server ID for its short code. Room invites and device-pairing
 codes can also be shown as QR codes and scanned from a still image.
 
-Not implemented yet: NAT traversal or hole punching, account-key rotation,
-multiple accounts on one node, and a bundled model. The daemon runs
+Not implemented yet: NAT traversal or hole punching, multiple accounts on one
+node, and a bundled model. The daemon runs
 Agents locally on a mention, through Claude Code or any command that speaks the
 runtime protocol. Many parts will change as we learn.
 That is exactly why the project is open this early. If you care about

@@ -78,8 +78,7 @@ plaintext.
 mention, serializes runs, catches up after the last completed run, resumes the
 Claude Code session, posts the reply to the thread, and shows idle, running,
 waiting, and offline status. A configurable command runtime is available for
-other tools. Remaining: streaming partial output, remote-room agents, and a
-stable connector SDK. See [agent-runtime.md](agent-runtime.md).
+other tools. Remaining: streaming partial output and a stable connector SDK. See [agent-runtime.md](agent-runtime.md).
 
 **Done when:** a user asks an Agent in a room to do a task, the Agent proposes a risky action, the user approves it in the conversation, and the result appears in the same thread with a complete audit trail.
 

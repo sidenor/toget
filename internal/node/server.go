@@ -194,7 +194,7 @@ func New(opts Options) (*Service, error) {
 	if err != nil {
 		logger.Warn("saved cards could not be loaded", "error", err)
 	}
-	return &Service{
+	service := &Service{
 		accounts: opts.Accounts, rooms: opts.Rooms, paths: opts.Paths, cards: cards,
 		listen: listen, advertise: strings.TrimSpace(opts.Advertise),
 		logger: logger, syncEvery: interval, accountSyncEvery: accountSyncInterval,
@@ -204,7 +204,12 @@ func New(opts Options) (*Service, error) {
 		directorySetting: directorySetting, directoryBase: directoryBase,
 		directoryFP: directoryFP, directoryHTTP: directoryHTTP,
 		mdnsSetting: mdnsSetting,
-	}, nil
+	}
+	// Agent, approval, and tool services append through the room service.
+	// Once this node exists, events for rooms hosted elsewhere are forwarded
+	// to their home instead of being rejected as local-only mutations.
+	service.rooms.SetRemoteAppend(service.PostRemoteEvent)
+	return service, nil
 }
 
 // Start binds the node listener and begins serving and polling.
@@ -1154,12 +1159,37 @@ func (s *Service) PostRemoteMessage(ctx context.Context, roomID string, actor ro
 	if !remote {
 		return s.rooms.PostMessage(ctx, roomID, actor, body)
 	}
+	return s.postRemote(ctx, roomID, func(ctx context.Context) (*room.Event, error) {
+		return s.rooms.PrepareMessage(ctx, roomID, actor, body)
+	})
+}
+
+// PostRemoteEvent forwards an Agent, approval, or tool event to the room home.
+// The home node accepts only the event types in the remote allowlist and
+// checks Agent ownership against its accepted join records.
+func (s *Service) PostRemoteEvent(ctx context.Context, roomID string, actor room.Actor, eventType string, payload any) (*room.Event, error) {
+	remote, err := s.IsRemoteRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if !remote {
+		return s.rooms.Append(ctx, roomID, actor, eventType, payload)
+	}
+	return s.postRemote(ctx, roomID, func(ctx context.Context) (*room.Event, error) {
+		return s.rooms.Prepare(ctx, roomID, actor, eventType, payload)
+	})
+}
+
+// postRemote syncs before each attempt, posts the prepared event, and installs
+// the accepted copy. A sequence conflict means another member appended first,
+// so one retry after another sync is enough.
+func (s *Service) postRemote(ctx context.Context, roomID string, prepare func(context.Context) (*room.Event, error)) (*room.Event, error) {
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		if _, err := s.SyncRoom(ctx, roomID); err != nil {
 			return nil, fmt.Errorf("sync before send: %w", err)
 		}
-		event, err := s.rooms.PrepareMessage(ctx, roomID, actor, body)
+		event, err := prepare(ctx)
 		if err != nil {
 			return nil, err
 		}
