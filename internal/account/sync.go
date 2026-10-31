@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -127,7 +128,10 @@ func (s *Service) MergeDeviceRecords(ctx context.Context, records []DeviceRecord
 	if err != nil {
 		return nil, err
 	}
-	accountPub := ed25519.PublicKey(snapshot.Account.PublicKey)
+	accountKeys, err := accountPublicKeySet(snapshot.Account)
+	if err != nil {
+		return nil, err
+	}
 	devices, err := s.store.ListDevices(ctx, snapshot.Account.ID)
 	if err != nil {
 		return nil, err
@@ -147,7 +151,7 @@ func (s *Service) MergeDeviceRecords(ctx context.Context, records []DeviceRecord
 			continue
 		}
 		seen[record.ID] = true
-		incoming, revokedAt, err := validateDeviceRecord(record, snapshot.Account.ID, accountPub, now)
+		incoming, revokedAt, err := validateDeviceRecord(record, snapshot.Account.ID, accountKeys, now)
 		if err != nil {
 			result.Skipped++
 			result.Warnings = append(result.Warnings, err.Error())
@@ -200,7 +204,78 @@ func (s *Service) MergeDeviceRecords(ctx context.Context, records []DeviceRecord
 // validateDeviceRecord checks that a record's certificate binds its keys to
 // this account. Expired certificates are accepted here because a device that
 // was offline for a year still needs to sync a renewed certificate.
-func validateDeviceRecord(record DeviceRecord, accountID string, accountPub ed25519.PublicKey, now time.Time) (*Device, *time.Time, error) {
+// accountPublicKeySet returns the current account key followed by every key
+// recorded in the verified rotation history. Device certificates and
+// revocations signed before a rotation remain valid; a record is accepted if
+// any historical generation signed it.
+func VerificationKeys(account *Account) ([]ed25519.PublicKey, error) {
+	return accountPublicKeySet(account)
+}
+
+func accountPublicKeySet(account *Account) ([]ed25519.PublicKey, error) {
+	if account == nil || len(account.PublicKey) != ed25519.PublicKeySize {
+		return nil, ErrInvalidDeviceRecord
+	}
+	out := []ed25519.PublicKey{append(ed25519.PublicKey(nil), account.PublicKey...)}
+	if len(account.KeyRotations) == 0 {
+		return out, nil
+	}
+	keys, err := identity.VerifyAccountKeyChain(account.ID, account.KeyRotations)
+	if err != nil {
+		return nil, fmt.Errorf("account key history: %w", err)
+	}
+	generations := make([]int, 0, len(keys))
+	for generation := range keys {
+		generations = append(generations, generation)
+	}
+	sort.Ints(generations)
+	for _, generation := range generations {
+		key := keys[generation]
+		duplicate := false
+		for _, existing := range out {
+			if existing.Equal(key) {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			out = append(out, key)
+		}
+	}
+	return out, nil
+}
+
+func verifyDeviceCertificateWithKeys(encoded []byte, accountKeys []ed25519.PublicKey) (*identity.DeviceCertificate, error) {
+	var lastErr error
+	for _, key := range accountKeys {
+		cert, err := identity.VerifyDeviceCertificateSignature(encoded, key)
+		if err == nil {
+			return cert, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no account key is available")
+	}
+	return nil, lastErr
+}
+
+func verifyAccountRevocation(encoded string, accountKeys []ed25519.PublicKey) (*identity.AccountRevocation, error) {
+	var lastErr error
+	for _, key := range accountKeys {
+		proof, err := identity.VerifyAccountRevocation(encoded, key)
+		if err == nil {
+			return proof, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no account key is available")
+	}
+	return nil, lastErr
+}
+
+func validateDeviceRecord(record DeviceRecord, accountID string, accountKeys []ed25519.PublicKey, now time.Time) (*Device, *time.Time, error) {
 	fail := func(format string, args ...any) (*Device, *time.Time, error) {
 		return nil, nil, fmt.Errorf("%w: %s", ErrInvalidDeviceRecord, fmt.Sprintf(format, args...))
 	}
@@ -219,7 +294,7 @@ func validateDeviceRecord(record DeviceRecord, accountID string, accountPub ed25
 	if record.Certificate == "" || len(record.Certificate) > MaxDeviceCertificateLength {
 		return fail("device certificate is missing or too large")
 	}
-	cert, err := identity.VerifyDeviceCertificateSignature([]byte(record.Certificate), accountPub)
+	cert, err := verifyDeviceCertificateWithKeys([]byte(record.Certificate), accountKeys)
 	if err != nil {
 		return fail("device certificate: %v", err)
 	}
@@ -258,7 +333,7 @@ func validateDeviceRecord(record DeviceRecord, accountID string, accountPub ed25
 	}
 	var revokedAt *time.Time
 	if record.Revocation != "" {
-		proof, err := identity.VerifyAccountRevocation(record.Revocation, accountPub)
+		proof, err := verifyAccountRevocation(record.Revocation, accountKeys)
 		if err != nil {
 			return fail("device revocation: %v", err)
 		}

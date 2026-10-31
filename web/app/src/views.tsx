@@ -432,6 +432,7 @@ export function DevicesView({ t, notify, onError }: CommonProps) {
   const [pairings, setPairings] = useState<PairingView[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [rotatingKey, setRotatingKey] = useState(false);
   const [syncingAccount, setSyncingAccount] = useState(false);
   const [pairError, setPairError] = useState("");
   const [pairWarnings, setPairWarnings] = useState<string[]>([]);
@@ -492,6 +493,23 @@ export function DevicesView({ t, notify, onError }: CommonProps) {
       setPairError(err instanceof Error ? err.message : t("common.error"));
     } finally {
       setSyncingAccount(false);
+    }
+  }
+
+  async function rotateKey() {
+    if (!window.confirm(t("devices.rotateConfirm"))) return;
+    setPairError("");
+    setPairWarnings([]);
+    setRotatingKey(true);
+    try {
+      const result = await api.rotateAccountKey();
+      notify(t("devices.rotateResult", { generation: result.generation, devices: result.devices }));
+      setPairWarnings(result.warnings || []);
+      await load();
+    } catch (err) {
+      setPairError(err instanceof Error ? err.message : t("common.error"));
+    } finally {
+      setRotatingKey(false);
     }
   }
 
@@ -567,7 +585,10 @@ export function DevicesView({ t, notify, onError }: CommonProps) {
             <button className="button ghost" onClick={() => void syncAccount()} disabled={syncingAccount}>
               {syncingAccount ? t("devices.syncing") : t("devices.syncNow")}
             </button>
-            <button className="button primary" onClick={() => void createPairing()} disabled={creating}>
+            <button className="button ghost" onClick={() => void rotateKey()} disabled={rotatingKey || creating}>
+              {rotatingKey ? t("devices.rotating") : t("devices.rotateKey")}
+            </button>
+            <button className="button primary" onClick={() => void createPairing()} disabled={creating || rotatingKey}>
               {creating ? t("onboard.linking") : t("devices.pairCreate")}
             </button>
           </div>

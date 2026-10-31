@@ -76,9 +76,12 @@ advertise and browse `_toget._tcp.local.` over mDNS for directory-free
 same-LAN discovery; a discovered endpoint is only used after its pinned TLS
 certificate and signed identity and node manifests verify. Portable business
 cards carry those same signed manifests as text or a QR code and can be saved
-as an explicit full-server-ID pin. The phone client, official account
-hosting, and account-key rotation shown above are still design-only; NAT
-traversal is not implemented.
+as an explicit full-server-ID pin. The account signing key can be rotated
+without changing the account ID: active device certificates are re-signed, and
+paired devices receive the new private key as per-device sealed envelopes.
+The local vault is wrapped by a key derived from the account password. The
+phone client and official account hosting shown above are still design-only;
+NAT traversal is not implemented.
 
 ## Account and device model
 
@@ -121,6 +124,17 @@ copied in plaintext, and the password hash and account code are preserved.
 After pairing, devices periodically exchange the public account device set, so
 a device added through one sibling appears on the others without another
 pairing, and a signed revocation converges to every reachable device.
+
+If the account key is exposed, any active device can rotate it. A rotation
+statement is signed by both the previous and the new key and extends an
+append-only chain of generations. Every active device certificate is re-signed
+with the new key. The new private key is stored wrapped by the local vault and
+distributed to siblings inside account sync, sealed to each device's X25519
+key with the account ID, generation, and recipient device ID as context.
+Revoked devices are not re-signed and never receive the new key. Room homes
+advance a member's public key only after verifying a rotation chain anchored at
+the key they already trust, so a room cannot be tricked into trusting an
+unrelated key.
 
 Switching accounts: log out, wipe local keys and caches, then join the new account as a new device. A device is never a member of two accounts.
 

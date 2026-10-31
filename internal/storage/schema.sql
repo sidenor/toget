@@ -12,6 +12,8 @@ CREATE TABLE accounts (
     id               TEXT PRIMARY KEY,
     server_id        TEXT NOT NULL REFERENCES servers(id),
     origin_server_id TEXT NOT NULL DEFAULT '',
+    key_generation   INTEGER NOT NULL DEFAULT 1,
+    key_rotations    TEXT NOT NULL DEFAULT '[]',
     code             TEXT NOT NULL,
     name             TEXT NOT NULL,
     public_key       BLOB NOT NULL,

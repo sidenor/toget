@@ -27,11 +27,18 @@ export type AccountSyncResult = {
   revoked?: string[];
 };
 
+export type RotateAccountKeyResult = {
+  generation: number;
+  devices: number;
+  warnings: string[];
+};
+
 export type Account = {
   id: string;
   name: string;
   server_id: string;
   server_code: string;
+  key_generation: number;
   created_at: string;
   device?: Device;
 };

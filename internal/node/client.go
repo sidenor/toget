@@ -536,6 +536,21 @@ func (c *Client) RegisterDevice(ctx context.Context, roomID string, certificate 
 	return &out.Device, nil
 }
 
+// UpdateRoomAccountKey tells a room's home node that this account's signing key
+// moved forward. The full rotation chain lets the home verify the new key from
+// the one it already trusts.
+func (c *Client) UpdateRoomAccountKey(ctx context.Context, roomID string, rotations []string) (int, error) {
+	var out struct {
+		KeyGeneration int `json:"key_generation"`
+	}
+	err := c.do(ctx, http.MethodPost, "/toget/v1/rooms/account-key",
+		map[string]any{"room_id": roomID, "rotations": rotations}, &out)
+	if err != nil {
+		return 0, err
+	}
+	return out.KeyGeneration, nil
+}
+
 // RevokeDevice asks a room's home node to mark a device revoked and rotate the
 // room epoch so the device cannot read later messages.
 func (c *Client) RevokeDevice(ctx context.Context, roomID, deviceID string) (int, error) {

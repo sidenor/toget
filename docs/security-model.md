@@ -87,6 +87,12 @@ Two Toget nodes on the same LAN currently talk over HTTPS on `7717`:
   permanent once seen, and can be relayed by any device. A revoked device is
   answered read-only so it learns that it was revoked, but its records are
   never merged.
+- The account signing key can be rotated. A rotation statement is signed by
+  both the old and new key and extends a verified chain; active device
+  certificates are re-signed. The new private key is distributed only to
+  active siblings as a per-device sealed envelope during account sync, and
+  revoked devices never receive it. Room homes advance a member key only from
+  a chain anchored at the key they already trust.
 
 Residual risks: the host sees IP addresses, account and device IDs in request
 headers, room IDs, and timing. The invite code is a bearer secret shown once;
@@ -96,12 +102,14 @@ request must still be approved on an existing device and its fingerprint
 compared. Showing either code as a QR does not change that exposure: the QR is
 the same secret in another form, so it is shown once in the web UI with no
 download action, and CLI PNG files are forced to mode `0600`. A device that holds the account private key can mint certificates
-for new devices, so compromising one device compromises the account key until
-account-key rotation exists. Revocation only reaches rooms the revoking node
-knows about, and account-device sync is eventual: a device that stays offline
-keeps its old view until it reconnects, and a revoked device can appear active
-to a peer that has not yet received the signed revocation. Room homes enforce
-the revocation for room keys as soon as they receive it. The certificate is pinned
+for new devices. Rotating the account key after a compromise stops the old
+key from authorizing new devices once peers learn the new generation, but an
+attacker who already copied the account key can still use it until every
+device and room home has advanced. Revocation only reaches rooms the revoking
+node knows about, and account-device sync is eventual: a device that stays
+offline keeps its old view until it reconnects, and a revoked device can
+appear active to a peer that has not yet received the signed revocation. Room
+homes enforce the revocation for room keys as soon as they receive it. The certificate is pinned
 but not publicly audited. Remote administration beyond attachments,
 self-leave, and local archival is unsupported rather than securely
 implemented.
@@ -400,7 +408,11 @@ Controls:
 
 - The local API binds to `127.0.0.1` or a Unix socket and requires a token.
 - The UI checks `Origin` and uses `SameSite=Strict` cookies.
-- Secrets live in the OS keychain or an encrypted local vault.
+- Account and device private keys are encrypted at rest by the local vault.
+  Its random master key is wrapped with an Argon2id-derived key from the
+  account password, and the wrapped key file is mode `0600`. A fresh paired
+  device asks for the account password and initializes that wrapping before it
+  stores the imported key.
 - Logs redact known secret patterns.
 
 ## Cryptographic choices
@@ -408,7 +420,7 @@ Controls:
 - Ed25519 for signatures; X25519 for key agreement.
 - HPKE (RFC 9180) with X25519 + HKDF-SHA256 + ChaCha20-Poly1305 for wrapping room keys.
 - XChaCha20-Poly1305 or AES-256-GCM for message content.
-- Argon2id for password verifiers and key derivation; PAKE for login.
+- Argon2id for password verifiers and vault-key derivation; PAKE for login.
 - TLS 1.3 for transport.
 - No custom cryptography. Use standard constructions from mature libraries.
 

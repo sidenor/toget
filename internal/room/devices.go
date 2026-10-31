@@ -194,6 +194,52 @@ func (s *Service) ImportDeviceRoom(ctx context.Context, snapshot *DeviceRoomSnap
 	return s.store.GetRoom(ctx, snapshot.Room.ID)
 }
 
+// UpdateMemberAccountKey advances one member's account signing key to the
+// newest generation proven by a rotation chain. The chain must include the key
+// the room already trusts, so a replayed or unrelated chain cannot replace it.
+func (s *Service) UpdateMemberAccountKey(ctx context.Context, roomID, accountID string, rotations []string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	member, err := s.store.GetMember(ctx, roomID, accountID)
+	if err != nil {
+		return 0, err
+	}
+	if member.Status != "active" {
+		return 0, ErrNotMember
+	}
+	if len(member.AccountPublicKey) != ed25519.PublicKeySize {
+		return 0, fmt.Errorf("%w: member account key is invalid", ErrInvalidEvent)
+	}
+	keys, err := identity.VerifyAccountKeyChain(accountID, rotations)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %v", ErrInvalidEvent, err)
+	}
+	anchor := 0
+	for generation, key := range keys {
+		if bytes.Equal(key, member.AccountPublicKey) {
+			anchor = generation
+			break
+		}
+	}
+	if anchor == 0 {
+		return 0, fmt.Errorf("%w: rotation chain does not include the room's account key", ErrForbidden)
+	}
+	newest := anchor
+	for generation := range keys {
+		if generation > newest {
+			newest = generation
+		}
+	}
+	if newest == anchor {
+		return newest, nil
+	}
+	member.AccountPublicKey = append([]byte(nil), keys[newest]...)
+	if err := s.store.UpdateMember(ctx, member); err != nil {
+		return 0, err
+	}
+	return newest, nil
+}
+
 // RegisterDevice adds a device certificate to a room's trusted device set and
 // wraps every available epoch key to it. Certificates are signed by the
 // account key, so any home node can verify that the device belongs to an

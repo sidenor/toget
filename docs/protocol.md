@@ -147,6 +147,7 @@ serves:
 | `POST` | `/toget/v1/account/sync` | Exchange public account device records with a sibling device |
 | `POST` | `/toget/v1/rooms/devices` | Register this device in a room with its account-signed certificate |
 | `POST` | `/toget/v1/rooms/devices/revoke` | Ask a room home to revoke a device and rotate the epoch |
+| `POST` | `/toget/v1/rooms/account-key` | Ask a room home to advance a member's account public key after rotation |
 
 Every request except health carries `X-Toget-Timestamp`, `X-Toget-Nonce`,
 `X-Toget-Signature`, `X-Toget-Account`, and `X-Toget-Device`. The signature
@@ -383,25 +384,31 @@ account without copying a data directory or private keys.
    and refreshes certificates that are close to expiry.
 5. The new device polls `/toget/v1/pair/complete`. Once approved, it receives
    the account public record (ID, code, name, public key, Argon2id password
-   hash), the account Ed25519 private key sealed to its X25519 key, its own
-   certificate, sibling device certificates, and page(s) of room snapshots.
+   hash, key generation, and rotation history), the account Ed25519 private
+   key sealed to its X25519 key, its own certificate, sibling device
+   certificates, and page(s) of room snapshots.
 6. The sealed box uses ephemeral X25519, HKDF-SHA256 with info
    `toget:sealbox:v1|<context>`, and XChaCha20-Poly1305. The context binds the
    pairing ID, device ID, and account ID, so a sealed key cannot be replayed
    into another pairing.
-7. A room snapshot contains room metadata, members, the device registry, and
+7. A fresh device has no vault key. Before importing, it asks for the account
+   password, verifies it against the imported Argon2id hash, and derives the
+   local vault KEK with Argon2id, so the received account key is stored
+   encrypted at rest. The password stays in the join session's memory only;
+   it is not written to the pairing bundle or any log.
+8. A room snapshot contains room metadata, members, the device registry, and
    every epoch key the approving device can unwrap, re-wrapped to the new
    device. It contains no events: the new device fetches those through the
    normal signed sync path, preserving hash-chain and signature verification.
    Bundles are paginated (`has_more`, `next_offset`) and capped by room count
    and byte size.
-8. The new device imports the account atomically, installs room snapshots,
+9. The new device imports the account atomically, installs room snapshots,
    and syncs each room from its home. If the new device is not yet in a room's
    device set, the home verifies its account-signed certificate, adds it, and
    wraps the room epoch keys to it on the first sync.
-9. The new device keeps its own local server identity. The account ID, account
-   code, account key, password hash, room roles, and room homes are preserved;
-   rooms created on the old device remain hosted there.
+10. The new device keeps its own local server identity. The account ID, account
+    code, account key, password hash, room roles, and room homes are preserved;
+    rooms created on the old device remain hosted there.
 
 The pairing code may be shown as a QR code in the terminal, a PNG, or the web
 UI. It is still the same bearer secret, valid for the same ten minutes and
@@ -421,9 +428,11 @@ rotates the epoch so it cannot read later messages. Remote homes are asked to
 do the same through a signed endpoint. If a home is offline, the local
 revocation still stands and the room revocation is reported as a warning.
 Any device that already holds the account private key can still mint a new
-certificate for itself; a compromised device therefore compromises the
-account key until account-key rotation exists. Rooms a node has never joined
-cannot be revoked from it, because it does not know they exist.
+certificate for itself until the key is rotated. Rotation is the remedy after
+a compromise: the new key goes only to active devices, and revoked devices are
+not re-signed. It does not retroactively invalidate statements the attacker
+signed with the old key. Rooms a node has never joined cannot be revoked from
+it, because it does not know they exist.
 
 ### Account record sync
 
@@ -466,14 +475,48 @@ same pinned HTTPS transport:
 - Revocations are applied to every room this device knows about and propagated
   to remote room homes, which mark the device revoked and rotate the epoch.
   Failures are warnings and are retried by later account-sync rounds.
+- Each request and response carries the sender's account key generation and
+  rotation chain (at most 64 statements). Certificates and revocation proofs
+  are accepted when signed by any key in that verified chain, so a device that
+  has not yet caught up remains verifiable.
+- When the sender is ahead, the request also carries the account private key
+  sealed to the receiver's X25519 key, bound to the account ID, generation,
+  and recipient device ID. The receiver verifies the chain from the key it
+  already trusts, installs the new key, re-signs its own certificate, and only
+  then merges records. A gap, fork, or missing envelope fails closed and the
+  next round retries.
+- When the responder is ahead, its response carries the current generation,
+  chain, and a sealed envelope for the caller. The caller applies the rotation
+  before merging the response.
+- After rotating, a device asks every room home that still trusts the previous
+  member key to advance it through `/toget/v1/rooms/account-key`. The home
+  verifies a chain anchored at the key it already stores and updates the
+  member key monotonically; failures are warnings and are retried each round.
 
 Account sync is eventual, not a consensus protocol. A peer that has been
 offline still shows the old state until it reconnects, and a device revoked
 while offline can present a still-valid certificate to a peer that has not
 learned the revocation. Room homes are the enforcement point for room keys,
-and the signed revocation proof converges to every reachable device.
-Account-key rotation is still required to recover from a compromised account
-key.
+and the signed revocation proof converges to every reachable device. Rotation
+limits future exposure after a compromise but does not undo signatures the
+attacker already made with the old key.
+
+### Account-key rotation
+
+**Implemented today.** `toget account rotate-key` (also
+`POST /api/v1/account/rotate-key`) generates a new Ed25519 account key at
+generation N+1. The rotation statement is signed by both the old and new keys
+and binds the account ID, generation, previous public key, new public key, and
+rotation time. The statements form an append-only chain of at most 64 entries.
+
+Every active device certificate is re-signed with the new key. Revoked devices
+are left signed by their old certificate and never receive the new private
+key. The new private key is sealed by the local vault at rest. Siblings receive
+it through account sync as an envelope encrypted to their X25519 key with
+context `toget:account-key-envelope:v1|<account>|<generation>|<device>`. A room
+home updates its member key only after verifying a rotation chain anchored at
+the key it already trusts. A different key at a known generation is a fork and
+is rejected; a missing generation is a gap and is also rejected.
 
 ## New-member history
 

@@ -78,13 +78,17 @@ type Account struct {
 	ServerID string `json:"server_id"`
 	// OriginServerID is the server identity that created the account. It never
 	// changes and is the discovery anchor for account-record sync.
-	OriginServerID string    `json:"origin_server_id"`
-	Code           string    `json:"code"`
-	Name           string    `json:"name"`
-	PublicKey      []byte    `json:"-"`
-	PrivateKey     []byte    `json:"-"`
-	PasswordHash   string    `json:"-"`
-	CreatedAt      time.Time `json:"created_at"`
+	OriginServerID string `json:"origin_server_id"`
+	// KeyGeneration starts at 1 and increases with every account-key rotation.
+	// KeyRotations is the signed chain from generation 1 to the current key.
+	KeyGeneration int       `json:"key_generation"`
+	KeyRotations  []string  `json:"-"`
+	Code          string    `json:"code"`
+	Name          string    `json:"name"`
+	PublicKey     []byte    `json:"-"`
+	PrivateKey    []byte    `json:"-"`
+	PasswordHash  string    `json:"-"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // Device is the machine running this node.
@@ -126,6 +130,7 @@ type Store interface {
 	ListDevices(ctx context.Context, accountID string) ([]Device, error)
 	CreateAccount(ctx context.Context, server *Server, account *Account, device *Device) error
 	ImportAccount(ctx context.Context, server *Server, account *Account, devices []Device) error
+	UpdateAccountKey(ctx context.Context, account *Account, devices []Device) error
 	AddDevice(ctx context.Context, device *Device) error
 	UpdateDevice(ctx context.Context, device *Device) error
 	AccountCodeExists(ctx context.Context, serverID, code string) (bool, error)
@@ -163,6 +168,9 @@ func (s *Service) Create(ctx context.Context, name, password, deviceName string)
 	if _, err := s.store.GetAccount(ctx); err == nil {
 		return nil, ErrAlreadyExists
 	} else if !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	if err := s.vault.Initialize(password); err != nil {
 		return nil, err
 	}
 
@@ -220,6 +228,7 @@ func (s *Service) Create(ctx context.Context, name, password, deviceName string)
 		ID:             accountID,
 		ServerID:       server.ID,
 		OriginServerID: server.ID,
+		KeyGeneration:  1,
 		Code:           accountCode,
 		Name:           name,
 		PublicKey:      accountPub,
@@ -263,6 +272,15 @@ type ImportSpec struct {
 	// bundles do not carry it; those imports fall back to the local server,
 	// which disables account-host bootstrap discovery but not account sync.
 	OriginServerID string
+	// KeyGeneration and KeyRotations carry the account's current key history.
+	// Older pairing bundles leave them empty; the account starts at generation
+	// 1 with the imported key.
+	KeyGeneration int
+	KeyRotations  []string
+	// Password is the account password. A fresh device needs it to derive the
+	// local vault key before it can store the account signing key. It is never
+	// persisted.
+	Password string
 	// Device is this machine's new device identity with plaintext keys. The
 	// service seals them with the local vault.
 	Device Device
@@ -289,6 +307,21 @@ func (s *Service) Import(ctx context.Context, spec ImportSpec) (*Snapshot, error
 		!bytes.Equal(spec.AccountPrivateKey.Public().(ed25519.PublicKey), spec.AccountPublicKey) {
 		return nil, fmt.Errorf("%w: account key material does not match", ErrInvalidImport)
 	}
+	keyGeneration := spec.KeyGeneration
+	if keyGeneration <= 0 {
+		keyGeneration = 1
+	}
+	keyRotations := append([]string(nil), spec.KeyRotations...)
+	if keyGeneration == 1 {
+		if len(keyRotations) != 0 {
+			return nil, fmt.Errorf("%w: account key history does not match its generation", ErrInvalidImport)
+		}
+	} else {
+		key, err := identity.AccountPublicKeyAtGeneration(keyRotations, spec.AccountID, keyGeneration)
+		if err != nil || !bytes.Equal(key, spec.AccountPublicKey) {
+			return nil, fmt.Errorf("%w: account key history is invalid", ErrInvalidImport)
+		}
+	}
 	if _, _, _, _, _, err := parsePasswordHash(spec.PasswordHash); err != nil {
 		return nil, fmt.Errorf("%w: password hash is invalid", ErrInvalidImport)
 	}
@@ -299,6 +332,20 @@ func (s *Service) Import(ctx context.Context, spec ImportSpec) (*Snapshot, error
 		return nil, ErrAlreadyExists
 	} else if !errors.Is(err, ErrNotFound) {
 		return nil, err
+	}
+	if !s.vault.Ready() {
+		// A fresh device has no local vault key yet. The pairing bundle carries
+		// the password hash, so the user must enter the account password before
+		// the imported account key can be stored under a password-derived KEK.
+		if spec.Password == "" {
+			return nil, vault.ErrLocked
+		}
+		if !VerifyPassword(spec.PasswordHash, spec.Password) {
+			return nil, ErrInvalidCredentials
+		}
+		if err := s.vault.Initialize(spec.Password); err != nil {
+			return nil, err
+		}
 	}
 
 	now := s.now().UTC().Truncate(time.Millisecond)
@@ -381,6 +428,8 @@ func (s *Service) Import(ctx context.Context, spec ImportSpec) (*Snapshot, error
 		ID:             spec.AccountID,
 		ServerID:       server.ID,
 		OriginServerID: originServerID,
+		KeyGeneration:  keyGeneration,
+		KeyRotations:   keyRotations,
 		Code:           spec.AccountCode,
 		Name:           name,
 		PublicKey:      append([]byte(nil), spec.AccountPublicKey...),
@@ -451,7 +500,9 @@ func (s *Service) Get(ctx context.Context) (*Snapshot, error) {
 	return &Snapshot{Account: account, Server: server, Device: device}, nil
 }
 
-// Login verifies the account password and returns the local snapshot.
+// Login verifies the account password, unlocks the vault, and returns the
+// local snapshot. A legacy plaintext vault key is wrapped on the first
+// successful login.
 func (s *Service) Login(ctx context.Context, password string) (*Snapshot, error) {
 	snapshot, err := s.Get(ctx)
 	if err != nil {
@@ -460,7 +511,33 @@ func (s *Service) Login(ctx context.Context, password string) (*Snapshot, error)
 	if !VerifyPassword(snapshot.Account.PasswordHash, password) {
 		return nil, ErrInvalidCredentials
 	}
+	if err := s.vault.Unlock(password); err != nil {
+		if errors.Is(err, vault.ErrNoKey) {
+			return nil, fmt.Errorf("vault key is missing: %w", err)
+		}
+		if errors.Is(err, vault.ErrInvalidPassword) {
+			return nil, ErrInvalidCredentials
+		}
+		return nil, err
+	}
+	if s.vault.Legacy() {
+		if err := s.vault.WrapWithPassword(password); err != nil {
+			return nil, fmt.Errorf("wrap legacy vault key: %w", err)
+		}
+	}
 	return snapshot, nil
+}
+
+// LockVault removes the vault master key from memory.
+func (s *Service) LockVault() {
+	if s != nil && s.vault != nil {
+		s.vault.Lock()
+	}
+}
+
+// VaultReady reports whether secrets can be opened.
+func (s *Service) VaultReady() bool {
+	return s != nil && s.vault != nil && s.vault.Ready()
 }
 
 // ListDevices returns every device on this account.

@@ -77,12 +77,13 @@ func (s *Server) handleStartPairJoin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Code       string `json:"code"`
 		DeviceName string `json:"device_name"`
+		Password   string `json:"password"`
 	}
 	if err := json.Unmarshal(data, &req); err != nil || req.Code == "" {
 		writeError(w, http.StatusBadRequest, "invalid_request", "a pairing code is required")
 		return
 	}
-	view, err := s.node.StartPairJoin(r.Context(), req.Code, req.DeviceName)
+	view, err := s.node.StartPairJoinWithPassword(r.Context(), req.Code, req.DeviceName, req.Password)
 	if err != nil {
 		writePairingAPIError(w, err)
 		return

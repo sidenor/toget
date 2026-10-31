@@ -277,7 +277,7 @@ func runServe(ctx context.Context) error {
 	}
 	defer db.Close()
 
-	v, err := vault.LoadOrCreate(paths.VaultKey)
+	v, err := vault.Load(paths.VaultKey)
 	if err != nil {
 		return err
 	}
@@ -313,6 +313,20 @@ func runServe(ctx context.Context) error {
 	approvals := approval.New(db, rooms)
 	tools := tool.New(db, rooms, approvals)
 	sessions := session.New(session.DefaultTTL)
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-signalCtx.Done():
+				return
+			case <-ticker.C:
+				if unlocked, _ := sessions.State(); !unlocked && accounts.VaultReady() {
+					accounts.LockVault()
+				}
+			}
+		}
+	}()
 
 	nodeService, err = node.New(node.Options{
 		Accounts:  accounts,
@@ -658,7 +672,38 @@ func newAccountCommand() *cobra.Command {
 	cmd.AddCommand(newAccountCreateCommand())
 	cmd.AddCommand(newAccountShowCommand())
 	cmd.AddCommand(newAccountSyncCommand())
+	cmd.AddCommand(newAccountRotateCommand())
 	return cmd
+}
+
+func newAccountRotateCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "rotate-key",
+		Short: "Rotate the account signing key and re-sign active devices",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			var result struct {
+				Generation int      `json:"generation"`
+				Devices    int      `json:"devices"`
+				Warnings   []string `json:"warnings"`
+			}
+			if err := c.Post(cmd.Context(), "/api/v1/account/rotate-key", nil, &result); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(result)
+			}
+			fmt.Printf("Account key rotated to generation %d; %d active device(s) re-signed.\n",
+				result.Generation, result.Devices)
+			for _, warning := range result.Warnings {
+				fmt.Printf("warning: %s\n", warning)
+			}
+			return nil
+		},
+	}
 }
 
 func newAccountSyncCommand() *cobra.Command {
@@ -757,7 +802,8 @@ func newAccountShowCommand() *cobra.Command {
 			if jsonFlag {
 				return printJSON(a)
 			}
-			fmt.Printf("ID:     %s\nName:   %s\nServer: %s\n", formatAccountID(a.ID), a.Name, a.ServerID)
+			fmt.Printf("ID:     %s\nName:   %s\nServer: %s\nKey:    generation %d\n",
+				formatAccountID(a.ID), a.Name, a.ServerID, a.KeyGeneration)
 			return nil
 		},
 	}

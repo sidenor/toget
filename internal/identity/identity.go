@@ -498,6 +498,179 @@ func VerifyAccountRevocation(encoded string, accountPub ed25519.PublicKey) (*Acc
 	return &statement, nil
 }
 
+const accountKeyRotationPurpose = "toget:account-key-rotation:v1"
+
+type accountKeyRotationPayload struct {
+	Purpose           string    `json:"purpose"`
+	AccountID         string    `json:"account_id"`
+	Generation        int       `json:"generation"`
+	PreviousPublicKey string    `json:"previous_public_key"`
+	NewPublicKey      string    `json:"new_public_key"`
+	RotatedAt         time.Time `json:"rotated_at"`
+}
+
+// AccountKeyRotation proves that an account key was replaced. Both the old and
+// the new key sign the statement, so a holder of only one of them cannot forge
+// a rotation. Clients apply statements in generation order.
+type AccountKeyRotation struct {
+	AccountID         string    `json:"account_id"`
+	Generation        int       `json:"generation"`
+	PreviousPublicKey []byte    `json:"previous_public_key"`
+	NewPublicKey      []byte    `json:"new_public_key"`
+	RotatedAt         time.Time `json:"rotated_at"`
+	PreviousSignature string    `json:"previous_signature"`
+	NewSignature      string    `json:"new_signature"`
+}
+
+// SignAccountKeyRotation creates a rotation statement signed by both keys.
+func SignAccountKeyRotation(accountID string, generation int, previousPub ed25519.PublicKey, previousPriv ed25519.PrivateKey, newPub ed25519.PublicKey, newPriv ed25519.PrivateKey, rotatedAt time.Time) (string, error) {
+	if accountID == "" || generation < 2 {
+		return "", errors.New("account key rotation is incomplete")
+	}
+	if len(previousPub) != ed25519.PublicKeySize || len(newPub) != ed25519.PublicKeySize ||
+		len(previousPriv) != ed25519.PrivateKeySize || len(newPriv) != ed25519.PrivateKeySize {
+		return "", errors.New("account key rotation keys are invalid")
+	}
+	if !previousPriv.Public().(ed25519.PublicKey).Equal(previousPub) ||
+		!newPriv.Public().(ed25519.PublicKey).Equal(newPub) {
+		return "", errors.New("account key rotation keys do not match")
+	}
+	if previousPub.Equal(newPub) {
+		return "", errors.New("account key rotation reuses the previous key")
+	}
+	rotatedAt = rotatedAt.UTC().Truncate(time.Millisecond)
+	payload := accountKeyRotationPayload{
+		Purpose: accountKeyRotationPurpose, AccountID: accountID, Generation: generation,
+		PreviousPublicKey: EncodePublicKey(previousPub), NewPublicKey: EncodePublicKey(newPub),
+		RotatedAt: rotatedAt,
+	}
+	canonical, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("encode account key rotation: %w", err)
+	}
+	statement := AccountKeyRotation{
+		AccountID: accountID, Generation: generation,
+		PreviousPublicKey: append([]byte(nil), previousPub...),
+		NewPublicKey:      append([]byte(nil), newPub...),
+		RotatedAt:         rotatedAt,
+		PreviousSignature: base64.RawStdEncoding.EncodeToString(ed25519.Sign(previousPriv, canonical)),
+		NewSignature:      base64.RawStdEncoding.EncodeToString(ed25519.Sign(newPriv, canonical)),
+	}
+	data, err := json.Marshal(statement)
+	if err != nil {
+		return "", fmt.Errorf("encode signed account key rotation: %w", err)
+	}
+	return base64.RawStdEncoding.EncodeToString(data), nil
+}
+
+// VerifyAccountKeyRotation verifies both signatures and the statement shape.
+// It does not decide whether the statement belongs to the caller's chain.
+func VerifyAccountKeyRotation(encoded string) (*AccountKeyRotation, error) {
+	if encoded == "" || len(encoded) > 16<<10 {
+		return nil, errors.New("account key rotation is missing or too large")
+	}
+	data, err := base64.RawStdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("decode account key rotation: %w", err)
+	}
+	var statement AccountKeyRotation
+	if err := json.Unmarshal(data, &statement); err != nil {
+		return nil, fmt.Errorf("decode account key rotation payload: %w", err)
+	}
+	if statement.AccountID == "" || statement.Generation < 2 ||
+		statement.RotatedAt.IsZero() || statement.PreviousSignature == "" ||
+		statement.NewSignature == "" {
+		return nil, errors.New("account key rotation is incomplete")
+	}
+	if len(statement.PreviousPublicKey) != ed25519.PublicKeySize ||
+		len(statement.NewPublicKey) != ed25519.PublicKeySize ||
+		ed25519.PublicKey(statement.PreviousPublicKey).Equal(ed25519.PublicKey(statement.NewPublicKey)) {
+		return nil, errors.New("account key rotation keys are invalid")
+	}
+	payload := accountKeyRotationPayload{
+		Purpose: accountKeyRotationPurpose, AccountID: statement.AccountID,
+		Generation:        statement.Generation,
+		PreviousPublicKey: EncodePublicKey(statement.PreviousPublicKey),
+		NewPublicKey:      EncodePublicKey(statement.NewPublicKey),
+		RotatedAt:         statement.RotatedAt.UTC().Truncate(time.Millisecond),
+	}
+	canonical, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("encode account key rotation payload: %w", err)
+	}
+	previousSig, err := base64.RawStdEncoding.DecodeString(statement.PreviousSignature)
+	if err != nil {
+		return nil, errors.New("account key rotation previous signature is invalid")
+	}
+	if !ed25519.Verify(ed25519.PublicKey(statement.PreviousPublicKey), canonical, previousSig) {
+		return nil, errors.New("account key rotation previous signature is invalid")
+	}
+	newSig, err := base64.RawStdEncoding.DecodeString(statement.NewSignature)
+	if err != nil {
+		return nil, errors.New("account key rotation new signature is invalid")
+	}
+	if !ed25519.Verify(ed25519.PublicKey(statement.NewPublicKey), canonical, newSig) {
+		return nil, errors.New("account key rotation new signature is invalid")
+	}
+	statement.RotatedAt = statement.RotatedAt.UTC().Truncate(time.Millisecond)
+	return &statement, nil
+}
+
+// VerifyAccountKeyChain verifies every statement and returns the public key at
+// each generation covered by the chain. Conflicting statements at the same
+// generation fail closed.
+func VerifyAccountKeyChain(accountID string, chain []string) (map[int]ed25519.PublicKey, error) {
+	if len(chain) > 64 {
+		return nil, errors.New("account key rotation chain is too long")
+	}
+	keys := make(map[int]ed25519.PublicKey)
+	seen := make(map[string]bool, len(chain))
+	for _, encoded := range chain {
+		if seen[encoded] {
+			continue
+		}
+		seen[encoded] = true
+		statement, err := VerifyAccountKeyRotation(encoded)
+		if err != nil {
+			return nil, err
+		}
+		if statement.AccountID != accountID {
+			return nil, errors.New("account key rotation belongs to another account")
+		}
+		previous := ed25519.PublicKey(statement.PreviousPublicKey)
+		next := ed25519.PublicKey(statement.NewPublicKey)
+		if existing, ok := keys[statement.Generation]; ok && !existing.Equal(next) {
+			return nil, errors.New("account key rotation chain forks")
+		}
+		keys[statement.Generation] = next
+		if existing, ok := keys[statement.Generation-1]; ok && !existing.Equal(previous) {
+			return nil, errors.New("account key rotation chain is not linear")
+		}
+		keys[statement.Generation-1] = previous
+	}
+	if len(keys) == 0 {
+		return nil, errors.New("account key rotation chain is empty")
+	}
+	return keys, nil
+}
+
+// AccountPublicKeyAtGeneration returns the account public key for generation
+// from a verified rotation chain. Generation 1 is the original key.
+func AccountPublicKeyAtGeneration(chain []string, accountID string, generation int) (ed25519.PublicKey, error) {
+	if generation < 1 {
+		return nil, errors.New("account key generation is invalid")
+	}
+	keys, err := VerifyAccountKeyChain(accountID, chain)
+	if err != nil {
+		return nil, err
+	}
+	key, ok := keys[generation]
+	if !ok {
+		return nil, errors.New("account key generation is not in the rotation chain")
+	}
+	return key, nil
+}
+
 // NewID returns a time-ordered UUIDv7 string for local objects.
 func NewID() string {
 	id, err := uuid.NewV7()

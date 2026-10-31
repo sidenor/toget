@@ -19,6 +19,7 @@ import type {
   Room,
   RoomDevice,
   RoomEvent,
+  RotateAccountKeyResult,
   SearchHit,
   SessionInfo,
   Status,
@@ -187,6 +188,7 @@ export const api = {
 
   devices: () => request<{ devices: Device[] }>("/api/v1/devices"),
   syncAccount: () => request<AccountSyncResult>("/api/v1/account/sync", json({})),
+  rotateAccountKey: () => request<RotateAccountKeyResult>("/api/v1/account/rotate-key", json({})),
   revokeDevice: (id: string) =>
     request<{ ok?: boolean; warnings?: string[] } | null>(`/api/v1/devices/${encodeURIComponent(id)}`, {
       method: "DELETE",
@@ -197,8 +199,8 @@ export const api = {
     request<PairingView>(`/api/v1/pairings/${encodeURIComponent(id)}/approve`, json({})),
   cancelPairing: (id: string) =>
     request<void>(`/api/v1/pairings/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  startPairJoin: (code: string, deviceName: string) =>
-    request<PairJoinView>("/api/v1/pairing/join", json({ code, device_name: deviceName })),
+  startPairJoin: (code: string, deviceName: string, password: string) =>
+    request<PairJoinView>("/api/v1/pairing/join", json({ code, device_name: deviceName, password })),
   pairJoinStatus: (id: string) =>
     request<PairJoinView>(`/api/v1/pairing/join/${encodeURIComponent(id)}`),
   cancelPairJoin: (id: string) =>

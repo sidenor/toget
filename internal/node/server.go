@@ -484,6 +484,7 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("POST /toget/v1/account/sync", s.handleAccountSync)
 	mux.HandleFunc("POST /toget/v1/rooms/devices", s.handleRegisterDevice)
 	mux.HandleFunc("POST /toget/v1/rooms/devices/revoke", s.handleRevokeDevice)
+	mux.HandleFunc("POST /toget/v1/rooms/account-key", s.handleRoomAccountKey)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeNodeError(w, http.StatusNotFound, "not_found", "unknown node endpoint")
 	})

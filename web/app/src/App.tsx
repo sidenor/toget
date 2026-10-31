@@ -513,9 +513,13 @@ function Onboarding({
       setError(t("onboard.linkCode"));
       return;
     }
+    if (password.length < 8) {
+      setError(t("onboard.passwordShort"));
+      return;
+    }
     setLinking(true);
     try {
-      const started = await api.startPairJoin(code.trim(), deviceName);
+      const started = await api.startPairJoin(code.trim(), deviceName, password);
       setJoin(started);
     } catch (err) {
       setError(err instanceof Error ? err.message : t("common.error"));
@@ -684,6 +688,16 @@ function Onboarding({
               />
               <span className="fine-print">{t("onboard.linkScanHint")}</span>
             </div>
+            <label>
+              {t("onboard.linkPassword")}
+              <input
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                minLength={8}
+                required
+              />
+            </label>
             <label>
               {t("onboard.linkName")}
               <input

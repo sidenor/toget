@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/sidenor/toget/internal/account"
+	"github.com/sidenor/toget/internal/identity"
 	"github.com/sidenor/toget/internal/node"
+	"github.com/sidenor/toget/internal/room"
 )
 
 // pairNow approves the joining node onto the approver's account and waits for
@@ -438,5 +440,202 @@ func TestAccountSyncRejectsImpostorAndForeignAccount(t *testing.T) {
 	foreign.Close()
 	if !errors.As(err, &remoteErr) || remoteErr.Status != http.StatusForbidden {
 		t.Fatalf("foreign account sync error = %v, want 403", err)
+	}
+}
+
+func TestAccountKeyRotationReachesSiblingsAndRoomHome(t *testing.T) {
+	ctx := context.Background()
+	host := newNode(t, "Aiden")
+	guest, guestAccounts, _ := newEmptyNode(t)
+	hostActor, err := host.node.LocalActor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _, err := host.rooms.CreateRoom(ctx, "Rotating room", "", hostActor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.node.EnsureRoomHome(ctx, record.ID); err != nil {
+		t.Fatal(err)
+	}
+	pairNow(t, host, guest, "Laptop")
+	guestSnapshot, err := guestAccounts.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roomMember, err := host.rooms.GetMember(ctx, record.ID, host.snapshot.Account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRoomKey := append([]byte(nil), roomMember.AccountPublicKey...)
+
+	result, warnings, err := host.node.RotateAccountKey(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Generation != 2 || result.Devices != 2 {
+		t.Fatalf("rotation result = %#v", result)
+	}
+	for _, warning := range warnings {
+		t.Errorf("rotation warning: %s", warning)
+	}
+	rotated, err := host.accounts.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rotated.Account.KeyRotations) != 1 || rotated.Account.KeyGeneration != 2 {
+		t.Fatalf("host key history = %d/%d", rotated.Account.KeyGeneration, len(rotated.Account.KeyRotations))
+	}
+	roomMember, err = host.rooms.GetMember(ctx, record.ID, host.snapshot.Account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(roomMember.AccountPublicKey) != string(rotated.Account.PublicKey) ||
+		string(roomMember.AccountPublicKey) == string(oldRoomKey) {
+		t.Fatal("room home did not advance the member account key")
+	}
+
+	// The sibling learns the new key from account sync, re-signs its own
+	// certificate, and can still merge records.
+	if _, err := guest.node.SyncAccount(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		snapshot, err := guestAccounts.Get(ctx)
+		return err == nil && snapshot.Account.KeyGeneration == 2 &&
+			string(snapshot.Account.PublicKey) == string(rotated.Account.PublicKey)
+	})
+	guestRotated, err := guestAccounts.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identity.VerifyDeviceCertificate([]byte(guestRotated.Device.Certificate),
+		ed25519.PublicKey(guestRotated.Account.PublicKey)); err != nil {
+		t.Fatalf("guest certificate was not re-signed: %v", err)
+	}
+	// Sibling device records signed by the rotated key are accepted.
+	devices, err := guestAccounts.ListDevices(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundHost := false
+	for i := range devices {
+		if devices[i].ID == host.snapshot.Device.ID {
+			foundHost = true
+			if _, err := identity.VerifyDeviceCertificate([]byte(devices[i].Certificate),
+				ed25519.PublicKey(guestRotated.Account.PublicKey)); err != nil {
+				t.Fatalf("host certificate is not trusted at the new generation: %v", err)
+			}
+		}
+	}
+	if !foundHost {
+		t.Fatal("guest lost the host device record across rotation")
+	}
+
+	// A room sync carries the updated member key to the sibling's local copy.
+	waitFor(t, 10*time.Second, func() bool {
+		member, err := guest.rooms.GetMember(ctx, record.ID, guestSnapshot.Account.ID)
+		return err == nil && string(member.AccountPublicKey) == string(rotated.Account.PublicKey)
+	})
+	if _, err := guest.node.SyncRoom(ctx, record.ID); err != nil {
+		t.Fatal(err)
+	}
+	member, err := guest.rooms.GetMember(ctx, record.ID, guestSnapshot.Account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(member.AccountPublicKey) != string(rotated.Account.PublicKey) {
+		t.Fatal("guest room member still trusts the old account key")
+	}
+}
+
+func TestAccountKeyRotationPropagatesToRemoteRoomHome(t *testing.T) {
+	ctx := context.Background()
+	host := newNode(t, "Host")
+	guest := newNode(t, "Guest")
+	guestActor, err := guest.node.LocalActor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _, err := guest.rooms.CreateRoom(ctx, "Guest home", "", guestActor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := guest.node.EnsureRoomHome(ctx, record.ID); err != nil {
+		t.Fatal(err)
+	}
+	invite, _, err := guest.rooms.CreateInvite(ctx, record.ID, guestActor, room.HistoryNone, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := guest.node.InviteCode(ctx, record.ID, invite.Secret, record.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := host.node.Join(ctx, code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined.HomeServerID != guest.snapshot.Account.ServerID {
+		t.Fatalf("host did not join the guest's home: %#v", joined)
+	}
+	result, warnings, err := host.node.RotateAccountKey(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Generation != 2 {
+		t.Fatalf("rotation generation = %d", result.Generation)
+	}
+	for _, warning := range warnings {
+		t.Errorf("rotation warning: %s", warning)
+	}
+	rotated, err := host.accounts.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, err := guest.rooms.GetMember(ctx, record.ID, host.snapshot.Account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(member.AccountPublicKey) != string(rotated.Account.PublicKey) {
+		t.Fatal("remote room home still trusts the old account key")
+	}
+	local, err := host.rooms.GetMember(ctx, record.ID, host.snapshot.Account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(local.AccountPublicKey) != string(rotated.Account.PublicKey) {
+		t.Fatal("joining device did not record its new room member key")
+	}
+}
+
+func TestPairingAfterRotationCarriesKeyHistory(t *testing.T) {
+	ctx := context.Background()
+	host := newNode(t, "Host")
+	if _, _, err := host.node.RotateAccountKey(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := host.accounts.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest, guestAccounts, _ := newEmptyNode(t)
+	pairNow(t, host, guest, "Late laptop")
+	guestSnapshot, err := guestAccounts.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if guestSnapshot.Account.KeyGeneration != 2 ||
+		len(guestSnapshot.Account.KeyRotations) != 1 ||
+		string(guestSnapshot.Account.PublicKey) != string(rotated.Account.PublicKey) {
+		t.Fatalf("paired account key state = generation %d, %d statement(s)",
+			guestSnapshot.Account.KeyGeneration, len(guestSnapshot.Account.KeyRotations))
+	}
+	if _, err := identity.VerifyDeviceCertificate([]byte(guestSnapshot.Device.Certificate),
+		ed25519.PublicKey(rotated.Account.PublicKey)); err != nil {
+		t.Fatalf("paired device certificate does not chain to the rotated key: %v", err)
+	}
+	if _, err := guestAccounts.UnsealPrivateKey(guestSnapshot.Account); err != nil {
+		t.Fatalf("paired device cannot open the rotated account key: %v", err)
 	}
 }

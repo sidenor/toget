@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -21,7 +22,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const schemaVersion = 7
+const schemaVersion = 8
 
 // CurrentSchemaVersion is the newest database schema this build understands.
 // Backup/restore uses it to reject archives from newer builds.
@@ -92,7 +93,7 @@ func (d *DB) migrate(ctx context.Context) error {
 		return nil
 	}
 	migrations := []func(context.Context) error{
-		d.migrateV1, d.migrateV2, d.migrateV3, d.migrateV4, d.migrateV5, d.migrateV6,
+		d.migrateV1, d.migrateV2, d.migrateV3, d.migrateV4, d.migrateV5, d.migrateV6, d.migrateV7,
 	}
 	for from := version; from < schemaVersion; from++ {
 		if from < 1 || from > len(migrations) {
@@ -327,6 +328,28 @@ func (d *DB) migrateV6(ctx context.Context) error {
 	return nil
 }
 
+// migrateV7 adds account-key generation and its signed rotation chain. Existing
+// accounts keep their original key as generation 1.
+func (d *DB) migrateV7(ctx context.Context) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("storage: begin v7 migration: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE accounts ADD COLUMN key_generation INTEGER NOT NULL DEFAULT 1`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("storage: migrate v7: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE accounts ADD COLUMN key_rotations TEXT NOT NULL DEFAULT '[]'`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("storage: migrate v7: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storage: commit v7 migration: %w", err)
+	}
+	return nil
+}
+
 // GetServer returns the local server identity.
 func (d *DB) GetServer(ctx context.Context) (*account.Server, error) {
 	row := d.db.QueryRowContext(ctx, `
@@ -347,15 +370,24 @@ func (d *DB) GetServer(ctx context.Context) (*account.Server, error) {
 // GetAccount returns the local account.
 func (d *DB) GetAccount(ctx context.Context) (*account.Account, error) {
 	row := d.db.QueryRowContext(ctx, `
-		SELECT id, server_id, origin_server_id, code, name, public_key, private_key, password_hash, created_at
+		SELECT id, server_id, origin_server_id, key_generation, key_rotations,
+		       code, name, public_key, private_key, password_hash, created_at
 		FROM accounts ORDER BY created_at LIMIT 1`)
 	var a account.Account
+	var rotations string
 	var created int64
-	if err := row.Scan(&a.ID, &a.ServerID, &a.OriginServerID, &a.Code, &a.Name, &a.PublicKey, &a.PrivateKey, &a.PasswordHash, &created); err != nil {
+	if err := row.Scan(&a.ID, &a.ServerID, &a.OriginServerID, &a.KeyGeneration, &rotations,
+		&a.Code, &a.Name, &a.PublicKey, &a.PrivateKey, &a.PasswordHash, &created); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, account.ErrNotFound
 		}
 		return nil, fmt.Errorf("storage: get account: %w", err)
+	}
+	if err := json.Unmarshal([]byte(rotations), &a.KeyRotations); err != nil {
+		return nil, fmt.Errorf("storage: decode account key history: %w", err)
+	}
+	if a.KeyGeneration <= 0 {
+		a.KeyGeneration = 1
 	}
 	a.CreatedAt = fromMillis(created)
 	return &a, nil
@@ -430,6 +462,48 @@ func (d *DB) UpdateDevice(ctx context.Context, dev *account.Device) error {
 	return nil
 }
 
+// UpdateAccountKey replaces the account key and re-signed device certificates
+// in one transaction.
+func (d *DB) UpdateAccountKey(ctx context.Context, acct *account.Account, devices []account.Device) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("storage: begin account key update: %w", err)
+	}
+	defer tx.Rollback()
+	rotations, err := encodeKeyRotations(acct.KeyRotations)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE accounts SET public_key = ?, private_key = ?, key_generation = ?, key_rotations = ?
+		WHERE id = ?`,
+		acct.PublicKey, acct.PrivateKey, acct.KeyGeneration, rotations, acct.ID); err != nil {
+		return fmt.Errorf("storage: update account key: %w", err)
+	}
+	for i := range devices {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE devices SET certificate = ? WHERE id = ? AND account_id = ?`,
+			devices[i].Certificate, devices[i].ID, acct.ID); err != nil {
+			return fmt.Errorf("storage: update device certificate: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storage: commit account key update: %w", err)
+	}
+	return nil
+}
+
+func encodeKeyRotations(rotations []string) (string, error) {
+	if len(rotations) == 0 {
+		return "[]", nil
+	}
+	data, err := json.Marshal(rotations)
+	if err != nil {
+		return "", fmt.Errorf("storage: encode account key history: %w", err)
+	}
+	return string(data), nil
+}
+
 // CreateAccount inserts a server (if new), an account, and its first device.
 func (d *DB) CreateAccount(ctx context.Context, server *account.Server, acct *account.Account, dev *account.Device) error {
 	return d.insertAccount(ctx, server, acct, []account.Device{*dev})
@@ -458,10 +532,20 @@ func (d *DB) insertAccount(ctx context.Context, server *account.Server, acct *ac
 	if originServerID == "" {
 		originServerID = acct.ServerID
 	}
+	generation := acct.KeyGeneration
+	if generation <= 0 {
+		generation = 1
+	}
+	rotations, err := encodeKeyRotations(acct.KeyRotations)
+	if err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO accounts (id, server_id, origin_server_id, code, name, public_key, private_key, password_hash, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		acct.ID, acct.ServerID, originServerID, acct.Code, acct.Name, acct.PublicKey, acct.PrivateKey, acct.PasswordHash, toMillis(acct.CreatedAt)); err != nil {
+		INSERT INTO accounts (id, server_id, origin_server_id, key_generation, key_rotations,
+			code, name, public_key, private_key, password_hash, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		acct.ID, acct.ServerID, originServerID, generation, rotations,
+		acct.Code, acct.Name, acct.PublicKey, acct.PrivateKey, acct.PasswordHash, toMillis(acct.CreatedAt)); err != nil {
 		if isUniqueViolation(err) {
 			return account.ErrAlreadyExists
 		}

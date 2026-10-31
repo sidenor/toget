@@ -15,6 +15,7 @@ import (
 
 	"github.com/sidenor/toget/internal/account"
 	"github.com/sidenor/toget/internal/identity"
+	"github.com/sidenor/toget/internal/vault"
 )
 
 const (
@@ -35,17 +36,26 @@ type AccountSyncRequest struct {
 	AccountID string                 `json:"account_id"`
 	DeviceID  string                 `json:"device_id"`
 	Records   []account.DeviceRecord `json:"records"`
+	// KeyGeneration and KeyRotations carry the sender's account-key history.
+	// KeyEnvelopes holds the current account private key sealed to the
+	// recipient device (usually the peer being called).
+	KeyGeneration int               `json:"key_generation,omitempty"`
+	KeyRotations  []string          `json:"key_rotations,omitempty"`
+	KeyEnvelopes  map[string]string `json:"key_envelopes,omitempty"`
 }
 
 // AccountSyncResponse returns the responder's device set. ReadOnly is set when
 // the sender is revoked; a revoked device may still learn about the account so
 // it discovers its own revocation, but cannot change the responder's records.
 type AccountSyncResponse struct {
-	AccountID string                 `json:"account_id"`
-	DeviceID  string                 `json:"device_id"`
-	Records   []account.DeviceRecord `json:"records"`
-	ReadOnly  bool                   `json:"read_only,omitempty"`
-	Warnings  []string               `json:"warnings,omitempty"`
+	AccountID     string                 `json:"account_id"`
+	DeviceID      string                 `json:"device_id"`
+	Records       []account.DeviceRecord `json:"records"`
+	KeyGeneration int                    `json:"key_generation,omitempty"`
+	KeyRotations  []string               `json:"key_rotations,omitempty"`
+	KeyEnvelopes  map[string]string      `json:"key_envelopes,omitempty"`
+	ReadOnly      bool                   `json:"read_only,omitempty"`
+	Warnings      []string               `json:"warnings,omitempty"`
 }
 
 // AccountSyncResult summarizes one account-sync round.
@@ -199,6 +209,9 @@ func (s *Service) SyncAccount(ctx context.Context) (*AccountSyncResult, error) {
 			cancel()
 			result.Warnings = append(result.Warnings, warnings...)
 		}
+		// A rotation may have happened while a room home was offline. Check
+		// each round; settled rooms cost only a local membership lookup.
+		result.Warnings = append(result.Warnings, s.propagateAccountKey(ctx, snapshot)...)
 	}
 	sort.Strings(result.Warnings)
 	return result, nil
@@ -253,16 +266,58 @@ func (s *Service) syncAccountPeer(ctx context.Context, snapshot *account.Snapsho
 	defer client.Close()
 	peerCtx, cancel := context.WithTimeout(ctx, accountPeerSyncTimeout)
 	defer cancel()
-	response, err := client.SyncAccount(peerCtx, AccountSyncRequest{
+	localGeneration := accountKeyGeneration(snapshot.Account)
+	request := AccountSyncRequest{
 		AccountID: snapshot.Account.ID, DeviceID: snapshot.Device.ID, Records: records,
-	})
+		KeyGeneration: localGeneration, KeyRotations: snapshot.Account.KeyRotations,
+	}
+	if localGeneration > 1 {
+		if generation, envelope, sealErr := s.accounts.SealAccountKeyFor(
+			peerCtx, peer.ID, peer.EncryptionPublicKey); sealErr == nil && generation == localGeneration {
+			request.KeyEnvelopes = map[string]string{peer.ID: envelope}
+		}
+	}
+	response, err := client.SyncAccount(peerCtx, request)
 	if err != nil {
 		return accountPeerResult{warnings: []string{fmt.Sprintf("%s: account sync failed: %v", peer.Name, err)}}
 	}
 	if response.AccountID != snapshot.Account.ID {
 		return accountPeerResult{warnings: []string{fmt.Sprintf("%s: account sync returned another account", peer.Name)}}
 	}
+	if response.KeyGeneration < 0 || response.KeyGeneration > 1_000_000 ||
+		len(response.KeyRotations) > 64 || len(response.KeyEnvelopes) > 8 {
+		return accountPeerResult{warnings: []string{fmt.Sprintf("%s: account sync returned an invalid key history", peer.Name)}}
+	}
+	remoteGeneration := response.KeyGeneration
+	if remoteGeneration == 0 {
+		remoteGeneration = 1
+	}
 	result := accountPeerResult{synced: true}
+	if remoteGeneration > localGeneration {
+		updated, changed, applyErr := s.accounts.ApplyAccountKeyRotations(
+			peerCtx, response.KeyRotations, response.KeyEnvelopes[snapshot.Device.ID])
+		switch {
+		case applyErr == nil && changed && updated != nil:
+			snapshot = updated
+			localGeneration = accountKeyGeneration(snapshot.Account)
+		case applyErr == nil:
+			result.warnings = append(result.warnings, fmt.Sprintf("%s: account key generation did not advance", peer.Name))
+			return result
+		case errors.Is(applyErr, account.ErrKeyRotationEnvelope):
+			result.warnings = append(result.warnings, fmt.Sprintf("%s: this device has not received the account's newest key yet", peer.Name))
+			return result
+		case errors.Is(applyErr, account.ErrKeyRotationConflict), errors.Is(applyErr, account.ErrKeyRotationGap):
+			result.warnings = append(result.warnings, fmt.Sprintf("%s: account key history conflicts with this device", peer.Name))
+			return result
+		default:
+			result.warnings = append(result.warnings, fmt.Sprintf("%s: could not apply the account key rotation: %v", peer.Name, applyErr))
+			return result
+		}
+	}
+	if remoteGeneration > localGeneration {
+		result.warnings = append(result.warnings, fmt.Sprintf("%s: account key update is incomplete", peer.Name))
+		return result
+	}
 	merged, err := s.accounts.MergeDeviceRecords(peerCtx, response.Records)
 	if err != nil {
 		result.warnings = append(result.warnings, fmt.Sprintf("%s: could not merge account records: %v", peer.Name, err))
@@ -274,10 +329,10 @@ func (s *Service) syncAccountPeer(ctx context.Context, snapshot *account.Snapsho
 	}
 	for i := range response.Records {
 		record := response.Records[i]
-		if record.ID != peer.ID || record.NodeURL == "" {
+		if record.ID != response.DeviceID || record.NodeURL == "" {
 			continue
 		}
-		if err := s.accounts.SetDeviceNodeURL(peerCtx, peer.ID, record.NodeURL); err != nil {
+		if err := s.accounts.SetDeviceNodeURL(peerCtx, record.ID, record.NodeURL); err != nil {
 			result.warnings = append(result.warnings, fmt.Sprintf("%s: could not update its node address: %v", peer.Name, err))
 		}
 		break
@@ -323,6 +378,15 @@ func (s *Service) handleAccountSync(w http.ResponseWriter, r *http.Request) {
 		writeNodeError(w, http.StatusBadRequest, "invalid_request", "account sync records are invalid")
 		return
 	}
+	if request.KeyGeneration < 0 || request.KeyGeneration > 1_000_000 ||
+		len(request.KeyRotations) > 64 || len(request.KeyEnvelopes) > 8 {
+		writeNodeError(w, http.StatusBadRequest, "invalid_request", "account key history is invalid")
+		return
+	}
+	senderGeneration := request.KeyGeneration
+	if senderGeneration == 0 {
+		senderGeneration = 1
+	}
 	if !ConstantTimeEqual(r.Header.Get(HeaderAccount), request.AccountID) ||
 		!ConstantTimeEqual(r.Header.Get(HeaderDevice), request.DeviceID) {
 		writeNodeError(w, http.StatusForbidden, "forbidden", "request identity does not match the account sync request")
@@ -348,8 +412,12 @@ func (s *Service) handleAccountSync(w http.ResponseWriter, r *http.Request) {
 		writeNodeError(w, http.StatusForbidden, "forbidden", "the request does not include the sending device")
 		return
 	}
-	accountPub := ed25519.PublicKey(snapshot.Account.PublicKey)
-	cert, err := identity.VerifyDeviceCertificateSignature([]byte(sender.Certificate), accountPub)
+	senderKey, err := accountKeyAt(snapshot.Account, request.KeyRotations, senderGeneration)
+	if err != nil {
+		writeNodeError(w, http.StatusUnauthorized, "unauthorized", "sending device key generation is not verifiable")
+		return
+	}
+	cert, err := identity.VerifyDeviceCertificateSignature([]byte(sender.Certificate), senderKey)
 	if err != nil || cert.AccountID != request.AccountID || cert.DeviceID != request.DeviceID {
 		writeNodeError(w, http.StatusUnauthorized, "unauthorized", "sending device certificate is invalid")
 		return
@@ -363,18 +431,51 @@ func (s *Service) handleAccountSync(w http.ResponseWriter, r *http.Request) {
 		writeNodeError(w, http.StatusUnauthorized, "unauthorized", "account sync signature is invalid")
 		return
 	}
+	localGeneration := accountKeyGeneration(snapshot.Account)
+	warnings := make([]string, 0)
+	if senderGeneration > localGeneration {
+		updated, changed, applyErr := s.accounts.ApplyAccountKeyRotations(
+			r.Context(), request.KeyRotations, request.KeyEnvelopes[snapshot.Device.ID])
+		switch {
+		case applyErr == nil:
+			if updated != nil {
+				snapshot = updated
+			}
+			if changed {
+				localGeneration = accountKeyGeneration(snapshot.Account)
+				s.TriggerAccountSync()
+			}
+		case errors.Is(applyErr, account.ErrKeyRotationConflict), errors.Is(applyErr, account.ErrKeyRotationGap):
+			writeNodeError(w, http.StatusConflict, "key_conflict", applyErr.Error())
+			return
+		case errors.Is(applyErr, account.ErrKeyRotationEnvelope), errors.Is(applyErr, vault.ErrLocked):
+			warnings = append(warnings, "this device has not received the account's newest key yet")
+		default:
+			s.logger.Warn("account sync: apply account key rotation failed", "error", applyErr)
+			writeNodeError(w, http.StatusInternalServerError, "internal", "could not apply the account key rotation")
+			return
+		}
+	}
+	keys, err := accountVerificationKeys(snapshot.Account, request.KeyRotations)
+	if err != nil {
+		writeNodeError(w, http.StatusUnauthorized, "unauthorized", "account key history is invalid")
+		return
+	}
 	readOnly := false
 	if local, getErr := s.accounts.GetDeviceByID(r.Context(), request.DeviceID); getErr == nil && local.RevokedAt != nil {
 		readOnly = true
 	}
 	if !readOnly && sender.Revocation != "" {
-		if proof, verifyErr := identity.VerifyAccountRevocation(sender.Revocation, accountPub); verifyErr == nil &&
-			proof.AccountID == request.AccountID && proof.DeviceID == request.DeviceID {
-			readOnly = true
+		for _, key := range keys {
+			proof, verifyErr := identity.VerifyAccountRevocation(sender.Revocation, key)
+			if verifyErr == nil && proof.AccountID == request.AccountID && proof.DeviceID == request.DeviceID {
+				readOnly = true
+				break
+			}
 		}
 	}
-	warnings := make([]string, 0)
-	if !readOnly {
+	generationMatches := senderGeneration == localGeneration
+	if !readOnly && generationMatches {
 		merged, mergeErr := s.accounts.MergeDeviceRecords(r.Context(), request.Records)
 		if mergeErr != nil {
 			if errors.Is(mergeErr, account.ErrTooManyDeviceRecords) {
@@ -385,7 +486,7 @@ func (s *Service) handleAccountSync(w http.ResponseWriter, r *http.Request) {
 			writeNodeError(w, http.StatusInternalServerError, "internal", "could not merge account records")
 			return
 		}
-		warnings = merged.Warnings
+		warnings = append(warnings, merged.Warnings...)
 		if merged.Added > 0 || merged.Updated > 0 {
 			s.TriggerAccountSync()
 		}
@@ -396,8 +497,72 @@ func (s *Service) handleAccountSync(w http.ResponseWriter, r *http.Request) {
 		writeNodeError(w, http.StatusInternalServerError, "internal", "could not export account records")
 		return
 	}
-	writeJSON(w, http.StatusOK, AccountSyncResponse{
+	response := AccountSyncResponse{
 		AccountID: snapshot.Account.ID, DeviceID: snapshot.Device.ID,
-		Records: records, ReadOnly: readOnly, Warnings: warnings,
-	})
+		Records: records, KeyGeneration: localGeneration,
+		KeyRotations: snapshot.Account.KeyRotations,
+		ReadOnly:     readOnly, Warnings: warnings,
+	}
+	if !readOnly && senderGeneration < localGeneration {
+		if _, envelope, sealErr := s.accounts.SealAccountKeyFor(r.Context(), sender.ID, sender.EncryptionPublicKey); sealErr == nil {
+			response.KeyEnvelopes = map[string]string{sender.ID: envelope}
+		} else {
+			response.Warnings = append(response.Warnings, "this device could not address the account key to the sender")
+		}
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func accountKeyGeneration(acct *account.Account) int {
+	if acct == nil || acct.KeyGeneration < 1 {
+		return 1
+	}
+	return acct.KeyGeneration
+}
+
+// accountKeyAt resolves the account key that signed a request. Generations the
+// responder already records come from its verified local history; a newer
+// generation must be proven by the sender's rotation chain.
+func accountKeyAt(acct *account.Account, incoming []string, generation int) (ed25519.PublicKey, error) {
+	local := accountKeyGeneration(acct)
+	if generation <= local {
+		if len(acct.KeyRotations) == 0 {
+			if generation != 1 {
+				return nil, account.ErrKeyRotationGap
+			}
+			return ed25519.PublicKey(acct.PublicKey), nil
+		}
+		return identity.AccountPublicKeyAtGeneration(acct.KeyRotations, acct.ID, generation)
+	}
+	return identity.AccountPublicKeyAtGeneration(incoming, acct.ID, generation)
+}
+
+// accountVerificationKeys combines the local history with any chain the sender
+// presented. Revocations and certificates may have been signed at any
+// generation reachable from either side.
+func accountVerificationKeys(acct *account.Account, incoming []string) ([]ed25519.PublicKey, error) {
+	keys, err := account.VerificationKeys(acct)
+	if err != nil {
+		return nil, err
+	}
+	if len(incoming) == 0 {
+		return keys, nil
+	}
+	extra, err := identity.VerifyAccountKeyChain(acct.ID, incoming)
+	if err != nil {
+		return nil, err
+	}
+	for _, key := range extra {
+		duplicate := false
+		for _, existing := range keys {
+			if existing.Equal(key) {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			keys = append(keys, key)
+		}
+	}
+	return keys, nil
 }

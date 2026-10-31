@@ -68,10 +68,12 @@ go run ./cmd/toget serve
 
 Open <http://127.0.0.1:7718> and create your account. There is no password
 recovery service yet, but you can link a second device through pairing (below),
-and an encrypted backup can move an account between machines. At this stage
-the password is an Argon2id verifier for local sign-in; it does not yet unlock
-the local vault, so protect the data directory with OS permissions and
-full-disk encryption on a shared machine.
+and an encrypted backup can move an account between machines. The password is
+an Argon2id verifier for local sign-in and also derives the key that wraps the
+local vault, so account and device private keys stay encrypted at rest. The
+daemon unwraps them while it is unlocked; protect the data directory with OS
+permissions and full-disk encryption on a shared machine, and lock the node
+when you leave it.
 
 The same loop from the CLI, while `toget serve` is running:
 
@@ -126,8 +128,9 @@ toget pair create --qr
 ```
 
 On the fresh device, run `toget pair join 'toget-pair:v1:eyJ...' --name Laptop`.
-It sends its own new keys and prints a fingerprint. Back on the existing
-device, check that the fingerprint matches, then approve:
+It sends its own new keys, asks for the account password (so it can verify the
+account and wrap its new local vault), and prints a fingerprint. Back on the
+existing device, check that the fingerprint matches, then approve:
 
 ```bash
 toget pair list
@@ -145,6 +148,14 @@ is never transferred in plaintext. The web UI has the same flow under **Devices 
 another device**: it shows the pairing QR, and the onboarding screen can scan a
 screenshot or photo locally. The QR carries the same secret and expires with
 the code.
+
+If the account key may have been exposed, rotate it with `toget account
+rotate-key` (or **Devices → Rotate account key** in the web UI). The new key
+starts a new generation, active device certificates are re-signed, and the
+private key travels to each active sibling only as a sealed envelope during
+account sync. Revoked devices never receive it. Room homes learn the new member
+key before the next event is written; offline homes are retried and reported as
+warnings.
 
 To hand someone your node without an invite or a directory, show a **business
 card**:

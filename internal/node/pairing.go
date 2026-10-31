@@ -172,6 +172,8 @@ type PairAccount struct {
 	PasswordHash   string    `json:"password_hash"`
 	CreatedAt      time.Time `json:"created_at"`
 	OriginServerID string    `json:"origin_server_id"`
+	KeyGeneration  int       `json:"key_generation,omitempty"`
+	KeyRotations   []string  `json:"key_rotations,omitempty"`
 }
 
 // PairBundle is the one-time account recovery payload returned after the
@@ -250,10 +252,13 @@ type pairJoin struct {
 	SigningKey     ed25519.PrivateKey
 	EncryptionPub  []byte
 	EncryptionPriv []byte
-	StartedAt      time.Time
-	UpdatedAt      time.Time
-	ExpiresAt      time.Time
-	cancel         context.CancelFunc
+	// Password unlocks and initializes the local vault during import. It lives
+	// only in this in-memory join session.
+	Password  string
+	StartedAt time.Time
+	UpdatedAt time.Time
+	ExpiresAt time.Time
+	cancel    context.CancelFunc
 }
 
 func (s *Service) pairingsLocked() map[string]*pairSession {
@@ -754,6 +759,8 @@ func (s *Service) buildPairBundle(ctx context.Context, pairingID string, request
 			ID: snapshot.Account.ID, Code: snapshot.Account.Code, Name: snapshot.Account.Name,
 			PublicKey: append([]byte(nil), snapshot.Account.PublicKey...), PasswordHash: snapshot.Account.PasswordHash,
 			CreatedAt: snapshot.Account.CreatedAt, OriginServerID: snapshot.Account.OriginServerID,
+			KeyGeneration: snapshot.Account.KeyGeneration,
+			KeyRotations:  append([]string(nil), snapshot.Account.KeyRotations...),
 		},
 		AccountKeySealed: string(sealedKey),
 		Device:           pairDeviceFromAccount(current),
@@ -790,6 +797,13 @@ func bytesEqual(a, b []byte) bool {
 // StartPairJoin begins recovering an account onto this device. It returns
 // immediately and runs the network exchange in the background.
 func (s *Service) StartPairJoin(ctx context.Context, rawCode, deviceName string) (*PairJoinView, error) {
+	return s.StartPairJoinWithPassword(ctx, rawCode, deviceName, "")
+}
+
+// StartPairJoinWithPassword begins account recovery and remembers the account
+// password so the fresh device can initialize its password-wrapped vault when
+// the bundle arrives.
+func (s *Service) StartPairJoinWithPassword(ctx context.Context, rawCode, deviceName, password string) (*PairJoinView, error) {
 	if s == nil || s.URL() == "" {
 		return nil, ErrPairingDisabled
 	}
@@ -829,7 +843,7 @@ func (s *Service) StartPairJoin(ctx context.Context, rawCode, deviceName string)
 		ID: identity.NewID(), Status: "waiting", DeviceName: deviceName, DeviceID: deviceID,
 		AccountID: code.AccountID, Fingerprint: identity.Fingerprint(devicePub),
 		Code: code, SigningKey: devicePriv, EncryptionPub: encPub, EncryptionPriv: encPriv,
-		StartedAt: now, UpdatedAt: now, ExpiresAt: now.Add(15 * time.Minute),
+		Password: password, StartedAt: now, UpdatedAt: now, ExpiresAt: now.Add(15 * time.Minute),
 	}
 	runCtx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	join.cancel = cancel
@@ -838,7 +852,12 @@ func (s *Service) StartPairJoin(ctx context.Context, rawCode, deviceName string)
 		return nil, err
 	}
 	go s.runPairJoin(runCtx, join)
-	return pairJoinView(join), nil
+	// The background join may update the session immediately; build the first
+	// view under the same lock as every other status read.
+	s.joinMu.Lock()
+	view := pairJoinView(join)
+	s.joinMu.Unlock()
+	return view, nil
 }
 
 func (s *Service) addPairJoin(join *pairJoin) error {
@@ -1098,7 +1117,8 @@ func (s *Service) importPairBundle(ctx context.Context, join *pairJoin, bundle *
 			AccountPublicKey: bundle.Account.PublicKey, AccountPrivateKey: ed25519.PrivateKey(accountKey),
 			PasswordHash: bundle.Account.PasswordHash, CreatedAt: bundle.Account.CreatedAt,
 			OriginServerID: bundle.Account.OriginServerID,
-			Device:         device, Siblings: siblings,
+			KeyGeneration:  bundle.Account.KeyGeneration, KeyRotations: bundle.Account.KeyRotations,
+			Password: join.Password, Device: device, Siblings: siblings,
 		}); err != nil {
 			return nil, nil, err
 		}

@@ -25,6 +25,7 @@ import (
 	"github.com/sidenor/toget/internal/room"
 	"github.com/sidenor/toget/internal/session"
 	"github.com/sidenor/toget/internal/tool"
+	"github.com/sidenor/toget/internal/vault"
 	"github.com/sidenor/toget/internal/version"
 )
 
@@ -119,6 +120,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/devices", s.data(s.handleListDevices))
 	mux.HandleFunc("DELETE /api/v1/devices/{id}", s.data(s.handleRevokeDevice))
 	mux.HandleFunc("POST /api/v1/account/sync", s.data(s.handleAccountSync))
+	mux.HandleFunc("POST /api/v1/account/rotate-key", s.data(s.handleRotateAccountKey))
 	mux.HandleFunc("GET /api/v1/pairings", s.data(s.handleListPairings))
 	mux.HandleFunc("POST /api/v1/pairings", s.data(s.handleCreatePairing))
 	mux.HandleFunc("POST /api/v1/pairings/{id}/approve", s.data(s.handleApprovePairing))
@@ -214,12 +216,13 @@ type StatusResponse struct {
 
 // AccountView is the public shape of an account.
 type AccountView struct {
-	ID         string      `json:"id"`
-	Name       string      `json:"name"`
-	ServerID   string      `json:"server_id"`
-	ServerCode string      `json:"server_code"`
-	CreatedAt  time.Time   `json:"created_at"`
-	Device     *DeviceView `json:"device,omitempty"`
+	ID            string      `json:"id"`
+	Name          string      `json:"name"`
+	ServerID      string      `json:"server_id"`
+	ServerCode    string      `json:"server_code"`
+	KeyGeneration int         `json:"key_generation"`
+	CreatedAt     time.Time   `json:"created_at"`
+	Device        *DeviceView `json:"device,omitempty"`
 }
 
 // AccountSyncResult is the public result of one account-sync round.
@@ -367,6 +370,7 @@ func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLock(w http.ResponseWriter, r *http.Request) {
 	s.session.Lock()
+	s.accounts.LockVault()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -439,6 +443,26 @@ func (s *Server) handleAccountSync(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *Server) handleRotateAccountKey(w http.ResponseWriter, r *http.Request) {
+	if s.node == nil {
+		writeError(w, http.StatusServiceUnavailable, "node_disabled", "node transport is disabled")
+		return
+	}
+	result, warnings, err := s.node.RotateAccountKey(r.Context())
+	if err != nil {
+		writeAccountError(w, err)
+		return
+	}
+	if warnings == nil {
+		warnings = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"generation": result.Generation,
+		"devices":    result.Devices,
+		"warnings":   warnings,
+	})
+}
+
 func accountView(a *account.Account, d *account.Device) *AccountView {
 	if a == nil {
 		return nil
@@ -447,12 +471,17 @@ func accountView(a *account.Account, d *account.Device) *AccountView {
 	if len(a.ID) >= 8 {
 		serverCode = a.ID[:8]
 	}
+	generation := a.KeyGeneration
+	if generation <= 0 {
+		generation = 1
+	}
 	view := &AccountView{
-		ID:         a.ID,
-		Name:       a.Name,
-		ServerID:   a.ServerID,
-		ServerCode: serverCode,
-		CreatedAt:  a.CreatedAt,
+		ID:            a.ID,
+		Name:          a.Name,
+		ServerID:      a.ServerID,
+		ServerCode:    serverCode,
+		KeyGeneration: generation,
+		CreatedAt:     a.CreatedAt,
 	}
 	if d != nil {
 		dv := deviceView(d, d.ID)
@@ -526,6 +555,7 @@ func (s *Server) data(next http.HandlerFunc) http.HandlerFunc {
 func (s *Server) requireUnlocked(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := s.session.Require(); err != nil {
+			s.accounts.LockVault()
 			writeError(w, http.StatusLocked, "locked", "unlock the node with your password")
 			return
 		}
@@ -694,6 +724,10 @@ func writeAccountError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_name", "name must be 1–64 characters")
 	case errors.Is(err, account.ErrInvalidPassword):
 		writeError(w, http.StatusBadRequest, "invalid_password", "password must be at least 8 characters")
+	case errors.Is(err, vault.ErrLocked):
+		writeError(w, http.StatusLocked, "locked", "unlock the node with your password")
+	case errors.Is(err, vault.ErrInvalidPassword), errors.Is(err, account.ErrInvalidCredentials):
+		writeError(w, http.StatusUnauthorized, "invalid_credentials", "password is incorrect")
 	default:
 		writeError(w, http.StatusInternalServerError, "internal", "could not complete the account request")
 	}

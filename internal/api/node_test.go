@@ -191,3 +191,40 @@ func TestNodeLookupRequiresDirectory(t *testing.T) {
 		t.Fatalf("unexpected discovery response: %s", body)
 	}
 }
+
+func TestRotateAccountKeyAPI(t *testing.T) {
+	server := newTestNodeWithLAN(t)
+	resp, body := server.request(t, http.MethodPost, "/api/v1/account", testToken,
+		`{"name":"Host","password":"testpass123","device_name":"host"}`, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create account = %d %s", resp.StatusCode, body)
+	}
+	view := decode[struct {
+		KeyGeneration int `json:"key_generation"`
+	}](t, body)
+	if view.KeyGeneration != 1 {
+		t.Fatalf("initial key generation = %d", view.KeyGeneration)
+	}
+	resp, body = server.request(t, http.MethodPost, "/api/v1/account/rotate-key", testToken, `{}`, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("rotate key = %d %s", resp.StatusCode, body)
+	}
+	result := decode[struct {
+		Generation int      `json:"generation"`
+		Devices    int      `json:"devices"`
+		Warnings   []string `json:"warnings"`
+	}](t, body)
+	if result.Generation != 2 || result.Devices != 1 || len(result.Warnings) != 0 {
+		t.Fatalf("rotate result = %#v", result)
+	}
+	resp, body = server.request(t, http.MethodGet, "/api/v1/account", testToken, "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get account = %d %s", resp.StatusCode, body)
+	}
+	view = decode[struct {
+		KeyGeneration int `json:"key_generation"`
+	}](t, body)
+	if view.KeyGeneration != 2 {
+		t.Fatalf("account key generation = %d, want 2", view.KeyGeneration)
+	}
+}

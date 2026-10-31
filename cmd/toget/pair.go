@@ -148,7 +148,7 @@ func newPairCancelCommand() *cobra.Command {
 }
 
 func newPairJoinCommand() *cobra.Command {
-	var name string
+	var name, password string
 	cmd := &cobra.Command{
 		Use:   "join [pairing-code]",
 		Short: "Recover this account from a pairing code (new device)",
@@ -169,8 +169,14 @@ func newPairJoinCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if password == "" && !jsonFlag {
+				password, err = promptPassword("Account password (unlocks this device's local vault): ")
+				if err != nil {
+					return err
+				}
+			}
 			var view node.PairJoinView
-			payload := map[string]string{"code": code, "device_name": name}
+			payload := map[string]string{"code": code, "device_name": name, "password": password}
 			if err := c.Post(cmd.Context(), "/api/v1/pairing/join", payload, &view); err != nil {
 				if strings.Contains(err.Error(), account.ErrAlreadyExists.Error()) {
 					return fmt.Errorf("this device already has an account; pairing only works on a fresh device")
@@ -213,6 +219,7 @@ func newPairJoinCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "name for this device")
+	cmd.Flags().StringVar(&password, "password", "", "account password (prompted when omitted)")
 	return cmd
 }
 
