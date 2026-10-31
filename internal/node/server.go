@@ -54,8 +54,12 @@ type Options struct {
 	Directory string
 	// MDNS is "on" to advertise and browse Toget nodes on the local network.
 	// Empty or "off" disables multicast discovery.
-	MDNS   string
-	Logger *slog.Logger
+	MDNS string
+	// SaveRelay persists a runtime relay setting ("off", "auto", or a pinned
+	// URL). It is called before the change is applied; an error leaves the
+	// current relay untouched.
+	SaveRelay func(setting string) error
+	Logger    *slog.Logger
 }
 
 // Info is the local node's public transport identity.
@@ -68,7 +72,11 @@ type Info struct {
 	URL            string `json:"url"`
 	DirectURL      string `json:"direct_url,omitempty"`
 	RelayURL       string `json:"relay_url,omitempty"`
+	RelayBase      string `json:"relay_base,omitempty"`
+	RelayMode      string `json:"relay_mode"`
+	RelaySetting   string `json:"relay_setting"`
 	RelayConnected bool   `json:"relay_connected"`
+	RelayTunnel    bool   `json:"relay_tunnel"`
 	DirectoryURL   string `json:"directory_url,omitempty"`
 	MDNS           bool   `json:"mdns"`
 	MDNSPeers      int    `json:"mdns_peers"`
@@ -106,6 +114,9 @@ type Service struct {
 	accountSyncCursor  int
 
 	relaySetting     string
+	relaySettingMu   sync.RWMutex
+	relaySave        func(string) error
+	relayWake        chan struct{}
 	relayMu          sync.RWMutex
 	relayBase        string
 	relayFP          string
@@ -114,6 +125,7 @@ type Service struct {
 	directoryFP      string
 	directoryHTTP    *http.Client
 	relayConnected   atomic.Bool
+	relayTunnel      atomic.Bool
 
 	mdnsSetting string
 	mdnsMu      sync.RWMutex
@@ -200,7 +212,8 @@ func New(opts Options) (*Service, error) {
 		logger: logger, syncEvery: interval, accountSyncEvery: accountSyncInterval,
 		accountSyncTrigger: make(chan struct{}, 1),
 		nonces:             NewNonceCache(),
-		relaySetting:       relaySetting, relayBase: relayBase, relayFP: relayFP,
+		relaySetting:       relaySetting, relaySave: opts.SaveRelay,
+		relayWake: make(chan struct{}, 1), relayBase: relayBase, relayFP: relayFP,
 		directorySetting: directorySetting, directoryBase: directoryBase,
 		directoryFP: directoryFP, directoryHTTP: directoryHTTP,
 		mdnsSetting: mdnsSetting,
@@ -282,9 +295,9 @@ func (s *Service) Start(ctx context.Context) error {
 	}()
 	go s.syncLoop(runCtx)
 	go s.accountSyncLoop(runCtx)
-	if s.relaySetting != "" {
-		go s.relayLoop(runCtx)
-	}
+	// The relay loop always runs so a relay can be enabled, disabled, or
+	// switched from the local API without restarting the node.
+	go s.relayLoop(runCtx)
 	if s.directorySetting != "" {
 		go s.directoryLoop(runCtx)
 	}
@@ -376,6 +389,7 @@ func (s *Service) Info(ctx context.Context) (*Info, error) {
 	s.mu.RLock()
 	endpoint, direct, fingerprint := s.endpoint, s.url, s.fingerprint
 	s.mu.RUnlock()
+	relayBase, _ := s.relayConfig()
 	relayRoute, _ := s.RelayRoute(ctx)
 	address := direct
 	if relayRoute != "" {
@@ -389,7 +403,8 @@ func (s *Service) Info(ctx context.Context) (*Info, error) {
 		ServerID: snapshot.Server.ID, ServerCode: snapshot.Server.Code,
 		AccountID: snapshot.Account.ID, DeviceID: snapshot.Device.ID,
 		Endpoint: endpoint, URL: address, DirectURL: direct, RelayURL: relayRoute,
-		RelayConnected: s.RelayConnected(), DirectoryURL: s.directorySetting,
+		RelayBase: relayBase, RelayMode: s.relayModeLabel(), RelaySetting: s.relaySettingValue(),
+		RelayConnected: s.RelayConnected(), RelayTunnel: s.RelayTunnelConnected(), DirectoryURL: s.directorySetting,
 		MDNS: s.mdnsSetting != "", MDNSPeers: peers,
 		TLSFingerprint: fingerprint, Protocol: Protocol,
 	}, nil
@@ -431,6 +446,15 @@ func (s *Service) RelayConnected() bool {
 	return s.relayConnected.Load()
 }
 
+// RelayTunnelConnected reports whether the node is using the WebSocket
+// tunnel rather than HTTPS long-poll for its relay session.
+func (s *Service) RelayTunnelConnected() bool {
+	if s == nil {
+		return false
+	}
+	return s.relayTunnel.Load()
+}
+
 func (s *Service) relayConfig() (string, string) {
 	s.relayMu.RLock()
 	defer s.relayMu.RUnlock()
@@ -441,6 +465,112 @@ func (s *Service) setRelayConfig(base, fingerprint string) {
 	s.relayMu.Lock()
 	s.relayBase, s.relayFP = base, fingerprint
 	s.relayMu.Unlock()
+}
+
+func (s *Service) relayMode() string {
+	s.relaySettingMu.RLock()
+	defer s.relaySettingMu.RUnlock()
+	return s.relaySetting
+}
+
+func (s *Service) setRelayMode(mode string) {
+	s.relaySettingMu.Lock()
+	s.relaySetting = mode
+	s.relaySettingMu.Unlock()
+}
+
+func (s *Service) relayModeLabel() string {
+	switch s.relayMode() {
+	case "":
+		return "off"
+	case "auto":
+		return "auto"
+	default:
+		return "pinned"
+	}
+}
+
+// relaySettingValue returns the canonical persisted setting for the settings
+// UI. A pinned relay is rendered with its certificate fingerprint so the value
+// can be edited and saved again unchanged.
+func (s *Service) relaySettingValue() string {
+	mode := s.relayMode()
+	if mode == "" || mode == "auto" {
+		return s.relayModeLabel()
+	}
+	base, fingerprint := s.relayConfig()
+	if base == "" {
+		return "off"
+	}
+	return base + "#fp=" + fingerprint
+}
+
+func (s *Service) signalRelay() {
+	select {
+	case s.relayWake <- struct{}{}:
+	default:
+	}
+}
+
+// SetRelay changes the relay at runtime. Accepted values are "off", "auto"
+// (follow the configured directory), or a pinned relay URL with its TLS
+// fingerprint. The setting is persisted before it is applied; a save error
+// leaves the current relay in place.
+func (s *Service) SetRelay(ctx context.Context, raw string) error {
+	if s == nil {
+		return errors.New("node transport is disabled")
+	}
+	setting := strings.TrimSpace(raw)
+	if setting == "off" {
+		setting = ""
+	}
+	var base, fingerprint string
+	switch setting {
+	case "":
+	case "auto":
+		if s.directoryBase == "" {
+			return errors.New("automatic relay selection needs a directory")
+		}
+	default:
+		var err error
+		base, fingerprint, err = ParsePinnedURL(setting)
+		if err != nil {
+			return fmt.Errorf("relay URL: %w", err)
+		}
+		if len(setting) > 4096 {
+			return errors.New("relay URL is too long")
+		}
+	}
+	persisted := setting
+	if persisted == "" {
+		persisted = "off"
+	}
+	if s.relaySave != nil {
+		if err := s.relaySave(persisted); err != nil {
+			return fmt.Errorf("save relay setting: %w", err)
+		}
+	}
+	s.setRelayMode(setting)
+	switch setting {
+	case "":
+		s.setRelayConfig("", "")
+	case "auto":
+		// Clear the old route immediately; the directory loop resolves the
+		// new relay in the background and the relay loop retries on failure.
+		s.setRelayConfig("", "")
+		go func() {
+			resolveCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err := s.syncDirectory(resolveCtx); err != nil && resolveCtx.Err() == nil {
+				s.logger.Warn("automatic relay selection failed", "error", err)
+			}
+			s.signalRelay()
+		}()
+	default:
+		s.setRelayConfig(base, fingerprint)
+	}
+	s.signalRelay()
+	return nil
 }
 
 func (s *Service) manifest(ctx context.Context) (*Manifest, error) {

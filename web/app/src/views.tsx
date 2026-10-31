@@ -2206,6 +2206,10 @@ export function SettingsView({
   const [cardScanning, setCardScanning] = useState(false);
   const [cardError, setCardError] = useState("");
   const [syncing, setSyncing] = useState(false);
+  const [relayMode, setRelayMode] = useState<"off" | "auto" | "pinned">("off");
+  const [relayAddress, setRelayAddress] = useState("");
+  const [relayBusy, setRelayBusy] = useState(false);
+  const [relayError, setRelayError] = useState("");
   const [recovery, setRecovery] = useState<RecoveryStatus | null>(null);
   const [recoveryBusy, setRecoveryBusy] = useState(false);
   const [recoveryError, setRecoveryError] = useState("");
@@ -2228,6 +2232,12 @@ export function SettingsView({
     api.recovery().then(setRecovery).catch(() => setRecovery(null));
   }, []);
 
+  useEffect(() => {
+    if (!node?.info) return;
+    setRelayMode(node.info.relay_mode);
+    setRelayAddress(node.info.relay_mode === "pinned" ? node.info.relay_setting : "");
+  }, [node?.info?.relay_mode, node?.info?.relay_setting]);
+
   async function sync() {
     setSyncing(true);
     try {
@@ -2236,6 +2246,29 @@ export function SettingsView({
       onError(err);
     } finally {
       setSyncing(false);
+    }
+  }
+
+  async function saveRelay() {
+    if (!node?.info) return;
+    if (relayMode === "pinned" && !relayAddress.trim()) {
+      setRelayError(t("settings.relayAddressRequired"));
+      return;
+    }
+    if (relayMode === "auto" && !node.info.directory_url) {
+      setRelayError(t("settings.relayAutoNeedsDirectory"));
+      return;
+    }
+    setRelayBusy(true);
+    setRelayError("");
+    try {
+      const result = await api.setNodeRelay(relayMode === "pinned" ? relayAddress.trim() : relayMode);
+      setNode(result);
+      notify(t("settings.relaySaved"));
+    } catch (err) {
+      setRelayError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRelayBusy(false);
     }
   }
 
@@ -2518,17 +2551,33 @@ export function SettingsView({
                     <dd className="mono">{node.info.direct_url}</dd>
                   </div>
                 )}
+                <div>
+                  <dt>{t("settings.relay")}</dt>
+                  <dd>
+                    {node.info.relay_mode === "off"
+                      ? t("settings.relayModeOff")
+                      : node.info.relay_mode === "auto"
+                        ? t("settings.relayModeAuto")
+                        : t("settings.relayModePinned")}
+                    {node.info.relay_mode !== "off" && (
+                      <span className="muted">
+                        {" "}· {node.info.relay_connected
+                          ? t("settings.relayConnected")
+                          : t("settings.relayDisconnected")}
+                      </span>
+                    )}
+                  </dd>
+                </div>
+                {node.info.relay_connected && (
+                  <div>
+                    <dt>{t("settings.relayTransport")}</dt>
+                    <dd>{node.info.relay_tunnel ? t("settings.relayTunnelWS") : t("settings.relayTunnelPoll")}</dd>
+                  </div>
+                )}
                 {node.info.relay_url && (
                   <div>
-                    <dt>{t("settings.relay")}</dt>
-                    <dd className="mono">
-                      {node.info.relay_url}{" "}
-                      <span className="muted">
-                        ({node.info.relay_connected
-                          ? t("settings.relayConnected")
-                          : t("settings.relayDisconnected")})
-                      </span>
-                    </dd>
+                    <dt>{t("settings.relayRoute")}</dt>
+                    <dd className="mono">{node.info.relay_url}</dd>
                   </div>
                 )}
                 {node.info.directory_url && (
@@ -2553,6 +2602,54 @@ export function SettingsView({
                   <dd className="mono fingerprint">{node.info.tls_fingerprint}</dd>
                 </div>
               </dl>
+              <hr className="settings-divider" />
+              <h3>{t("settings.relayTitle")}</h3>
+              <p className="muted">{t("settings.relayText")}</p>
+              <div className="settings-form">
+                <label>
+                  <span className="field-label">{t("settings.relayMode")}</span>
+                  <select
+                    value={relayMode}
+                    onChange={(event) => {
+                      setRelayMode(event.target.value as "off" | "auto" | "pinned");
+                      setRelayError("");
+                    }}
+                  >
+                    <option value="off">{t("settings.relayModeOff")}</option>
+                    <option value="auto" disabled={!node.info.directory_url}>
+                      {t("settings.relayModeAuto")}
+                    </option>
+                    <option value="pinned">{t("settings.relayModePinned")}</option>
+                  </select>
+                </label>
+                {relayMode === "auto" && !node.info.directory_url && (
+                  <p className="form-error">{t("settings.relayAutoNeedsDirectory")}</p>
+                )}
+                {relayMode === "pinned" && (
+                  <label>
+                    <span className="field-label">{t("settings.relayAddress")}</span>
+                    <input
+                      className="mono"
+                      value={relayAddress}
+                      onChange={(event) => {
+                        setRelayAddress(event.target.value);
+                        setRelayError("");
+                      }}
+                      placeholder={t("settings.relayAddressPlaceholder")}
+                      spellCheck={false}
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                    />
+                  </label>
+                )}
+                {relayError && <p className="form-error">{relayError}</p>}
+                <div className="button-row">
+                  <button className="button primary" onClick={() => void saveRelay()} disabled={relayBusy}>
+                    {relayBusy ? t("settings.relaySaving") : t("settings.relaySave")}
+                  </button>
+                </div>
+              </div>
+              <hr className="settings-divider" />
               <button className="button ghost" onClick={() => void sync()} disabled={syncing}>
                 {syncing ? t("settings.syncing") : t("settings.syncNow")}
               </button>

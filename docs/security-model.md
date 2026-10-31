@@ -200,8 +200,8 @@ does not reach copies held by other people.
 ### Implemented relay and directory boundary
 
 A node behind NAT can register with a relay over outbound pinned HTTPS. The
-relay never opens a connection to the node; it long-polls for work and returns
-the node's signed results.
+relay never opens a connection to the node; the node holds a WebSocket tunnel
+or long-polls for work and returns its signed results.
 
 - The relay receives an envelope containing the target server ID, the inner
   HTTP method and path, allowlisted signed headers (account ID, device ID,
@@ -221,10 +221,16 @@ the node's signed results.
   non-idempotent side effect. Queued tickets are bearer secrets carrying only
   the response the client already had permission to receive.
 - Multi-hop routes carry relay IDs in a hop list. A repeated ID or more than
-  eight hops is rejected. The relay operator sees the whole path for traffic
-  it forwards.
-- Rate limits, queue capacity, in-flight byte accounting, and body limits
-  bound resource use. They do not make the relay trusted for availability.
+  eight hops is rejected. A child relay signs each relay-to-relay envelope; the
+  parent verifies the self-certifying relay ID, the route position, and a
+  replay nonce. The relay operator sees the whole path for traffic it forwards.
+- Rate limits, queue capacity, in-flight byte accounting, body limits, and
+  fixed-window per-sender byte quotas bound resource use. They do not make the
+  relay trusted for availability.
+- The WebSocket tunnel and HTTPS long poll carry the same signed envelopes and
+  the same trust rules. Enabling or switching a relay at runtime updates the
+  stored route for new invitations and directory records; it does not grant
+  the relay any additional key material.
 
 The directory verifies and stores the account identity manifest and the
 signed node manifest. On lookup, the client re-verifies both, checks the

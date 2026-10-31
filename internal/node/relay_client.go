@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sidenor/toget/internal/relayproto"
+	"github.com/sidenor/toget/internal/relaytunnel"
 )
 
 const (
@@ -21,13 +22,17 @@ const (
 	relaySessionRefresh = 2 * time.Minute
 )
 
-var errRelayConfigChanged = errors.New("relay configuration changed")
+var (
+	errRelayConfigChanged = errors.New("relay configuration changed")
+	errRelayTunnelRefresh = errors.New("relay tunnel token refresh")
+)
 
 type relayConn struct {
 	svc         *Service
 	base        string
 	fingerprint string
 	client      *http.Client
+	wsClient    *http.Client
 	token       string
 	expires     time.Time
 	relayID     string
@@ -40,7 +45,8 @@ func newRelayConn(s *Service, base, fingerprint string) (*relayConn, error) {
 	}
 	return &relayConn{
 		svc: s, base: base, fingerprint: fingerprint,
-		client: pinnedHTTPClient(config, relayTimeout, relayTimeout),
+		client:   pinnedHTTPClient(config, relayTimeout, relayTimeout),
+		wsClient: pinnedTunnelHTTPClient(config),
 	}, nil
 }
 
@@ -115,18 +121,10 @@ func (c *relayConn) poll(ctx context.Context, serverID string) ([]relayproto.Env
 }
 
 func (c *relayConn) postResult(ctx context.Context, requestID string, result relayproto.Result) error {
-	result.Protocol = relayproto.Protocol
-	result.RequestID = requestID
+	result = boundRelayResult(requestID, result)
 	payload, err := json.Marshal(result)
 	if err != nil {
 		return err
-	}
-	if len(payload) > relayproto.MaxResultWire {
-		payload, _ = json.Marshal(relayproto.Result{
-			Protocol: relayproto.Protocol, RequestID: requestID,
-			Status: http.StatusBadGateway, Code: "response_too_large",
-			Message: "the node response is too large to relay",
-		})
 	}
 	path := "/relay/v1/results/" + url.PathEscape(requestID)
 	resp, data, err := c.request(ctx, http.MethodPost, path, payload, c.token)
@@ -183,23 +181,30 @@ func (s *Service) relayLoop(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		mode := s.relayMode()
 		base, fingerprint := s.relayConfig()
-		if base == "" {
-			if s.relaySetting == "auto" {
-				if !sleepContext(ctx, 5*time.Second) {
-					return
-				}
-				continue
+		if mode == "" {
+			if !s.sleepRelay(ctx, 30*time.Second) {
+				return
 			}
-			return
+			continue
+		}
+		if base == "" {
+			// Auto mode resolves through the directory, which retries on its
+			// own schedule. Wait for a resolved route or a settings change.
+			if !s.sleepRelay(ctx, 5*time.Second) {
+				return
+			}
+			continue
 		}
 		started := time.Now()
 		err := s.runRelaySession(ctx, base, fingerprint)
 		s.relayConnected.Store(false)
+		s.relayTunnel.Store(false)
 		if ctx.Err() != nil {
 			return
 		}
-		if errors.Is(err, errRelayConfigChanged) {
+		if errors.Is(err, errRelayConfigChanged) || errors.Is(err, errRelayTunnelRefresh) {
 			backoff = time.Second
 			continue
 		}
@@ -209,12 +214,25 @@ func (s *Service) relayLoop(ctx context.Context) {
 		if err != nil {
 			s.logger.Warn("relay session ended", "relay", base, "error", err)
 		}
-		if !sleepContext(ctx, backoff) {
+		if !s.sleepRelay(ctx, backoff) {
 			return
 		}
 		if backoff < 30*time.Second {
 			backoff *= 2
 		}
+	}
+}
+
+func (s *Service) sleepRelay(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	case <-s.relayWake:
+		return true
 	}
 }
 
@@ -234,6 +252,35 @@ func (s *Service) runRelaySession(ctx context.Context, base, fingerprint string)
 	defer s.relayConnected.Store(false)
 	s.logger.Info("node connected to relay", "relay", base, "relay_id", conn.relayID)
 
+	// Prefer the bidirectional tunnel. A relay that predates it, disables it,
+	// or cannot be reached over WebSocket still works over HTTPS long-poll.
+	tunnel, dialErr := conn.dialTunnel(ctx, serverID)
+	if dialErr == nil {
+		s.logger.Debug("node relay tunnel connected", "relay", base)
+		s.relayTunnel.Store(true)
+		err = s.serveRelayTunnel(ctx, conn, tunnel, serverID, base, fingerprint)
+		s.relayTunnel.Store(false)
+		tunnel.CloseNow()
+		s.relayConnected.Store(false)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if errors.Is(err, errRelayTunnelRefresh) || errors.Is(err, errRelayConfigChanged) {
+			return err
+		}
+		if err != nil {
+			s.logger.Warn("relay tunnel ended; using HTTPS long-poll", "relay", base, "error", err)
+			// The registration token is still valid, so the fallback can
+			// continue immediately without another registration round trip.
+			s.relayConnected.Store(true)
+		}
+	} else if ctx.Err() == nil {
+		s.logger.Debug("relay WebSocket tunnel unavailable; using HTTPS long-poll", "relay", base, "error", dialErr)
+	}
+	return s.pollRelaySession(ctx, conn, serverID, base, fingerprint)
+}
+
+func (s *Service) pollRelaySession(ctx context.Context, conn *relayConn, serverID, base, fingerprint string) error {
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	sem := make(chan struct{}, 4)
@@ -272,6 +319,118 @@ func (s *Service) runRelaySession(ctx context.Context, base, fingerprint string)
 				}
 			}()
 		}
+	}
+}
+
+func (c *relayConn) dialTunnel(ctx context.Context, serverID string) (*relaytunnel.Client, error) {
+	dialCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	return relaytunnel.Dial(dialCtx, c.base, c.token, serverID, c.wsClient)
+}
+
+// serveRelayTunnel runs an established WebSocket session. It returns when the
+// connection fails, the relay rotates the session token, or the node's relay
+// configuration changes. The caller falls back to long-poll on a transport
+// error, which keeps old relays and restrictive networks working.
+func (s *Service) serveRelayTunnel(ctx context.Context, conn *relayConn, tunnel *relaytunnel.Client, serverID, base, fingerprint string) error {
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer tunnel.CloseNow()
+
+	refresh := time.Until(conn.expires) - relaySessionRefresh
+	if refresh < 10*time.Second {
+		refresh = 10 * time.Second
+	}
+	refreshTimer := time.NewTimer(refresh)
+	defer refreshTimer.Stop()
+	configTicker := time.NewTicker(5 * time.Second)
+	defer configTicker.Stop()
+
+	type readResult struct {
+		msg relayproto.TunnelMessage
+		err error
+	}
+	inbound := make(chan readResult)
+	go func() {
+		for {
+			msg, err := tunnel.Read(runCtx)
+			select {
+			case inbound <- readResult{msg: msg, err: err}:
+			case <-runCtx.Done():
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	sem := make(chan struct{}, 4)
+	for {
+		select {
+		case <-runCtx.Done():
+			return runCtx.Err()
+		case <-refreshTimer.C:
+			return errRelayTunnelRefresh
+		case <-configTicker.C:
+			currentBase, currentFP := s.relayConfig()
+			if currentBase != base || currentFP != fingerprint {
+				return errRelayConfigChanged
+			}
+		case result := <-inbound:
+			if result.err != nil {
+				return result.err
+			}
+			msg := result.msg
+			switch msg.Type {
+			case relayproto.TunnelFrame:
+				if msg.Envelope == nil || msg.Envelope.Target != serverID || msg.Envelope.RequestID == "" {
+					continue
+				}
+				frame := *msg.Envelope
+				select {
+				case sem <- struct{}{}:
+				case <-runCtx.Done():
+					return runCtx.Err()
+				}
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					defer func() { <-sem }()
+					reply := s.executeRelayFrame(runCtx, frame)
+					reply = boundRelayResult(frame.RequestID, reply)
+					if err := tunnel.Write(runCtx, relayproto.TunnelMessage{
+						Protocol: relayproto.Protocol, Type: relayproto.TunnelResult, Result: &reply,
+					}); err != nil && runCtx.Err() == nil {
+						s.logger.Warn("could not post relay tunnel result", "request", frame.RequestID, "error", err)
+					}
+				}()
+			case relayproto.TunnelPing:
+				_ = tunnel.Write(runCtx, relayproto.TunnelMessage{
+					Protocol: relayproto.Protocol, Type: relayproto.TunnelPong, ServerTime: time.Now().UTC(),
+				})
+			case relayproto.TunnelError:
+				return fmt.Errorf("relay tunnel error: %s", msg.Message)
+			}
+		}
+	}
+}
+
+// boundRelayResult replaces an oversized inner response with a small, valid
+// error result so one attachment cannot break the tunnel.
+func boundRelayResult(requestID string, result relayproto.Result) relayproto.Result {
+	result.Protocol = relayproto.Protocol
+	result.RequestID = requestID
+	payload, err := json.Marshal(result)
+	if err == nil && len(payload) <= relayproto.MaxResultWire {
+		return result
+	}
+	return relayproto.Result{
+		Protocol: relayproto.Protocol, RequestID: requestID,
+		Status: http.StatusBadGateway, Code: "response_too_large",
+		Message: "the node response is too large to relay",
 	}
 }
 

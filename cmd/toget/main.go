@@ -34,6 +34,7 @@ import (
 	"github.com/sidenor/toget/internal/node"
 	"github.com/sidenor/toget/internal/notify"
 	"github.com/sidenor/toget/internal/policy"
+	"github.com/sidenor/toget/internal/relay"
 	"github.com/sidenor/toget/internal/room"
 	"github.com/sidenor/toget/internal/session"
 	"github.com/sidenor/toget/internal/storage"
@@ -86,6 +87,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newRoomCommand())
 	root.AddCommand(newJoinCommand())
 	root.AddCommand(newNodeCommand())
+	root.AddCommand(newRelayCommand())
 	root.AddCommand(newSendCommand())
 	root.AddCommand(newMessagesCommand())
 	root.AddCommand(newAttachmentCommand())
@@ -216,6 +218,90 @@ func newVersionCommand() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// newRelayCommand runs a relay without opening an account, vault, database,
+// or local web UI. It is the standalone relay-only mode for the ordinary
+// binary; toget-official remains the command that adds a directory.
+func newRelayCommand() *cobra.Command {
+	var (
+		dataDir   string
+		listen    string
+		advertise string
+		parent    string
+		noWS      bool
+	)
+	cmd := &cobra.Command{
+		Use:   "relay",
+		Short: "Run only the Toget relay",
+		Long: "Run a standalone Toget relay. The relay forwards opaque, signed " +
+			"requests and never receives room keys or message content. It does " +
+			"not create or unlock an account.\n\n" +
+			"Use --listen/--advertise to publish a reachable address, and " +
+			"--parent to place this relay below another relay.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			home := dataDir
+			if home == "" {
+				if homeFlag != "" {
+					home = homeFlag
+				} else {
+					base, err := config.DefaultHome()
+					if err != nil {
+						return err
+					}
+					home = filepath.Clean(base) + "-relay"
+				}
+			}
+			paths, err := config.Resolve(home)
+			if err != nil {
+				return err
+			}
+			if err := config.Ensure(paths); err != nil {
+				return err
+			}
+			logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+			websocket := "on"
+			if noWS {
+				websocket = "off"
+			}
+			service, err := relay.New(relay.Options{
+				Listen: listen, Advertise: advertise, Paths: paths,
+				Parent: parent, Logger: logger, WebSocket: websocket,
+			})
+			if err != nil {
+				return err
+			}
+			signalCtx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			if err := service.Start(signalCtx); err != nil {
+				_ = service.Close()
+				return err
+			}
+			defer service.Close()
+			if jsonFlag {
+				if err := printJSON(map[string]any{
+					"url": service.URL(), "relay_id": service.RelayID(),
+					"data": paths.Home, "websocket": websocket != "off",
+				}); err != nil {
+					return err
+				}
+			} else {
+				fmt.Printf("Relay:     %s\n", service.URL())
+				fmt.Printf("Relay ID:  %s\n", service.RelayID())
+				fmt.Printf("Data:      %s\n", paths.Home)
+				fmt.Println("Press Ctrl+C to stop.")
+			}
+			<-signalCtx.Done()
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&dataDir, "data-dir", "", "relay data directory (default: <toget home>-relay)")
+	cmd.Flags().StringVar(&listen, "listen", "0.0.0.0:7719", "relay listen address")
+	cmd.Flags().StringVar(&advertise, "advertise", "", "host:port advertised by the relay")
+	cmd.Flags().StringVar(&parent, "parent", "", "pinned parent relay URL for multi-hop routing")
+	cmd.Flags().BoolVar(&noWS, "no-websocket", false, "disable the WebSocket tunnel and serve HTTPS long-poll only")
+	return cmd
 }
 
 func newServeCommand() *cobra.Command {
@@ -377,7 +463,10 @@ func runServe(ctx context.Context) error {
 		Relay:     cfg.NodeRelay,
 		Directory: cfg.NodeDirectory,
 		MDNS:      cfg.NodeMDNS,
-		Logger:    logger,
+		SaveRelay: func(setting string) error {
+			return saveNodeRelay(paths, setting)
+		},
+		Logger: logger,
 	})
 	if err != nil {
 		logger.Warn("LAN node disabled", "error", err)
@@ -2678,6 +2767,17 @@ func relayStatus(connected bool) string {
 		return "connected"
 	}
 	return "disconnected"
+}
+
+// saveNodeRelay merges one runtime setting into config.json without
+// overwriting unrelated settings changed by another process.
+func saveNodeRelay(paths config.Paths, setting string) error {
+	cfg, err := config.Load(paths)
+	if err != nil {
+		return err
+	}
+	cfg.NodeRelay = setting
+	return config.Save(paths, cfg)
 }
 
 func resolveConfig() (config.Paths, config.Config, error) {

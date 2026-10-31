@@ -94,7 +94,11 @@ export type NodeInfo = {
   url: string;
   direct_url?: string;
   relay_url?: string;
+  relay_base?: string;
+  relay_mode: "off" | "auto" | "pinned";
+  relay_setting: string;
   relay_connected: boolean;
+  relay_tunnel: boolean;
   directory_url?: string;
   mdns: boolean;
   mdns_peers?: number;

@@ -53,9 +53,12 @@ go run ./cmd/toget-official
 Point `toget serve` at them with `--node-relay '<relay-url>'` and
 `--node-directory '<directory-url>'`, or use `--node-relay auto` to follow the
 directory's default relay. The relay forwards encrypted requests and sees
-metadata, not room content. Multi-hop relays and a short offline queue are
-implemented. There is still no NAT traversal or hole punching: across
-networks, the relay is the path. See [Relay and directory](docs/relay.md).
+metadata, not room content. Multi-hop relays, signed relay-to-relay hops,
+byte quotas, a WebSocket tunnel with HTTPS long-poll fallback, and a short
+offline queue are implemented. You can also run a relay without the official
+bundle with `toget relay`, and switch a node's relay at runtime from Settings.
+There is still no NAT traversal or hole punching: across networks, the relay
+is the path. See [Relay and directory](docs/relay.md).
 
 Requirements: Go 1.27+, Node 24, and pnpm 9. Or install the pinned toolchain
 with `mise install`.
@@ -249,8 +252,10 @@ local approval and tool-receipt cards. While a local Agent runs, the owner's
 web UI can show bounded, ephemeral partial output; the final reply remains the
 durable timeline event. An optional relay and signed-manifest
 directory work across networks, with direct-first fallback, automatic relay
-discovery, multi-hop routes, loop detection, quotas, and a bounded offline
-queue. Same-LAN nodes also discover each other over multicast DNS and can
+discovery, runtime relay switching, multi-hop routes, signed relay hops, loop
+detection, byte quotas, a WebSocket tunnel with long-poll fallback, and a
+bounded offline queue. A standalone `toget relay` process needs no account or
+database. Same-LAN nodes also discover each other over multicast DNS and can
 resolve a server code without a directory; every discovered endpoint is still
 verified through its pinned TLS certificate and signed manifests. Portable
 business cards can be copied as text or shown as a QR code, and a saved card
@@ -322,8 +327,10 @@ go run ./cmd/toget-official
 
 给 `toget serve` 加上 `--node-relay '<中继地址>'` 和
 `--node-directory '<目录地址>'`，或用 `--node-relay auto` 跟随目录的默认中继。
-中继只转发加密请求、看得到元数据，看不到房间内容。已实现多跳中继和短暂的离线队列；
-NAT 穿透和打洞还没有，跨网络时中继就是通路。详见 [中继与目录](docs/relay.md)。
+中继只转发加密请求、看得到元数据，看不到房间内容。已实现多跳中继、逐跳签名、字节配额、
+WebSocket 隧道（HTTPS 长轮询自动回退）和短暂的离线队列；也可以用 `toget relay` 单独运行中继，
+或在设置里运行期切换中继。NAT 穿透和打洞还没有，跨网络时中继就是通路。详见
+[中继与目录](docs/relay.md)。
 
 ```bash
 pnpm install
@@ -429,6 +436,6 @@ toget update rollback               # 放弃待确认更新，或回到上一版
 - [代码结构](docs/repo-layout.md)
 - [路线图](docs/roadmap.md)
 
-**早期实现：本地、局域网和跨网络中继房间已经可用。** 当前版本有账号与设备身份、端到端加密的房间密钥代次、加密的哈希链事件日志、附件、备份恢复、本地 API、CLI 和双语 React 网页。同一局域网内的两个节点可以用邀请码加入房间、互发消息并同步历史；第二台设备可以通过配对恢复同一账号并同步房间，无需拷贝私钥。远程房间支持附件、自主退出和本地归档。Agent 可以注册、加入房间，通过本地审批和工具回执卡片受控，也可以用房间策略按工具、对象、金额和时段预授权日常操作；本机 Agent 运行时，网页会显示有大小上限的临时过程输出，最终回答才是写入时间线的持久记录。可选的中继和签名目录已经能跨网络工作，支持直连优先、自动发现中继、多跳路由、环路检测、配额和有限的离线队列。同一局域网里的节点还能通过 mDNS 相互发现，不依赖目录也能用服务器代码找到对方；发现的地址仍会通过固定 TLS 证书和签名清单验证。名片可以复制成文本或显示为二维码，保存后会把完整服务器 ID 固定到对应的八位代码上。房间邀请码和设备配对码也可以显示成二维码，并从图片中识别。
+**早期实现：本地、局域网和跨网络中继房间已经可用。** 当前版本有账号与设备身份、端到端加密的房间密钥代次、加密的哈希链事件日志、附件、备份恢复、本地 API、CLI 和双语 React 网页。同一局域网内的两个节点可以用邀请码加入房间、互发消息并同步历史；第二台设备可以通过配对恢复同一账号并同步房间，无需拷贝私钥。远程房间支持附件、自主退出和本地归档。Agent 可以注册、加入房间，通过本地审批和工具回执卡片受控，也可以用房间策略按工具、对象、金额和时段预授权日常操作；本机 Agent 运行时，网页会显示有大小上限的临时过程输出，最终回答才是写入时间线的持久记录。可选的中继和签名目录已经能跨网络工作，支持直连优先、自动发现中继、运行期切换中继、多跳路由、逐跳签名、环路检测、字节配额、WebSocket 隧道（长轮询回退）和有限的离线队列；`toget relay` 可以不建账号、不建数据库，单独运行一个中继。同一局域网里的节点还能通过 mDNS 相互发现，不依赖目录也能用服务器代码找到对方；发现的地址仍会通过固定 TLS 证书和签名清单验证。名片可以复制成文本或显示为二维码，保存后会把完整服务器 ID 固定到对应的八位代码上。房间邀请码和设备配对码也可以显示成二维码，并从图片中识别。
 
 还没有实现：NAT 穿透与打洞、同一节点登录多个账号、自带模型，以及面向官方托管账号的强制更新服务端执行（本地定时检查、更新命令和回滚已经可用）。守护进程会在被 @ 时在本地运行 Agent，可以用 Claude Code，也可以用任何实现了运行时协议的命令。很多地方仍会调整。欢迎开 issue 关注、分享场景，或直接参与建设。项目理念见 [docs/philosophy.md](docs/philosophy.md)，参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。

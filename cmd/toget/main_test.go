@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestFormatAccountID(t *testing.T) {
@@ -87,5 +89,31 @@ func TestValidateLoopback(t *testing.T) {
 		if err := validateLoopback(listen); err == nil {
 			t.Errorf("validateLoopback(%q) succeeded", listen)
 		}
+	}
+}
+
+func TestRelayCommandRunsWithoutAnAccount(t *testing.T) {
+	home := t.TempDir()
+	root := newRootCommand()
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	root.SetArgs([]string{"--home", home, "relay", "--listen", "127.0.0.1:0", "--json"})
+	done := make(chan error, 1)
+	go func() { done <- root.ExecuteContext(ctx) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("relay command: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("relay command did not stop")
+	}
+	if _, err := os.Stat(filepath.Join(home, "relay-key.json")); err != nil {
+		t.Fatalf("relay key was not created: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "toget.db")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("relay command created an account database: %v", err)
 	}
 }

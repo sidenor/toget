@@ -20,7 +20,7 @@ import (
 	"github.com/sidenor/toget/internal/room"
 )
 
-func startTestRelay(t *testing.T, parent string, sessionTTL time.Duration) *relay.Service {
+func startTestRelay(t *testing.T, parent string, sessionTTL time.Duration, configure ...func(*relay.Options)) *relay.Service {
 	t.Helper()
 	paths, err := config.Resolve(t.TempDir())
 	if err != nil {
@@ -29,11 +29,15 @@ func startTestRelay(t *testing.T, parent string, sessionTTL time.Duration) *rela
 	if err := config.Ensure(paths); err != nil {
 		t.Fatal(err)
 	}
-	service, err := relay.New(relay.Options{
+	opts := relay.Options{
 		Listen: "127.0.0.1:0", Paths: paths, Parent: parent,
 		PollWait: 250 * time.Millisecond, WaitTimeout: 5 * time.Second,
 		QueueTTL: time.Minute, ResponseTTL: time.Minute, SessionTTL: sessionTTL,
-	})
+	}
+	for _, apply := range configure {
+		apply(&opts)
+	}
+	service, err := relay.New(opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,6 +138,7 @@ func TestRelayFallbackDirectoryAndRoomTraffic(t *testing.T) {
 		opts.Directory = directoryService.URL()
 	})
 	waitForCondition(t, 20*time.Second, "host relay registration", host.node.RelayConnected)
+	waitForCondition(t, 20*time.Second, "host relay WebSocket tunnel", host.node.RelayTunnelConnected)
 
 	hostActor, err := host.node.LocalActor(ctx)
 	if err != nil {
@@ -336,6 +341,9 @@ func TestMultiHopRelayRoutes(t *testing.T) {
 	ctx := context.Background()
 	parent := startTestRelay(t, "", time.Minute)
 	child := startTestRelay(t, parent.URL(), time.Minute)
+	waitForCondition(t, 20*time.Second, "parent relay WebSocket tunnel", func() bool {
+		return parent.TunnelCount() > 0
+	})
 
 	host := newNodeWithOptions(t, "Host", func(opts *node.Options) {
 		opts.Relay = child.URL()
@@ -404,5 +412,67 @@ func TestMultiHopRelayRoutes(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("guest did not receive the multi-hop message: %#v", events)
+	}
+}
+
+func TestRelayHTTPSLongPollFallback(t *testing.T) {
+	ctx := context.Background()
+	relayService := startTestRelay(t, "", time.Minute, func(opts *relay.Options) {
+		opts.WebSocket = "off"
+	})
+	host := newNodeWithOptions(t, "Host", func(opts *node.Options) {
+		opts.Relay = relayService.URL()
+	})
+	waitForCondition(t, 20*time.Second, "host relay registration", host.node.RelayConnected)
+	if host.node.RelayTunnelConnected() {
+		t.Fatal("node reported a tunnel while the relay disabled WebSocket")
+	}
+
+	hostActor, err := host.node.LocalActor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roomRecord, _, err := host.rooms.CreateRoom(ctx, "Fallback room", "", hostActor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.node.EnsureRoomHome(ctx, roomRecord.ID); err != nil {
+		t.Fatal(err)
+	}
+	guest := newNode(t, "Guest")
+	invite, _, err := host.rooms.CreateInvite(ctx, roomRecord.ID, hostActor, room.HistoryNone, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := host.node.InviteCode(ctx, roomRecord.ID, invite.Secret, roomRecord.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := guest.node.Join(ctx, code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostRoute, err := host.node.RelayRoute(ctx)
+	if err != nil || hostRoute == "" {
+		t.Fatalf("host relay route = %q, %v", hostRoute, err)
+	}
+	fakeDirect := "https://127.0.0.1:1#fp=" + host.node.Fingerprint()
+	if _, err := guest.rooms.SetHomeInfo(ctx, joined.ID, host.snapshot.Server.ID, relayproto.JoinAddress(fakeDirect, hostRoute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.rooms.PostMessage(ctx, roomRecord.ID, hostActor, room.MessagePostedPayload{Text: "over long poll"}); err != nil {
+		t.Fatal(err)
+	}
+	var lastErr error
+	waitForCondition(t, 20*time.Second, "long-poll sync", func() bool {
+		n, err := guest.node.SyncRoom(ctx, joined.ID)
+		lastErr = err
+		return err == nil && n == 1
+	})
+	if lastErr != nil {
+		t.Fatalf("long-poll sync: %v", lastErr)
+	}
+	if host.node.RelayTunnelConnected() {
+		t.Fatal("node unexpectedly switched to a tunnel")
 	}
 }

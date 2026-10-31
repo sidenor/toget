@@ -142,6 +142,8 @@ export const api = {
   redeemInvite: (secret: string) =>
     request<{ room: Room; member: Member; event?: RoomEvent | null }>("/api/v1/invites/redeem", json({ secret })),
   node: () => request<{ enabled: boolean; info?: NodeInfo }>("/api/v1/node"),
+  setNodeRelay: (relay: string) =>
+    request<{ enabled: boolean; info?: NodeInfo }>("/api/v1/node/relay", json({ relay })),
   nodeCard: (label = "") =>
     request<{ card: CardView }>(`/api/v1/card${label ? `?label=${encodeURIComponent(label)}` : ""}`),
   nodeCards: () => request<{ cards: CardView[] }>("/api/v1/cards"),

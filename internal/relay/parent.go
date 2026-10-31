@@ -18,6 +18,7 @@ import (
 
 	nodenet "github.com/sidenor/toget/internal/node"
 	"github.com/sidenor/toget/internal/relayproto"
+	"github.com/sidenor/toget/internal/relaytunnel"
 )
 
 const (
@@ -36,6 +37,7 @@ type parentLink struct {
 	fingerprint string
 	url         string
 	client      *http.Client
+	wsClient    *http.Client
 }
 
 func newParentLink(_ context.Context, svc *Service, raw string) (*parentLink, error) {
@@ -60,9 +62,19 @@ func newParentLink(_ context.Context, svc *Service, raw string) (*parentLink, er
 		MaxIdleConnsPerHost:   4,
 		IdleConnTimeout:       90 * time.Second,
 	}
+	tunnelTransport := &http.Transport{
+		Proxy:                 nil,
+		TLSClientConfig:       config,
+		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 15 * time.Second,
+		MaxIdleConnsPerHost:   2,
+		IdleConnTimeout:       90 * time.Second,
+	}
 	return &parentLink{
 		svc: svc, base: base, fingerprint: fingerprint, url: raw,
-		client: &http.Client{Transport: transport, Timeout: parentTimeout},
+		client:   &http.Client{Transport: transport, Timeout: parentTimeout},
+		wsClient: &http.Client{Transport: tunnelTransport},
 	}, nil
 }
 
@@ -146,12 +158,33 @@ func (p *parentLink) postResult(ctx context.Context, token, requestID string, re
 }
 
 func (p *parentLink) forward(ctx context.Context, env *relayproto.Envelope) (*http.Response, []byte, error) {
-	payload, err := json.Marshal(env)
+	signed := *env
+	if err := relayproto.SignForward(&signed, p.svc.key, time.Now()); err != nil {
+		return nil, nil, err
+	}
+	payload, err := json.Marshal(&signed)
 	if err != nil {
 		return nil, nil, err
 	}
-	path := relayproto.ForwardPrefix + url.PathEscape(env.Target)
-	return p.request(ctx, http.MethodPost, path, payload, "")
+	path := relayproto.RelayForwardPrefix + url.PathEscape(env.Target)
+	resp, data, err := p.request(ctx, http.MethodPost, path, payload, "")
+	if err != nil {
+		return nil, nil, err
+	}
+	// Older parents know only the unsigned endpoint. The signed request was
+	// rejected without reaching a node, so retrying is safe and keeps mixed
+	// relay trees working during a rolling upgrade.
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
+		unsigned := *env
+		unsigned.ForwarderID, unsigned.ForwarderKey = "", ""
+		unsigned.ForwardedAt, unsigned.ForwardNonce, unsigned.ForwardSignature = 0, "", ""
+		payload, err = json.Marshal(&unsigned)
+		if err != nil {
+			return nil, nil, err
+		}
+		return p.request(ctx, http.MethodPost, relayproto.ForwardPrefix+url.PathEscape(env.Target), payload, "")
+	}
+	return resp, data, nil
 }
 
 func (p *parentLink) pollTicket(ctx context.Context, queued relayproto.Queued) relayproto.Result {
@@ -222,7 +255,7 @@ func (s *Service) runParent(ctx context.Context) {
 	}
 	backoff := time.Second
 	for {
-		token, _, err := parent.register(ctx)
+		token, expires, err := parent.register(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -246,7 +279,7 @@ func (s *Service) runParent(ctx context.Context) {
 			defer wg.Done()
 			s.announceLoop(runCtx, parent, token)
 		}()
-		err = s.pollParent(runCtx, parent, token)
+		err = s.pollParent(runCtx, parent, token, expires)
 		cancel()
 		wg.Wait()
 		if ctx.Err() != nil {
@@ -265,7 +298,28 @@ func (s *Service) runParent(ctx context.Context) {
 	}
 }
 
-func (s *Service) pollParent(ctx context.Context, parent *parentLink, token string) error {
+func (s *Service) pollParent(ctx context.Context, parent *parentLink, token string, expires time.Time) error {
+	// Prefer a WebSocket tunnel. If the parent does not support it, keep the
+	// existing long-poll path; both use the same registration token.
+	tunnel, err := parent.dialTunnel(ctx, s.relayID, token)
+	if err == nil {
+		s.logger.Debug("relay parent tunnel connected", "url", parent.url)
+		err = s.serveParentTunnel(ctx, parent, tunnel, expires)
+		tunnel.CloseNow()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err != nil {
+			s.logger.Warn("relay parent tunnel ended; using HTTPS long-poll", "url", parent.url, "error", err)
+			return s.pollParentHTTP(ctx, parent, token)
+		}
+		return nil
+	}
+	s.logger.Debug("relay parent WebSocket unavailable; using HTTPS long-poll", "url", parent.url, "error", err)
+	return s.pollParentHTTP(ctx, parent, token)
+}
+
+func (s *Service) pollParentHTTP(ctx context.Context, parent *parentLink, token string) error {
 	sem := make(chan struct{}, 4)
 	var wg sync.WaitGroup
 	defer wg.Wait()
@@ -289,12 +343,106 @@ func (s *Service) pollParent(ctx context.Context, parent *parentLink, token stri
 				defer wg.Done()
 				defer func() { <-sem }()
 				result := s.forwardLocal(ctx, &frame, false)
+				result = boundParentResult(frame.RequestID, result)
 				if err := parent.postResult(ctx, token, frame.RequestID, result); err != nil {
 					s.logger.Debug("relay parent result failed", "request", frame.RequestID, "error", err)
 				}
 			}()
 		}
 	}
+}
+
+func (p *parentLink) dialTunnel(ctx context.Context, relayID, token string) (*relaytunnel.Client, error) {
+	dialCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	return relaytunnel.Dial(dialCtx, p.base, token, relayID, p.wsClient)
+}
+
+func (s *Service) serveParentTunnel(ctx context.Context, parent *parentLink, tunnel *relaytunnel.Client, expires time.Time) error {
+	refresh := time.Until(expires) - 2*time.Minute
+	if refresh < 10*time.Second {
+		refresh = 10 * time.Second
+	}
+	refreshTimer := time.NewTimer(refresh)
+	defer refreshTimer.Stop()
+	type readResult struct {
+		msg relayproto.TunnelMessage
+		err error
+	}
+	inbound := make(chan readResult)
+	readCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		for {
+			msg, err := tunnel.Read(readCtx)
+			select {
+			case inbound <- readResult{msg: msg, err: err}:
+			case <-readCtx.Done():
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	sem := make(chan struct{}, 4)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-refreshTimer.C:
+			return nil
+		case result := <-inbound:
+			if result.err != nil {
+				return result.err
+			}
+			msg := result.msg
+			switch msg.Type {
+			case relayproto.TunnelFrame:
+				if msg.Envelope == nil || msg.Envelope.Target == "" || msg.Envelope.RequestID == "" {
+					continue
+				}
+				frame := *msg.Envelope
+				select {
+				case sem <- struct{}{}:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					defer func() { <-sem }()
+					reply := s.forwardLocal(ctx, &frame, false)
+					reply = boundParentResult(frame.RequestID, reply)
+					if err := tunnel.Write(ctx, relayproto.TunnelMessage{
+						Protocol: relayproto.Protocol, Type: relayproto.TunnelResult, Result: &reply,
+					}); err != nil && ctx.Err() == nil {
+						s.logger.Debug("relay parent tunnel result failed", "request", frame.RequestID, "error", err)
+					}
+				}()
+			case relayproto.TunnelPing:
+				_ = tunnel.Write(ctx, relayproto.TunnelMessage{
+					Protocol: relayproto.Protocol, Type: relayproto.TunnelPong, ServerTime: time.Now().UTC(),
+				})
+			case relayproto.TunnelError:
+				return fmt.Errorf("parent relay tunnel error: %s", msg.Message)
+			}
+		}
+	}
+}
+
+func boundParentResult(requestID string, result relayproto.Result) relayproto.Result {
+	result.Protocol = relayproto.Protocol
+	result.RequestID = requestID
+	payload, err := json.Marshal(result)
+	if err == nil && len(payload) <= relayproto.MaxResultWire {
+		return result
+	}
+	out := errorResult(http.StatusBadGateway, "response_too_large", "the node response is too large to relay")
+	out.RequestID = requestID
+	return out
 }
 
 func (s *Service) announceLoop(ctx context.Context, parent *parentLink, token string) {

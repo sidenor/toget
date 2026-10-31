@@ -105,6 +105,22 @@ func pinnedHTTPClient(config *tls.Config, timeout, headerTimeout time.Duration) 
 	return &http.Client{Transport: transport, Timeout: timeout}
 }
 
+// pinnedTunnelHTTPClient is used for WebSocket upgrades. The regular client
+// timeout would kill an otherwise healthy long-lived tunnel; only the
+// handshake has a deadline, supplied by the caller's context.
+func pinnedTunnelHTTPClient(config *tls.Config) *http.Client {
+	transport := &http.Transport{
+		Proxy:                 nil,
+		TLSClientConfig:       config,
+		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 15 * time.Second,
+		MaxIdleConnsPerHost:   2,
+		IdleConnTimeout:       90 * time.Second,
+	}
+	return &http.Client{Transport: transport}
+}
+
 // NewClientForURL builds a client from a URL containing #fp=<fingerprint>.
 // The URL may also carry a relay route in its fragment.
 func NewClientForURL(raw, accountID, deviceID string, key ed25519.PrivateKey) (*Client, error) {

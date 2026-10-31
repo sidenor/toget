@@ -3,7 +3,7 @@
 Toget is one repository containing the node, the official service, the local web UI, the reset page, shared packages, deployment assets, and documentation.
 
 > **Current implementation:** the working tree contains `cmd/toget`,
-> `cmd/toget-official`, `internal/{account,agent,api,approval,backup,card,config,directory,directoryproto,identity,mdns,node,notify,policy,protocol,relay,relayproto,releasebuild,room,sbom,sealbox,session,storage,tool,ui,update,vault,version}`,
+> `cmd/toget-official`, `internal/{account,agent,api,approval,backup,card,config,directory,directoryproto,identity,mdns,node,notify,policy,protocol,relay,relayproto,relaytunnel,releasebuild,room,sbom,sealbox,session,storage,tool,ui,update,vault,version}`,
 > `sdk/connector`, `examples/connector-echo`, `web/app`, `api/`, `proto/`,
 > `desktop/` (an unbuilt Tauri scaffold), `scripts/`, and `docs/`. The tree below is the target layout; directories
 > such as `device`, `crypto`, `message`, `transport`, `sync`, `discovery`,
@@ -68,7 +68,7 @@ toget/
 │   ├── identity/                  # keys, signatures, trust anchors, manifests
 │   ├── crypto/                    # HPKE, AEAD, KDF, PAKE wrappers; no domain logic
 │   ├── protocol/                  # generated Protobuf types and validation
-│   ├── transport/                 # planned QUIC/WSS framing; the implemented path is HTTPS + long-poll
+│   ├── transport/                 # planned QUIC framing; the implemented path is HTTPS + WebSocket/long-poll relay traffic
 │   ├── room/                      # rooms, membership, epochs, events, ordering
 │   ├── message/                   # envelope construction, inner/outer split, attachments
 │   ├── sync/                      # cursors, deltas, snapshots, outbox replay
@@ -78,7 +78,8 @@ toget/
 │   ├── mdns/                      # implemented _toget._tcp.local. advertisement and browse cache
 │   ├── directory/                 # implemented public directory service
 │   ├── directoryproto/            # directory wire types
-│   ├── relay/                     # implemented parent table, routing, forwarding, offline queue
+│   ├── relay/                     # implemented parent table, routing, signed forwarding, quotas, WebSocket tunnel, offline queue
+│   ├── relaytunnel/               # implemented WebSocket tunnel client framing
 │   ├── relayproto/                # relay wire types, routes, signed envelopes
 │   ├── sealbox/                   # room key wrapping and sealed payload helpers
 │   ├── discovery/                 # planned manifest cache and manual-address book (cards live in internal/card)
@@ -184,7 +185,7 @@ toget/
 └── examples/
     ├── connector-echo/            # minimal connector using the Go SDK
     ├── cli-agent/                 # minimal Agent that speaks the CLI protocol (planned)
-    └── relay/                     # smallest relay-only node (planned)
+    └── relay/                     # smallest relay-only node (implemented as `toget relay`)
 ```
 
 ## Rules

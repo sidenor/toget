@@ -70,6 +70,36 @@ func (s *Server) handleNodeLookup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, record)
 }
 
+type setNodeRelayRequest struct {
+	Relay string `json:"relay"`
+}
+
+func (s *Server) handleSetNodeRelay(w http.ResponseWriter, r *http.Request) {
+	if s.node == nil {
+		writeError(w, http.StatusServiceUnavailable, "node_disabled", "the LAN transport is disabled")
+		return
+	}
+	var req setNodeRelayRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if err := s.node.SetRelay(r.Context(), req.Relay); err != nil {
+		if strings.HasPrefix(err.Error(), "save relay setting:") {
+			writeError(w, http.StatusInternalServerError, "save_failed", "the relay setting could not be saved")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid_relay", err.Error())
+		return
+	}
+	info, err := s.node.Info(r.Context())
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "node_not_ready", "node identity is not ready")
+		return
+	}
+	writeJSON(w, http.StatusOK, nodeInfoResponse{Enabled: true, Info: info})
+}
+
 func (s *Server) handleNodeSync(w http.ResponseWriter, r *http.Request) {
 	if s.node == nil {
 		writeError(w, http.StatusServiceUnavailable, "node_disabled", "the LAN transport is disabled")

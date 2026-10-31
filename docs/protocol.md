@@ -65,10 +65,11 @@ decode it from a still image locally. The wire format and security rules do not
 change: a QR code is another way to carry the same single-use invite or
 short-lived pairing secret, not a new credential.
 
-Still design-only: QUIC, Protobuf framing, NAT traversal or hole punching,
-and WebSocket transport. Relays and the directory are implemented with HTTPS +
-JSON rather than the future Protobuf framing; see [relay.md](relay.md) for
-their wire format, trust boundaries, and limits. LAN discovery is implemented
+Still design-only: QUIC, Protobuf framing, and NAT traversal or hole punching.
+Relays and the directory are implemented with HTTPS + JSON rather than the
+future Protobuf framing, and relay sessions use an optional WebSocket tunnel
+with HTTPS long-poll fallback; see [relay.md](relay.md) for their wire format,
+trust boundaries, and limits. LAN discovery is implemented
 with a small mDNS responder and browser; see [discovery.md](discovery.md).
 Portable business cards carry signed manifests as text or QR codes; see
 [cards.md](cards.md). The rest of this document describes the target design;
@@ -175,8 +176,8 @@ relay is used.
 
 **Implemented transport:** pinned HTTPS + JSON on TCP `7717`, HTTP/2 where
 available. If the direct health probe fails, the node client uses an outbound
-HTTPS long-poll tunnel to a relay. No UDP, port mapping, or hole punching is
-implemented.
+relay session: a WebSocket tunnel when the relay supports it, otherwise HTTPS
+long-poll. No UDP, port mapping, or hole punching is implemented.
 
 Target handshake:
 
@@ -546,15 +547,16 @@ The inviter can only attach history they can see. Inviting is not a way to forwa
 
 Implemented today over HTTPS + JSON:
 
-- A node registers with a relay using its server key and both signed manifests, then long-polls for opaque envelopes. The relay never connects to the node.
+- A node registers with a relay using its server key and both signed manifests. It then prefers a WebSocket tunnel (`GET /relay/v1/ws`) and falls back to long-poll for opaque envelopes. The relay never connects to the node.
 - A relay may register with a parent and announce routes upward. Announcements carry a `Via` path; the first hop must be the authenticated announcing relay, a direct registration always wins, and a path with a repeated relay or more than eight hops is rejected.
-- Forwarding follows the announced route. The lowest-common-ancestor optimization is not computed; a relay with no local route sends the envelope upward.
+- Forwarding follows the announced route. A child relay signs each relay-to-relay envelope with its relay key; the parent verifies the self-certifying relay ID, the immediate-hop position in the route, and a replay nonce. The lowest-common-ancestor optimization is not computed; a relay with no local route sends the envelope upward.
 - Each forwarded envelope appends the relay's ID to `Hops`. A relay that sees its own ID, or eight existing hops, returns `508`.
 - The relay attached to an offline node can queue up to 128 requests / 16 MiB for 55 seconds and return a ticket. Results are retained for 10 minutes. This is at-most-once after the node accepts a frame.
-- Relays enforce per-IP rates, per-node queue limits, in-flight request and byte limits, and body size limits, returning `queue_full`, `relay_busy`, `relay_full`, or `rate_limited` with `Retry-After`.
+- Relays enforce per-IP rates, per-node queue limits, in-flight request and byte limits, body size limits, a 32 MiB/minute per-client-sender quota, and a 256 MiB/minute per-forwarding-relay quota. They return `queue_full`, `relay_busy`, `relay_full`, `quota_exceeded`, or `rate_limited` with `Retry-After`.
+- `POST /api/v1/node/relay` switches a running node between `off`, `auto`, and a pinned relay without a restart. The setting is persisted first; `GET /api/v1/node` reports the mode and whether the tunnel or long-poll path is active.
 - The relay sees the target server ID, inner path, signed account/device headers, timing, and ciphertext. It cannot read room content.
 
-See [relay.md](relay.md) for the exact wire format and numbers. Open: deterministic relay switching for existing rooms, multi-hop offline queueing, signed forwarding between relays, byte-based per-sender quotas, and the exact meaning of "no relay". Today `--no-relay` disables outbound fallback; ordinary nodes do not relay for others.
+See [relay.md](relay.md) for the exact wire format and numbers. Open: re-advertising a changed relay to devices that already stored a room address, multi-hop offline queueing, and the exact meaning of "no relay". Today `--no-relay` disables outbound fallback; ordinary nodes do not relay for others unless started with `toget relay`.
 
 ## Local API
 

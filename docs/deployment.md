@@ -235,6 +235,9 @@ directory on a public host:
 toget-official --home /var/lib/toget-official \
   --relay-advertise relay.example.com:7719 \
   --directory-advertise directory.example.com:7720
+
+# or a relay without the official bundle, account, or database
+toget relay --listen 0.0.0.0:7719 --advertise relay.example.com:7719
 ```
 
 Point a node at them, or let it discover the directory's default relay:
@@ -250,11 +253,12 @@ toget serve --no-mdns             # disable same-LAN discovery
 toget node info                   # direct URL, relay state, directory, discovery
 ```
 
-- The directory's advertised relay is the default for `auto`; a node can also use a friend's relay, a community relay, or its own `toget-official`.
+- The directory's advertised relay is the default for `auto`; a node can also use a friend's relay, a community relay, or its own `toget relay`.
 - A relay sees the target server, signed account/device headers, path, timing, size, and ciphertext. It cannot decrypt room content.
-- Relays can queue requests for an offline node for 55 seconds and can chain to a parent relay.
-- `--no-relay` disables outbound fallback only. Ordinary nodes do not accept relay traffic for others; a separate `toget-official` process is the supported relay.
-- Existing rooms keep the home address they were given, so changing a relay may require a fresh invite or lookup.
+- Relays can queue requests for an offline node for 55 seconds and can chain to a parent relay. Each relay-to-relay hop is signed by the forwarding relay.
+- Nodes prefer a WebSocket tunnel to the relay and fall back to HTTPS long-poll. `--no-websocket` on a relay forces the fallback.
+- `--no-relay` disables outbound fallback only. Ordinary nodes do not accept relay traffic for others; run `toget relay` or `toget-official`.
+- The relay can be changed at runtime from Settings or `POST /api/v1/node/relay`; new invites and directory lookups use the new route. Existing rooms keep the home address they were given, so remote members may need a fresh invite or lookup after a change.
 
 See [relay.md](relay.md) for quotas, the offline queue, trust boundaries, and
 current limitations.

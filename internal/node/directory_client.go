@@ -66,7 +66,7 @@ func (s *Service) syncDirectory(ctx context.Context) error {
 		return nil
 	}
 	var firstErr error
-	if s.relaySetting == "auto" {
+	if s.relayMode() == "auto" {
 		relayURL, err := s.defaultRelayFromDirectory(ctx)
 		if err != nil {
 			firstErr = err

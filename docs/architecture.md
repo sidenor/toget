@@ -67,10 +67,11 @@ incrementally. A second device can join the same account through a pairing
 code: it generates fresh device keys, the existing device approves after
 showing a fingerprint, and the account key arrives sealed to the new device.
 Rooms are copied as membership and key snapshots, then synced from their
-homes. A node can also register with an optional relay over a pinned,
-outbound HTTPS long-poll and fall back to it when the direct LAN path is not
-reachable. Relays can chain to a parent and announce signed routes, with loop
-detection and quotas. An optional directory maps an eight-digit server code to
+homes. A node can also register with an optional relay over outbound pinned
+HTTPS, using a WebSocket tunnel when available and long-poll otherwise, and
+fall back to it when the direct LAN path is not reachable. Relays can chain to
+a parent, announce signed routes, sign each relay-to-relay hop, and enforce
+per-sender byte quotas. An optional directory maps an eight-digit server code to
 a self-certifying signed manifest and can advertise a default relay. Nodes also
 advertise and browse `_toget._tcp.local.` over mDNS for directory-free
 same-LAN discovery; a discovered endpoint is only used after its pinned TLS
@@ -297,14 +298,17 @@ If a member is offline, the home node or a relay holds the envelope for a bounde
 A node chooses a **relay** to reach the rest of the network when direct connections fail. The default can come from the directory (`--node-relay auto`); users can point at a friend's relay, a community relay, or their own `toget-official` instance.
 
 - **Direct first (implemented):** probe the pinned LAN endpoint with a 2.5-second health check; use it when reachable. IPv6 preference, UPnP/NAT-PMP/PCP, and QUIC hole punching are not implemented.
-- **Relay fallback (implemented):** register over outbound pinned HTTPS, long-poll for opaque signed requests, and return results. No inbound port is needed.
+- **Relay fallback (implemented):** register over outbound pinned HTTPS, then prefer a WebSocket tunnel and fall back to long-poll for opaque signed requests. No inbound port is needed.
+- **Runtime switching (implemented):** a node can switch between off, automatic, and pinned relays from Settings or `POST /api/v1/node/relay` without a restart. New invites and directory records use the new route; existing room addresses are not re-advertised automatically.
+- **Relay-only process (implemented):** `toget relay` runs a relay without an account, database, or vault. `toget-official` remains a bundle of relay, directory, and optional services.
 - **Chaining (implemented):** a relay can register with a parent and announce routes upward. Forwarding follows the announced path; the lowest-common-ancestor optimization is not computed.
+- **Signed relay hops (implemented):** a child signs the envelope and the parent verifies its self-certifying relay ID, route position, and replay nonce. The older unsigned forward endpoint remains for mixed versions.
 - **Loop detection (implemented):** each hop appends its relay ID; an envelope is rejected on a repeated ID or after eight hops.
 - **No ownership:** a relay is a service. A device owned by A can relay B's encrypted traffic.
-- **Bounded (implemented defaults):** 128 queued requests / 16 MiB, 512 in-flight / 128 MiB, 52 MiB inner body, 48 MiB relayed response, per-IP rate limits. Large files still prefer direct connections.
+- **Bounded (implemented defaults):** 128 queued requests / 16 MiB, 512 in-flight / 128 MiB, 52 MiB inner body, 48 MiB relayed response, per-IP rate limits, 32 MiB/minute per client sender, and 256 MiB/minute per forwarding relay. Large files still prefer direct connections.
 - **Offline queue (implemented):** the relay attached to a node can hold requests for 55 seconds (the client envelope expiry), return a ticket, and keep the final response for 10 minutes. It is not a permanent history store. Multi-hop offline queueing is not implemented.
 
-Open details: deterministic relay switching for existing rooms, multi-hop offline queueing, byte-based per-sender quotas, and the exact meaning of "no relay" for inbound traffic are still being decided. Today `--no-relay` disables outbound fallback only; ordinary nodes do not accept relay traffic for others.
+Open details: re-advertising a changed relay to devices that already stored a room address, multi-hop offline queueing, and the exact meaning of "no relay" for inbound traffic are still being decided. Today `--no-relay` disables outbound fallback only; ordinary nodes do not accept relay traffic for others unless started as a relay.
 
 ## Identity and cryptography
 

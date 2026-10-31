@@ -2,11 +2,13 @@
 
 > Status: proposed direction. Exact versions are pinned in `.mise.toml`, `go.mod`, and `pnpm-lock.yaml`.
 >
-> **Current implementation note:** the LAN node uses Go's standard `net/http`
-> over TLS 1.3 with a pinned self-signed Ed25519 certificate and JSON
-> payloads (`internal/node`), not QUIC or Protobuf yet. Go, SQLite, React,
-> TypeScript, and Vite match this document. QUIC/WSS and Protobuf remain the
-> target for relay-scale transport.
+> **Current implementation note:** the LAN node and relay use Go's standard
+> `net/http` over TLS 1.3 with pinned self-signed Ed25519 certificates and JSON
+> payloads (`internal/node`, `internal/relay`), not QUIC or Protobuf yet.
+> Relay sessions use a WebSocket tunnel with HTTPS long-poll fallback; the
+> WebSocket upgrade is still HTTP-shaped and the inner request format is
+> unchanged. Go, SQLite, React, TypeScript, and Vite match this document. QUIC
+> and Protobuf remain the target for relay-scale transport.
 
 ## Decision summary
 

@@ -182,6 +182,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/node/discover", s.data(s.handleNodeDiscover))
 	mux.HandleFunc("GET /api/v1/node/lookup", s.data(s.handleNodeLookup))
 	mux.HandleFunc("POST /api/v1/node/sync", s.data(s.handleNodeSync))
+	mux.HandleFunc("POST /api/v1/node/relay", s.data(s.handleSetNodeRelay))
 	mux.HandleFunc("POST /api/v1/rooms/{id}/sync", s.data(s.handleRoomSync))
 	mux.HandleFunc("GET /api/v1/rooms", s.data(s.handleListRooms))
 	mux.HandleFunc("POST /api/v1/rooms", s.data(s.handleCreateRoom))

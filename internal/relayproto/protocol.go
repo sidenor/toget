@@ -28,6 +28,9 @@ const (
 	RoutePrefix = "/relay/v1/node/"
 	// ForwardPrefix receives one opaque envelope.
 	ForwardPrefix = "/relay/v1/forward/"
+	// RelayForwardPrefix receives an envelope signed by the immediate child
+	// relay. The parent verifies the signature and route before forwarding.
+	RelayForwardPrefix = "/relay/v1/relay-forward/"
 	// RelayIDPrefix marks a self-certifying relay identity.
 	RelayIDPrefix = "togr1:"
 
@@ -100,6 +103,17 @@ type Envelope struct {
 	Hops      []string          `json:"hops,omitempty"`
 	CreatedAt time.Time         `json:"created_at"`
 	ExpiresAt time.Time         `json:"expires_at,omitempty"`
+	// ForwarderID, ForwarderKey, ForwardedAt, ForwardNonce, and
+	// ForwardSignature authenticate one relay-to-relay hop. A parent verifies
+	// the immediate child's self-certifying relay ID and signature before
+	// accepting a request on the relay-forward endpoint. End devices leave
+	// these fields empty; their request is authenticated by the inner node
+	// signature instead.
+	ForwarderID      string `json:"forwarder_id,omitempty"`
+	ForwarderKey     string `json:"forwarder_key,omitempty"`
+	ForwardedAt      int64  `json:"forwarded_at,omitempty"`
+	ForwardNonce     string `json:"forward_nonce,omitempty"`
+	ForwardSignature string `json:"forward_signature,omitempty"`
 }
 
 // Result is the home node's or downstream relay's answer. Status, Headers,
@@ -122,6 +136,32 @@ type Queued struct {
 	Queued    bool      `json:"queued"`
 	Ticket    string    `json:"ticket"`
 	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// WebSocket tunnel message types. A node or relay registers over HTTPS, then
+// opens /relay/v1/ws with its bearer token. The relay pushes envelopes as
+// "frame" messages and the client posts results as "result" messages. The
+// HTTPS long-poll endpoints remain available as a fallback.
+const (
+	TunnelHello  = "hello"
+	TunnelFrame  = "frame"
+	TunnelResult = "result"
+	TunnelPing   = "ping"
+	TunnelPong   = "pong"
+	TunnelError  = "error"
+)
+
+// TunnelMessage is one JSON WebSocket tunnel message. Exactly one of
+// Envelope or Result is set for frame/result messages.
+type TunnelMessage struct {
+	Protocol   int       `json:"protocol"`
+	Type       string    `json:"type"`
+	Envelope   *Envelope `json:"envelope,omitempty"`
+	Result     *Result   `json:"result,omitempty"`
+	Code       string    `json:"code,omitempty"`
+	Message    string    `json:"message,omitempty"`
+	ServerTime time.Time `json:"server_time,omitempty"`
+	ExpiresAt  time.Time `json:"expires_at,omitempty"`
 }
 
 // RegisterRequest is signed by the node's server key (kind node) or by the
@@ -185,6 +225,7 @@ type Info struct {
 	Sessions       int       `json:"sessions"`
 	Routes         int       `json:"routes"`
 	Queued         int       `json:"queued"`
+	Tunnels        int       `json:"tunnels"`
 	ServerTime     time.Time `json:"server_time"`
 }
 
@@ -286,6 +327,73 @@ func VerifyRegistration(req RegisterRequest, publicKey ed25519.PublicKey, now ti
 	return nil
 }
 
+// ForwardPayload returns the canonical bytes signed by the immediate relay.
+func ForwardPayload(env Envelope) ([]byte, error) {
+	env.ForwardSignature = ""
+	return json.Marshal(env)
+}
+
+// SignForward authenticates an envelope for one relay-to-relay hop. The
+// caller must already have appended its own relay ID to Hops.
+func SignForward(env *Envelope, key ed25519.PrivateKey, now time.Time) error {
+	if env == nil {
+		return errors.New("envelope is required")
+	}
+	if len(key) != ed25519.PrivateKeySize {
+		return errors.New("relay forwarding key is invalid")
+	}
+	public := key.Public().(ed25519.PublicKey)
+	env.ForwarderID = RelayID(public)
+	env.ForwarderKey = base64.RawStdEncoding.EncodeToString(public)
+	env.ForwardedAt = now.UTC().Unix()
+	env.ForwardNonce = NewNonce()
+	env.ForwardSignature = ""
+	payload, err := ForwardPayload(*env)
+	if err != nil {
+		return err
+	}
+	env.ForwardSignature = base64.RawStdEncoding.EncodeToString(ed25519.Sign(key, payload))
+	return nil
+}
+
+// VerifyForward checks a relay-to-relay signature and returns the verified
+// public key. It does not authorize the relay to reach a particular target;
+// the receiver must also match ForwarderID against an authenticated route.
+func VerifyForward(env *Envelope, now time.Time, skew time.Duration) (ed25519.PublicKey, error) {
+	if env == nil || env.ForwarderID == "" || env.ForwarderKey == "" ||
+		env.ForwardedAt == 0 || env.ForwardNonce == "" || env.ForwardSignature == "" {
+		return nil, errors.New("relay forwarding signature is missing")
+	}
+	rawKey, err := base64.RawStdEncoding.DecodeString(env.ForwarderKey)
+	if err != nil || len(rawKey) != ed25519.PublicKeySize {
+		return nil, errors.New("relay forwarding key is malformed")
+	}
+	public := ed25519.PublicKey(rawKey)
+	if RelayID(public) != env.ForwarderID {
+		return nil, errors.New("relay forwarding ID does not match its key")
+	}
+	if len(env.ForwardNonce) < 16 || len(env.ForwardNonce) > 128 {
+		return nil, errors.New("relay forwarding nonce is invalid")
+	}
+	signedAt := time.Unix(env.ForwardedAt, 0).UTC()
+	now = now.UTC()
+	if signedAt.Before(now.Add(-skew)) || signedAt.After(now.Add(skew)) {
+		return nil, errors.New("relay forwarding timestamp is outside the allowed window")
+	}
+	signature, err := base64.RawStdEncoding.DecodeString(env.ForwardSignature)
+	if err != nil || len(signature) != ed25519.SignatureSize {
+		return nil, errors.New("relay forwarding signature is malformed")
+	}
+	payload, err := ForwardPayload(*env)
+	if err != nil {
+		return nil, err
+	}
+	if !ed25519.Verify(public, payload, signature) {
+		return nil, errors.New("relay forwarding signature is invalid")
+	}
+	return public, nil
+}
+
 // RelayID returns the self-certifying ID for a relay public key.
 func RelayID(pub ed25519.PublicKey) string {
 	sum := sha256.Sum256(pub)
@@ -298,7 +406,10 @@ func ValidateEnvelope(env *Envelope) error {
 	if env == nil || env.Target == "" || env.Path == "" {
 		return errors.New("envelope is incomplete")
 	}
-	if len(env.Target) > MaxTarget || len(env.Path) > MaxPath {
+	if len(env.Target) > MaxTarget || len(env.Path) > MaxPath ||
+		len(env.AccountID) > MaxTarget || len(env.DeviceID) > MaxTarget ||
+		len(env.ForwarderID) > MaxTarget || len(env.ForwarderKey) > 256 ||
+		len(env.ForwardNonce) > 128 || len(env.ForwardSignature) > 256 {
 		return errors.New("envelope fields are too large")
 	}
 	switch env.Method {

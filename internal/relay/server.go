@@ -18,7 +18,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 
 	"github.com/sidenor/toget/internal/config"
 	"github.com/sidenor/toget/internal/identity"
@@ -33,6 +37,7 @@ const (
 	registerTokenTTL = 15 * time.Minute
 	targetTTL        = 7 * 24 * time.Hour
 	maxTargets       = 200000
+	tunnelWire       = relayproto.MaxResultWire + (1 << 20)
 )
 
 // Options configures a relay.
@@ -52,6 +57,14 @@ type Options struct {
 	MaxQueuedBytes  int64
 	MaxPending      int
 	MaxPendingBytes int64
+	// WebSocket is "off" to disable the WebSocket tunnel and require HTTPS
+	// long-poll. Empty or "on" keeps the tunnel enabled.
+	WebSocket string
+	// MaxSenderBytesPerMinute caps request bytes from one account or client
+	// IP. Relay-to-relay forwarding has a separate, larger allowance.
+	MaxSenderBytesPerMinute int64
+	// MaxRelayBytesPerMinute caps request bytes accepted from one child relay.
+	MaxRelayBytesPerMinute int64
 }
 
 // Service is a Toget relay. It forwards opaque signed requests to registered
@@ -78,6 +91,7 @@ type Service struct {
 
 	nonces     *nodenet.NonceCache
 	limit      *limiter
+	bytes      *byteLimiter
 	sessionTTL time.Duration
 
 	sessions     map[string]*session
@@ -101,6 +115,7 @@ type session struct {
 	lastSeen time.Time
 	expires  time.Time
 	pollMu   sync.Mutex
+	wsActive atomic.Bool
 	routes   map[string]relayproto.RouteAnnouncement
 }
 
@@ -175,6 +190,15 @@ func New(opts Options) (*Service, error) {
 	if opts.MaxPendingBytes <= 0 {
 		opts.MaxPendingBytes = 128 << 20
 	}
+	if opts.WebSocket == "" {
+		opts.WebSocket = "on"
+	}
+	if opts.MaxSenderBytesPerMinute <= 0 {
+		opts.MaxSenderBytesPerMinute = 32 << 20
+	}
+	if opts.MaxRelayBytesPerMinute <= 0 {
+		opts.MaxRelayBytesPerMinute = 256 << 20
+	}
 	var parentBase string
 	if strings.TrimSpace(opts.Parent) != "" && strings.TrimSpace(opts.Parent) != "off" {
 		base, fingerprint, err := nodenet.ParsePinnedURL(opts.Parent)
@@ -192,6 +216,7 @@ func New(opts Options) (*Service, error) {
 		parentURL:    parentBase,
 		nonces:       nodenet.NewNonceCache(),
 		limit:        newLimiter(240, 60),
+		bytes:        newByteLimiter(),
 		sessions:     make(map[string]*session),
 		routes:       make(map[string]*routeEntry),
 		targets:      make(map[string]*targetEntry),
@@ -337,9 +362,11 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("GET /relay/v1/node/{target}", s.handleTargetInfo)
 	mux.HandleFunc("POST /relay/v1/register", s.handleRegister)
 	mux.HandleFunc("POST /relay/v1/poll", s.handlePoll)
+	mux.HandleFunc("GET /relay/v1/ws", s.handleTunnel)
 	mux.HandleFunc("POST /relay/v1/results/{id}", s.handleResult)
 	mux.HandleFunc("POST /relay/v1/routes", s.handleRoutes)
 	mux.HandleFunc("POST /relay/v1/forward/{target}", s.handleForward)
+	mux.HandleFunc("POST /relay/v1/relay-forward/{target}", s.handleRelayForward)
 	mux.HandleFunc("GET /relay/v1/responses/{ticket}", s.handleQueuedResponse)
 	if s.dir != nil {
 		mux.Handle("/directory/", s.dir)
@@ -380,6 +407,7 @@ func (s *Service) handleInfo(w http.ResponseWriter, r *http.Request) {
 		Sessions:       s.liveSessionCountLocked(),
 		Routes:         s.liveRouteCountLocked(),
 		Queued:         s.queued,
+		Tunnels:        s.tunnelCountLocked(),
 		ServerTime:     time.Now().UTC(),
 	}
 	s.mu.RUnlock()
@@ -522,6 +550,10 @@ func (s *Service) handlePoll(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "relay session is invalid or expired")
 		return
 	}
+	if sess.wsActive.Load() {
+		writeError(w, http.StatusConflict, "tunnel_active", "the session is using a WebSocket tunnel")
+		return
+	}
 	sess.pollMu.Lock()
 	defer sess.pollMu.Unlock()
 
@@ -574,6 +606,187 @@ func (s *Service) handlePoll(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, relayproto.PollResponse{
 		Protocol: relayproto.Protocol, Frames: batch, ServerTime: time.Now().UTC(),
 	})
+}
+
+// handleTunnel upgrades an authenticated node or relay session to a
+// bidirectional WebSocket tunnel. Registration and route announcements stay
+// on HTTPS; the tunnel replaces the repeated long-poll and result POSTs.
+func (s *Service) handleTunnel(w http.ResponseWriter, r *http.Request) {
+	if s.opts.WebSocket == "off" {
+		writeError(w, http.StatusNotFound, "not_found", "the WebSocket tunnel is disabled")
+		return
+	}
+	sess := s.authorizedSession(r)
+	if sess == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "relay session is invalid or expired")
+		return
+	}
+	if !sess.wsActive.CompareAndSwap(false, true) {
+		writeError(w, http.StatusConflict, "tunnel_active", "the session already has a WebSocket tunnel")
+		return
+	}
+	defer sess.wsActive.Store(false)
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		InsecureSkipVerify: true,
+		CompressionMode:    websocket.CompressionDisabled,
+	})
+	if err != nil {
+		return
+	}
+	defer conn.CloseNow()
+	conn.SetReadLimit(tunnelWire)
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
+	if !s.touchSession(sess) {
+		_ = conn.Close(websocket.StatusPolicyViolation, "session expired")
+		return
+	}
+	if err := s.writeTunnelJSON(ctx, conn, relayproto.TunnelMessage{
+		Protocol: relayproto.Protocol, Type: relayproto.TunnelHello,
+		ServerTime: time.Now().UTC(), ExpiresAt: s.sessionExpires(sess),
+	}); err != nil {
+		return
+	}
+
+	out := make(chan relayproto.TunnelMessage, 8)
+	errCh := make(chan error, 2)
+	go func() { errCh <- s.readTunnel(ctx, conn, sess, out) }()
+	go func() { errCh <- s.writeTunnel(ctx, conn, sess, out) }()
+
+	select {
+	case <-ctx.Done():
+	case err := <-errCh:
+		if err != nil && ctx.Err() == nil {
+			s.logger.Debug("relay WebSocket tunnel ended", "session", sess.id, "error", err)
+		}
+	}
+	cancel()
+	_ = conn.Close(websocket.StatusNormalClosure, "bye")
+}
+
+func (s *Service) readTunnel(ctx context.Context, conn *websocket.Conn, sess *session, out chan<- relayproto.TunnelMessage) error {
+	for {
+		var msg relayproto.TunnelMessage
+		if err := wsjson.Read(ctx, conn, &msg); err != nil {
+			return err
+		}
+		if msg.Protocol != 0 && msg.Protocol != relayproto.Protocol {
+			return errors.New("unsupported tunnel protocol")
+		}
+		switch msg.Type {
+		case relayproto.TunnelResult:
+			if msg.Result == nil || msg.Result.RequestID == "" {
+				return errors.New("tunnel result is incomplete")
+			}
+			if msg.Result.Status < 100 || msg.Result.Status > 599 {
+				return errors.New("tunnel result status is invalid")
+			}
+			if !s.touchSession(sess) {
+				return errors.New("relay session expired")
+			}
+			if !s.finishPending(msg.Result.RequestID, sess.id, *msg.Result) {
+				// A queued result can arrive after its ticket was cleaned up.
+				// It is harmless; acknowledge and keep the tunnel alive.
+				continue
+			}
+		case relayproto.TunnelPing:
+			select {
+			case out <- relayproto.TunnelMessage{Protocol: relayproto.Protocol, Type: relayproto.TunnelPong, ServerTime: time.Now().UTC()}:
+			default:
+			}
+		case relayproto.TunnelHello, relayproto.TunnelPong:
+			// Ignore late or unsolicited informational messages.
+		default:
+			return errors.New("unknown tunnel message type")
+		}
+	}
+}
+
+func (s *Service) writeTunnel(ctx context.Context, conn *websocket.Conn, sess *session, out <-chan relayproto.TunnelMessage) error {
+	sendQueued := func() error {
+		for {
+			frames := s.takeQueued(sess.id, 16)
+			if len(frames) == 0 {
+				return nil
+			}
+			for i := range frames {
+				frame := frames[i]
+				if err := s.writeTunnelJSON(ctx, conn, relayproto.TunnelMessage{
+					Protocol: relayproto.Protocol, Type: relayproto.TunnelFrame, Envelope: &frame,
+				}); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if err := sendQueued(); err != nil {
+		return err
+	}
+	ping := time.NewTicker(20 * time.Second)
+	defer ping.Stop()
+	for {
+		select {
+		case frame := <-sess.frames:
+			if err := s.writeTunnelJSON(ctx, conn, relayproto.TunnelMessage{
+				Protocol: relayproto.Protocol, Type: relayproto.TunnelFrame, Envelope: &frame,
+			}); err != nil {
+				return err
+			}
+		case msg := <-out:
+			if err := s.writeTunnelJSON(ctx, conn, msg); err != nil {
+				return err
+			}
+		case <-ping.C:
+			if !s.touchSession(sess) {
+				_ = conn.Close(websocket.StatusPolicyViolation, "session expired")
+				return errors.New("relay session expired")
+			}
+			pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err := conn.Ping(pingCtx)
+			cancel()
+			if err != nil {
+				return err
+			}
+			if err := sendQueued(); err != nil {
+				return err
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+func (s *Service) writeTunnelJSON(ctx context.Context, conn *websocket.Conn, msg relayproto.TunnelMessage) error {
+	writeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return wsjson.Write(writeCtx, conn, msg)
+}
+
+func (s *Service) touchSession(sess *session) bool {
+	now := time.Now().UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sessions[sess.id] != sess || !now.Before(sess.expires) {
+		return false
+	}
+	sess.lastSeen = now
+	return true
+}
+
+func (s *Service) takeQueued(target string, limit int) []relayproto.Envelope {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.takeQueuedLocked(target, limit)
+}
+
+func (s *Service) sessionExpires(sess *session) time.Time {
+	if sess == nil {
+		return time.Time{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return sess.expires
 }
 
 func (s *Service) handleResult(w http.ResponseWriter, r *http.Request) {
@@ -712,6 +925,15 @@ func (s *Service) handleForward(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_envelope", err.Error())
 		return
 	}
+	quotaKeys := []string{"ip:" + clientIP(r)}
+	if env.AccountID != "" {
+		quotaKeys = append(quotaKeys, "account:"+env.AccountID)
+	}
+	if !s.bytes.allowMany(quotaKeys, int64(len(body)), s.opts.MaxSenderBytesPerMinute) {
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "quota_exceeded", "this sender has reached its relay byte quota")
+		return
+	}
 	now := time.Now().UTC()
 	env.Protocol = relayproto.Protocol
 	env.RequestID = relayproto.NewRequestID()
@@ -746,6 +968,81 @@ func (s *Service) handleForward(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	result := s.forwardLocal(r.Context(), &env, true)
+	s.writeResult(w, result)
+}
+
+// handleRelayForward accepts an envelope signed by the immediate child
+// relay. Unlike the client-facing forward endpoint, the child's identity is
+// cryptographic: its self-certifying relay ID, signature, and route must all
+// agree before the envelope is allowed to reach a target.
+func (s *Service) handleRelayForward(w http.ResponseWriter, r *http.Request) {
+	if !s.limit.allow("relay-forward:"+clientIP(r), 600, 200) {
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many relayed requests")
+		return
+	}
+	target := r.PathValue("target")
+	if target == "" || len(target) > relayproto.MaxTarget {
+		writeError(w, http.StatusBadRequest, "invalid_target", "target is invalid")
+		return
+	}
+	body, err := readBody(w, r, relayproto.MaxEnvelopeWire)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	var env relayproto.Envelope
+	if err := json.Unmarshal(body, &env); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid relay envelope")
+		return
+	}
+	if env.Target != target {
+		writeError(w, http.StatusBadRequest, "invalid_target", "target does not match the envelope")
+		return
+	}
+	if err := relayproto.ValidateEnvelope(&env); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_envelope", err.Error())
+		return
+	}
+	now := time.Now().UTC()
+	if _, err := relayproto.VerifyForward(&env, now, 5*time.Minute); err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid_forward", err.Error())
+		return
+	}
+	if len(env.Hops) == 0 || env.Hops[len(env.Hops)-1] != env.ForwarderID {
+		writeError(w, http.StatusUnauthorized, "invalid_forward", "the forwarding relay is not the last hop")
+		return
+	}
+	if err := s.nonces.Check(env.ForwardNonce, now); err != nil {
+		writeError(w, http.StatusConflict, "replayed_forward", "this forwarding signature was already used")
+		return
+	}
+	s.mu.RLock()
+	forwarder := s.sessions[env.ForwarderID]
+	forwarderLive := forwarder != nil && forwarder.kind == "relay" && s.sessionLiveLocked(forwarder, now)
+	s.mu.RUnlock()
+	if !forwarderLive {
+		writeError(w, http.StatusUnauthorized, "invalid_forward", "the forwarding relay has no live session")
+		return
+	}
+	direct := s.lookupDirect(target)
+	route, _ := s.lookupRoute(target, now)
+	authorized := (direct != nil && s.sessionLive(direct, now)) ||
+		(route != nil && route.session != nil && route.session.id == env.ForwarderID &&
+			len(route.via) > 0 && route.via[0] == env.ForwarderID)
+	if !authorized {
+		writeError(w, http.StatusNotFound, "route_not_found", "the forwarding relay is not on a route to this node")
+		return
+	}
+	if !s.bytes.allowMany([]string{"relay:" + env.ForwarderID}, int64(len(body)), s.opts.MaxRelayBytesPerMinute) {
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "quota_exceeded", "this relay has reached its forwarding byte quota")
+		return
+	}
+	env.Protocol = relayproto.Protocol
+	if env.RequestID == "" {
+		env.RequestID = relayproto.NewRequestID()
+	}
+	result := s.forwardLocal(r.Context(), &env, false)
 	s.writeResult(w, result)
 }
 
@@ -1134,8 +1431,29 @@ func (s *Service) cleanupLoop(ctx context.Context) {
 			}
 			s.mu.Unlock()
 			s.limit.cleanup(now)
+			s.bytes.cleanup(now)
 		}
 	}
+}
+
+func (s *Service) tunnelCountLocked() int {
+	n := 0
+	for _, sess := range s.sessions {
+		if sess.wsActive.Load() {
+			n++
+		}
+	}
+	return n
+}
+
+// TunnelCount reports how many sessions currently use WebSocket tunnels.
+func (s *Service) TunnelCount() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.tunnelCountLocked()
 }
 
 func (s *Service) liveSessionCountLocked() int {
@@ -1232,6 +1550,75 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// byteLimiter applies a fixed one-minute byte budget to a sender. The
+// reserved bytes are committed only when every key is under its limit, so a
+// rejected account does not silently consume its IP's allowance.
+type byteLimiter struct {
+	mu      sync.Mutex
+	buckets map[string]*byteBucket
+}
+
+type byteBucket struct {
+	start time.Time
+	bytes int64
+}
+
+func newByteLimiter() *byteLimiter {
+	return &byteLimiter{buckets: make(map[string]*byteBucket)}
+}
+
+func (l *byteLimiter) allowMany(keys []string, size, limit int64) bool {
+	if l == nil || limit <= 0 {
+		return true
+	}
+	if size < 0 || size > limit {
+		return false
+	}
+	now := time.Now().UTC()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		b := l.buckets[key]
+		if b == nil || now.Sub(b.start) >= time.Minute {
+			continue
+		}
+		if b.bytes+size > limit {
+			return false
+		}
+	}
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		b := l.buckets[key]
+		if b == nil || now.Sub(b.start) >= time.Minute {
+			b = &byteBucket{start: now}
+			l.buckets[key] = b
+		}
+		b.bytes += size
+	}
+	return true
+}
+
+func (l *byteLimiter) cleanup(now time.Time) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.buckets) < 4096 {
+		return
+	}
+	for key, b := range l.buckets {
+		if now.Sub(b.start) > 5*time.Minute {
+			delete(l.buckets, key)
+		}
+	}
 }
 
 type limiter struct {

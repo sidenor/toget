@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -189,6 +190,52 @@ func TestNodeLookupRequiresDirectory(t *testing.T) {
 	}
 	if discovery.Enabled || len(discovery.Peers) != 0 {
 		t.Fatalf("unexpected discovery response: %s", body)
+	}
+}
+
+func TestSetNodeRelayAPI(t *testing.T) {
+	server := newTestNodeWithLAN(t)
+	resp, body := server.request(t, http.MethodPost, "/api/v1/account", testToken,
+		`{"name":"Host","password":"testpass123","device_name":"host"}`, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create account = %d %s", resp.StatusCode, body)
+	}
+
+	resp, body = server.request(t, http.MethodGet, "/api/v1/node", testToken, "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("node info = %d %s", resp.StatusCode, body)
+	}
+	initial := decode[struct {
+		Info node.Info `json:"info"`
+	}](t, body)
+	if initial.Info.RelayMode != "off" || initial.Info.RelaySetting != "off" {
+		t.Fatalf("initial relay = %#v", initial.Info)
+	}
+
+	resp, body = server.request(t, http.MethodPost, "/api/v1/node/relay", testToken, `{"relay":"auto"}`, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("automatic relay without directory = %d %s", resp.StatusCode, body)
+	}
+	resp, body = server.request(t, http.MethodPost, "/api/v1/node/relay", testToken,
+		`{"relay":"http://relay.example.com#fp=`+strings.Repeat("ab", 32)+`"}`, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid relay URL = %d %s", resp.StatusCode, body)
+	}
+	resp, body = server.request(t, http.MethodPost, "/api/v1/node/relay", testToken, `{"relay":"auto","extra":true}`, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown field = %d %s", resp.StatusCode, body)
+	}
+
+	resp, body = server.request(t, http.MethodPost, "/api/v1/node/relay", testToken, `{"relay":"off"}`, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("disable relay = %d %s", resp.StatusCode, body)
+	}
+	updated := decode[struct {
+		Enabled bool      `json:"enabled"`
+		Info    node.Info `json:"info"`
+	}](t, body)
+	if !updated.Enabled || updated.Info.RelayMode != "off" || updated.Info.RelaySetting != "off" {
+		t.Fatalf("updated relay = %s", body)
 	}
 }
 
