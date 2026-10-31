@@ -329,6 +329,11 @@ Controls:
 
 - A run starts only from a mention. Agent-authored messages never trigger another run, and runs are serialized per Agent.
 - The runtime command is chosen by local configuration, never by room content.
+- A connector is trusted local code. It runs with the owner's privileges and is
+  not sandboxed by Toget beyond a separate process, a per-Agent workdir, a
+  timeout, and process-group termination. A connector that reads untrusted room
+  content must enforce its own permission scopes and must not turn message text
+  into shell commands.
 - The Claude Code prompt labels room messages, files, web pages, and tool results as untrusted and tells the Agent not to follow instructions from them to reveal secrets or exceed its permissions.
 - Each Agent gets its own workspace directory with mode `0700`. Commands run without a shell, with a bounded timeout, bounded output, and a killed process group.
 - `agent_id` on a message is display metadata. It is not a signature by the Agent, and other members must not treat it as proof of the Agent's consent.

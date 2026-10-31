@@ -88,6 +88,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newMessagesCommand())
 	root.AddCommand(newAttachmentCommand())
 	root.AddCommand(newAgentCommand())
+	root.AddCommand(newConnectorCommand())
 	root.AddCommand(newApprovalCommand())
 	root.AddCommand(newToolCommand())
 	root.AddCommand(newSearchCommand())

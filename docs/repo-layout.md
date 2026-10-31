@@ -4,13 +4,14 @@ Toget is one repository containing the node, the official service, the local web
 
 > **Current implementation:** the working tree contains `cmd/toget`,
 > `cmd/toget-official`, `internal/{account,agent,api,approval,backup,card,config,directory,directoryproto,identity,mdns,node,protocol,relay,relayproto,room,sealbox,session,storage,tool,ui,vault,version}`,
-> `web/app`, `api/`, `proto/`, and `docs/`. The tree below is the target
-> layout; directories such as `device`, `crypto`, `message`, `transport`,
-> `sync`, `discovery`, `official`, `update`, `platform`, `deploy`, `tests`,
-> and `examples` are planned, not present yet. The LAN node lives in
-> `internal/node`, the portable card format and QR renderer in
-> `internal/card`, and remote-room sync/lifecycle code in
-> `internal/room/remote.go`.
+> `sdk/connector`, `examples/connector-echo`, `web/app`, `api/`, `proto/`, and
+> `docs/`. The tree below is the target layout; directories such as `device`,
+> `crypto`, `message`, `transport`, `sync`, `discovery`, `official`, `update`,
+> `platform`, `deploy`, `tests`, and the remaining `examples/*` entries are
+> planned, not present yet. The LAN node lives in `internal/node`, the portable
+> card format and QR renderer in `internal/card`, remote-room sync/lifecycle
+> code in `internal/room/remote.go`, and the public connector contract plus Go
+> SDK in `docs/connectors.md` and `sdk/connector`.
 
 ## Top-level tree
 
@@ -43,9 +44,13 @@ toget/
 │
 ├── cmd/
 │   ├── toget/
-│   │   └── main.go                # node, daemon, CLI, relay, self-hosted account host
+│   │   ├── main.go                # node, daemon, CLI, relay, self-hosted account host
+│   │   └── connector.go           # connector protocol dry-run command
 │   └── toget-official/
 │       └── main.go                # directory, official account host, update service
+│
+├── sdk/
+│   └── connector/                 # public Go SDK for connector protocol v1
 │
 ├── internal/                      # Go implementation, not importable outside the module
 │   ├── account/                   # account records, 14-digit ID, login, recovery
@@ -135,6 +140,7 @@ toget/
 │   ├── tech-stack.md
 │   ├── repo-layout.md
 │   ├── roadmap.md
+│   ├── connectors.md              # stable connector protocol v1 and SDK guide
 │   └── decisions/                 # architecture decision records
 │       ├── 0001-monorepo.md
 │       ├── 0002-go-backend.md
@@ -159,15 +165,16 @@ toget/
 │   └── fixtures/
 │
 └── examples/
-    ├── cli-agent/                 # minimal Agent that speaks the CLI protocol
-    └── relay/                     # smallest relay-only node
+    ├── connector-echo/            # minimal connector using the Go SDK
+    ├── cli-agent/                 # minimal Agent that speaks the CLI protocol (planned)
+    └── relay/                     # smallest relay-only node (planned)
 ```
 
 ## Rules
 
 ### `cmd/` contains wiring only
 
-`cmd/toget/main.go` and `cmd/toget-official/main.go` parse flags, build dependencies, and call into `internal/`. No business logic lives here. The official binary reuses the same internal packages as the node; it is a different composition, not a fork.
+`cmd/toget/*.go` and `cmd/toget-official/main.go` parse flags, build dependencies, and call into `internal/`. No business logic lives here. The official binary reuses the same internal packages as the node; it is a different composition, not a fork.
 
 ### `internal/` boundaries
 

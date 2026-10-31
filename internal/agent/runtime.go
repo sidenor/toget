@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/sidenor/toget/sdk/connector"
 )
 
 var (
@@ -93,13 +95,8 @@ type RunRequest struct {
 }
 
 // RunResult is one runtime reply. Empty Text means the Agent chose not to post
-// anything.
-type RunResult struct {
-	Text            string `json:"text"`
-	Format          string `json:"format,omitempty"`
-	SessionID       string `json:"session_id,omitempty"`
-	WaitingApproval bool   `json:"waiting_approval,omitempty"`
-}
+// anything. It is the stable connector.Result wire type.
+type RunResult = connector.Result
 
 // EchoRuntime is a deterministic demo runtime. It is useful for trying the
 // room loop without a model; it is not an AI.
@@ -147,7 +144,7 @@ func (r *CommandRuntime) Run(ctx context.Context, req RunRequest) (RunResult, er
 	if strings.TrimSpace(r.opts.Command) == "" {
 		return RunResult{}, ErrRuntimeUnavailable
 	}
-	input, err := json.Marshal(req)
+	input, err := json.Marshal(connectorRequest(req))
 	if err != nil {
 		return RunResult{}, fmt.Errorf("encode runtime request: %w", err)
 	}
@@ -171,13 +168,47 @@ func (r *CommandRuntime) Run(ctx context.Context, req RunRequest) (RunResult, er
 //
 // A runtime that ignores TOGET_STREAM keeps returning the complete response on
 // stdout, which RunStream parses with the normal fallback.
-type commandStreamEvent struct {
-	Type            string `json:"type"`
-	Text            string `json:"text"`
-	Reset           bool   `json:"reset,omitempty"`
-	Format          string `json:"format,omitempty"`
-	SessionID       string `json:"session_id,omitempty"`
-	WaitingApproval bool   `json:"waiting_approval,omitempty"`
+type commandStreamEvent = connector.Event
+
+// connectorRequest converts the daemon's internal request into the stable
+// versioned wire type. Keeping the conversion explicit means an internal
+// field change cannot silently change the connector contract.
+func connectorRequest(req RunRequest) connector.Request {
+	history := make([]connector.HistoryEntry, 0, len(req.History))
+	for _, entry := range req.History {
+		history = append(history, connector.HistoryEntry{
+			Seq: entry.Seq, EventID: entry.EventID, Type: entry.Type,
+			AuthorID: entry.AuthorID, AuthorName: entry.AuthorName,
+			AgentID: entry.AgentID, AgentName: entry.AgentName,
+			Text: entry.Text, CreatedAt: entry.CreatedAt,
+		})
+	}
+	permissions := req.Agent.Permissions
+	if len(permissions) == 0 {
+		permissions = json.RawMessage(`{}`)
+	}
+	return connector.Request{
+		Version: connector.Version,
+		Agent: connector.Agent{
+			ID: req.Agent.ID, AccountID: req.Agent.AccountID, Name: req.Agent.Name,
+			Runtime: req.Agent.Runtime, Status: req.Agent.Status,
+			Permissions: append(json.RawMessage(nil), permissions...),
+			CreatedAt:   req.Agent.CreatedAt, LastSeenAt: req.Agent.LastSeenAt,
+			RevokedAt: req.Agent.RevokedAt,
+		},
+		Room: connector.Room{ID: req.Room.ID, Name: req.Room.Name, Topic: req.Room.Topic},
+		Trigger: connector.Trigger{
+			EventID: req.Trigger.EventID, Seq: req.Trigger.Seq,
+			AuthorID: req.Trigger.AuthorID, AuthorName: req.Trigger.AuthorName,
+			Text: req.Trigger.Text, Format: req.Trigger.Format,
+			CreatedAt: req.Trigger.CreatedAt,
+		},
+		History:   history,
+		Truncated: req.Truncated,
+		SessionID: req.SessionID,
+		Home:      req.Home,
+		Workdir:   req.Workdir,
+	}
 }
 
 // RunStream implements StreamingRuntime. It sets TOGET_STREAM=ndjson and reads
@@ -187,7 +218,7 @@ func (r *CommandRuntime) RunStream(ctx context.Context, req RunRequest, emit fun
 	if strings.TrimSpace(r.opts.Command) == "" {
 		return RunResult{}, ErrRuntimeUnavailable
 	}
-	input, err := json.Marshal(req)
+	input, err := json.Marshal(connectorRequest(req))
 	if err != nil {
 		return RunResult{}, fmt.Errorf("encode runtime request: %w", err)
 	}
@@ -199,6 +230,7 @@ func (r *CommandRuntime) RunStream(ctx context.Context, req RunRequest, emit fun
 	}
 	var streamed strings.Builder
 	sawEvent := false
+	gotResult := false
 	var final RunResult
 	proc := runProcessStreaming(ctx, r.opts.Command, r.opts.Args, input, dir, env,
 		defaultRuntimeStdout, defaultRuntimeStderr, func(line []byte) {
@@ -230,6 +262,7 @@ func (r *CommandRuntime) RunStream(ctx context.Context, req RunRequest, emit fun
 					emit(StreamDelta{Text: event.Text})
 				}
 			case "result":
+				gotResult = true
 				final = RunResult{
 					Text: event.Text, Format: event.Format,
 					SessionID: event.SessionID, WaitingApproval: event.WaitingApproval,
@@ -245,7 +278,7 @@ func (r *CommandRuntime) RunStream(ctx context.Context, req RunRequest, emit fun
 		}
 		return parseCommandOutput(proc.stdout)
 	}
-	if strings.TrimSpace(final.Text) == "" {
+	if !gotResult {
 		final.Text = streamed.String()
 	}
 	return normalizeResult(final), nil

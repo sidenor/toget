@@ -1,13 +1,17 @@
 package agent_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sidenor/toget/internal/agent"
+	"github.com/sidenor/toget/sdk/connector"
 )
 
 func collectStream(t *testing.T, runtime agent.StreamingRuntime, req agent.RunRequest) (agent.RunResult, []agent.StreamDelta) {
@@ -50,6 +54,69 @@ printf '%s\n' '{"type":"result","text":" Hello ","format":"plain","session_id":"
 		t.Fatalf("deltas = %#v", deltas)
 	}
 	if len(deltas) != 2 || deltas[0].Reset || deltas[1].Reset {
+		t.Fatalf("deltas = %#v", deltas)
+	}
+}
+
+func TestCommandRuntimeSendsStableConnectorRequest(t *testing.T) {
+	requestFile := filepath.Join(t.TempDir(), "request.json")
+	script := writeScript(t, `cat > "$REQUEST_FILE"
+printf '%s\n' '{"type":"result","text":"ok"}'
+`)
+	runtime := agent.NewCommandRuntime("test", agent.CommandOptions{
+		Command: script, Env: []string{"REQUEST_FILE=" + requestFile},
+	})
+	req := testRequest()
+	req.Agent.AccountID = "account-1"
+	req.Agent.Status = "idle"
+	req.Agent.Permissions = json.RawMessage(`{"shell":true}`)
+	req.Agent.CreatedAt = time.Date(2026, 10, 31, 1, 2, 3, 0, time.UTC)
+	req.History = []agent.HistoryEntry{{
+		Seq: 7, EventID: "event-1", Type: "message.posted",
+		AuthorID: "account-1", AuthorName: "Aiden", Text: "hello",
+		CreatedAt: time.Date(2026, 10, 31, 1, 2, 4, 0, time.UTC),
+	}}
+	req.Truncated = true
+	if _, err := runtime.RunStream(context.Background(), req, nil); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(requestFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := connector.DecodeRequest(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Version != connector.Version || decoded.Agent.ID != req.Agent.ID ||
+		decoded.Agent.AccountID != "account-1" || decoded.Agent.Name != req.Agent.Name ||
+		decoded.Agent.Runtime != req.Agent.Runtime || decoded.Agent.Status != "idle" {
+		t.Fatalf("agent = %#v", decoded.Agent)
+	}
+	if string(decoded.Agent.Permissions) != `{"shell":true}` {
+		t.Fatalf("permissions = %s", decoded.Agent.Permissions)
+	}
+	if decoded.Room.ID != req.Room.ID || decoded.Trigger.EventID != req.Trigger.EventID ||
+		decoded.Trigger.Text != req.Trigger.Text || decoded.SessionID != req.SessionID ||
+		decoded.Home != req.Home || decoded.Workdir != req.Workdir || !decoded.Truncated {
+		t.Fatalf("request = %#v", decoded)
+	}
+	if len(decoded.History) != 1 || decoded.History[0].EventID != "event-1" ||
+		decoded.History[0].Text != "hello" || decoded.History[0].AuthorName != "Aiden" {
+		t.Fatalf("history = %#v", decoded.History)
+	}
+}
+
+func TestCommandRuntimeExplicitEmptyResultSuppressesReply(t *testing.T) {
+	script := writeScript(t, `printf '%s\n' '{"type":"delta","text":"preview"}'
+printf '%s\n' '{"type":"result","text":""}'
+`)
+	runtime := agent.NewCommandRuntime("test", agent.CommandOptions{Command: script})
+	result, deltas := collectStream(t, runtime, testRequest())
+	if result.Text != "" {
+		t.Fatalf("result = %#v", result)
+	}
+	if got := streamText(deltas); got != "preview" {
 		t.Fatalf("deltas = %#v", deltas)
 	}
 }

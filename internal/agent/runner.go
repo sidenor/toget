@@ -14,6 +14,7 @@ import (
 
 	"github.com/sidenor/toget/internal/identity"
 	"github.com/sidenor/toget/internal/room"
+	"github.com/sidenor/toget/sdk/connector"
 )
 
 const (
@@ -350,7 +351,7 @@ func (r *Runner) runOne(parent context.Context, actor room.Actor, agent Agent, r
 	}
 
 	req := RunRequest{
-		Version: 1,
+		Version: connector.Version,
 		Agent:   agent,
 		Room:    RunRoom{ID: record.ID, Name: record.Name, Topic: record.Topic},
 		Trigger: Trigger{

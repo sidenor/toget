@@ -74,14 +74,16 @@ plaintext.
 - [x] Stop an active run from the CLI or web UI
 - [x] Shared Agent: owner visibility warning on join
 - [x] Streaming partial output in the local API and web UI
+- [x] Stable connector protocol v1, Go SDK, example connector, and `toget connector check`
 
 **Status:** the runtime loop is implemented. The daemon wakes an Agent on a
 mention, serializes runs, catches up after the last completed run, resumes the
 Claude Code session, shows bounded partial output while it works, posts the
 reply to the thread, and shows idle, running, waiting, and offline status. A
-configurable command runtime is available for other tools. Partial output is
-transient and local to the Agent owner's node; it is not part of the event log
-or visible to remote room members. Remaining: a stable connector SDK. See
+configurable command runtime speaks the stable [connector protocol
+v1](connectors.md), with a Go SDK, a working example, and a dry-run command.
+Partial output is transient and local to the Agent owner's node; it is not part
+of the event log or visible to remote room members. See
 [agent-runtime.md](agent-runtime.md).
 
 **Done when:** a user asks an Agent in a room to do a task, the Agent proposes a risky action, the user approves it in the conversation, and the result appears in the same thread with a complete audit trail.
@@ -135,7 +137,7 @@ NAT. See [relay.md](relay.md), [discovery.md](discovery.md), and
 - PWA install and mobile approval flow
 - Notifications with content-free payloads
 - Policy language v1: domains, recipients, amounts, time windows
-- Connector interface for non-Claude Agent runtimes
+- Connector interface for non-Claude Agent runtimes — v1 protocol, Go SDK, example, and `toget connector check` are done
 - Audit export with hash-chain proof
 - Desktop shell with tray and auto-start
 - English and Chinese UI
@@ -149,7 +151,7 @@ Only after the core is useful:
 
 - Organizations: SSO (OIDC, then SAML), retention policies, SCIM, admin console
 - Hosted billing
-- More Agent runtimes and a connector SDK
+- More Agent runtimes and connector templates
 - Public relay network and community infrastructure
 - Reproducible builds and independent security review
 

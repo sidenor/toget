@@ -640,5 +640,6 @@ Errors are structured (`code`, `message`, `details`) and stable across minor ver
 - Home-node failover behavior.
 - Whether new-member history uses re-encryption, old-epoch grants, or both.
 - Push notification delivery for offline mobile clients.
-- A stable, versioned streaming protocol for non-local connectors and for
-  showing an Agent's partial output to members on other nodes.
+- A stable, versioned streaming protocol for showing an Agent's partial output
+  to members on other nodes. The local connector protocol is already versioned
+  ([v1](connectors.md)), but it is explicitly local and is not replicated.

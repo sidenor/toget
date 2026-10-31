@@ -31,7 +31,7 @@ Especially relevant areas:
 - Prompt injection that can cause unintended tool execution
 - Approval bypasses and audit-log tampering
 - Secret storage and leakage
-- Path traversal, SSRF, and command injection in connectors
+- Path traversal, SSRF, and command injection in connectors ([connector trust model](docs/connectors.md#security))
 
 The intended trust model is documented in [docs/security-model.md](docs/security-model.md). If the implementation disagrees with it, that is a security bug.
 

@@ -124,9 +124,12 @@ commands such as `toget messages`, `toget send`, `toget approval request`, and
 
 ## Command runtime protocol
 
-A command runtime receives one JSON object on stdin and writes either a JSON
-object or plain text on stdout. A non-zero exit code, a timeout, or output over
-the limit is a failed run and is shown in the Agent's last error.
+A command runtime speaks **connector protocol version 1**. The normative
+contract, Go SDK, compatibility policy, and security notes are in
+[Connectors](connectors.md); this section is the short form. A command runtime
+receives one JSON object on stdin and writes either a JSON object or plain text
+on stdout. A non-zero exit code, a timeout, or output over the limit is a
+failed run and is shown in the Agent's last error.
 
 Request:
 
@@ -178,6 +181,8 @@ Response:
 - Return the same or a new `session_id`; the daemon persists it.
 - Set `waiting_approval` when the runtime is blocked on a human decision. The
   daemon also polls pending approvals every two seconds during a run.
+- `version` is 1. Unknown request fields are ignored within v1, so a newer
+  daemon can add context without breaking an older connector.
 
 The command is started directly, without a shell. It runs with a timeout,
 bounded stdout/stderr, and its process group is killed on timeout.
@@ -199,8 +204,8 @@ then write newline-delimited JSON events on stdout:
   retrying with a fresh session.
 - The optional `result` event is the final answer, using the same fields as the
   non-streaming response. If it is present, it is authoritative even when it
-  differs from the collected deltas. If it is absent, the daemon uses the
-  collected delta text.
+  differs from the collected deltas, and an explicitly empty `text` suppresses
+  the reply. If it is absent, the daemon uses the collected delta text.
 - Lines that are not recognized protocol events are ignored for streaming. If
   no protocol event appears at all, the whole stdout is parsed as a normal
   JSON or plain-text response, so existing runtimes keep working.
@@ -208,6 +213,15 @@ then write newline-delimited JSON events on stdout:
   text disappears with the run and no reply is posted.
 - An adapter that does not understand `TOGET_STREAM` can ignore it and write
   the old single JSON object or plain text.
+
+Use the Go SDK in [`sdk/connector`](../sdk/connector) to implement the protocol
+without hand-encoding events, and `toget connector check` to run a connector
+against a synthetic v1 request without a daemon or an account:
+
+```bash
+go build -o /tmp/my-connector ./examples/connector-echo
+toget connector check -- /tmp/my-connector
+```
 
 ## Live output
 
@@ -321,8 +335,9 @@ run.
   the run is active. It is not written to the event log, is not replicated to
   the room home or other members, and is lost on daemon restart. The final
   reply remains the only durable record of what the Agent said.
-- The streaming protocol between the daemon and a command runtime is a local
-  convention, not a stable cross-node wire format. A remote member cannot watch
-  another node's Agent type.
+- The command runtime wire format is a stable, versioned local protocol
+  ([connector protocol v1](connectors.md)). It is still local: a remote member
+  cannot watch another node's Agent type, and the local API exposes only
+  transient text, not a replicated event stream.
 - A shared Agent's owner can see what the Agent can see. Joining a shared Agent
   shows a warning in the room.

@@ -95,8 +95,9 @@ go run ./cmd/toget send "@Claude summarize what we talked about"
 The daemon wakes the Agent on the mention, catches it up after its last run,
 resumes its Claude Code session, shows live partial output while it works,
 posts the reply, and shows status cards in the timeline. See
-[Agent runtime](docs/agent-runtime.md) for command runtimes, streaming,
-timeouts, sessions, and approvals.
+[Agent runtime](docs/agent-runtime.md) for streaming, timeouts, sessions, and
+approvals, and [Connectors](docs/connectors.md) for the stable command
+protocol, Go SDK, and `toget connector check`.
 
 To invite a second machine on the same LAN, keep `toget serve` running on both.
 On the inviter's machine:
@@ -189,7 +190,8 @@ rejects updates and deletes.
 - [Architecture](docs/architecture.md) — nodes, account hosts, rooms, relay tree, and trust boundaries
 - [Protocol](docs/protocol.md) — node protocol, end-to-end envelope, local API, versioning
 - [Security model](docs/security-model.md) — who can see what, threats, controls, and limits
-- [Agent runtime](docs/agent-runtime.md) — mentions, sessions, Claude Code, and command runtimes
+- [Agent runtime](docs/agent-runtime.md) — mentions, sessions, Claude Code, and streaming
+- [Connectors](docs/connectors.md) — stable v1 command protocol, Go SDK, compatibility, and security
 - [Relay and directory](docs/relay.md) — cross-network routing, trust boundaries, quotas, and limits
 - [LAN discovery](docs/discovery.md) — mDNS advertisement, verified lookup, privacy, and limits
 - [Business cards](docs/cards.md) — portable signed cards, QR codes, saved-card pinning, and limits
@@ -315,7 +317,7 @@ go run ./cmd/toget room add-agent <房间ID> <AgentID>
 go run ./cmd/toget send "@Claude 帮我总结一下刚才聊的"
 ```
 
-守护进程会在被 @ 时唤醒 Agent，补上它上次运行之后的消息，续接 Claude Code 会话，把回答发回房间，并在时间线里显示状态卡片。命令运行时、超时、会话重置和审批流程见 [Agent 运行时](docs/agent-runtime.md)。
+守护进程会在被 @ 时唤醒 Agent，补上它上次运行之后的消息，续接 Claude Code 会话，把回答发回房间，并在时间线里显示状态卡片。超时、会话重置和审批流程见 [Agent 运行时](docs/agent-runtime.md)；命令运行时遵循稳定的 [连接器协议 v1](docs/connectors.md)，附 Go SDK 和 `toget connector check` 自检命令。
 
 局域网邀请：邀请方保持 `toget serve` 运行，然后执行：
 
@@ -371,6 +373,7 @@ toget node lookup 12345678           # 先用已存名片，再走 mDNS，最后
 - [协议](docs/protocol.md)
 - [安全模型](docs/security-model.md)
 - [Agent 运行时](docs/agent-runtime.md)
+- [连接器协议](docs/connectors.md)
 - [中继与目录](docs/relay.md)
 - [局域网发现](docs/discovery.md)
 - [名片与二维码](docs/cards.md)
