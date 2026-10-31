@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestFormatAccountID(t *testing.T) {
 	if got := formatAccountID("68173501840479"); got != "68173501-840479" {
@@ -8,6 +13,30 @@ func TestFormatAccountID(t *testing.T) {
 	}
 	if got := formatAccountID("short"); got != "short" {
 		t.Fatalf("short ID was changed: %q", got)
+	}
+}
+
+func TestWriteSecretQR(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "invite.png")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSecretQR("toget-invite:v1:test", path, false); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(data, []byte("\x89PNG\r\n\x1a\n")) {
+		t.Fatal("written QR is not a PNG")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("secret QR mode = %o, want 600", info.Mode().Perm())
 	}
 }
 

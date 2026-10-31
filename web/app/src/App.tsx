@@ -3,6 +3,8 @@ import { APIError, api } from "./api";
 import { formatAccountID, formatBytes, formatDay, formatTime, shortID } from "./format";
 import { Lang, detectLang, localeOf, makeT } from "./i18n";
 import { Markdown } from "./Markdown";
+import { QRCodeImage, QRScanButton } from "./QR";
+import { decodeQRImage, qrScanErrorMessage } from "./qr";
 import type {
   Account,
   Agent,
@@ -451,6 +453,7 @@ function Onboarding({
   const [code, setCode] = useState("");
   const [join, setJoin] = useState<PairJoinView | null>(null);
   const [linking, setLinking] = useState(false);
+  const [scanning, setScanning] = useState(false);
 
   const joinTerminal = !!join && ["ready", "failed", "canceled", "expired"].includes(join.status);
 
@@ -518,6 +521,20 @@ function Onboarding({
       setError(err instanceof Error ? err.message : t("common.error"));
     } finally {
       setLinking(false);
+    }
+  }
+
+  async function scanPairing(file: File) {
+    setError("");
+    setScanning(true);
+    try {
+      const payload = await decodeQRImage(file);
+      if (!payload.startsWith("toget-pair:v1:")) throw new Error(t("onboard.linkScanInvalid"));
+      setCode(payload);
+    } catch (err) {
+      setError(qrScanErrorMessage(t, err, "onboard.linkScan"));
+    } finally {
+      setScanning(false);
     }
   }
 
@@ -658,6 +675,15 @@ function Onboarding({
                 required
               />
             </label>
+            <div className="card-scan-row">
+              <QRScanButton
+                label={t("onboard.linkScan")}
+                busyLabel={t("onboard.linkScanning")}
+                scanning={scanning}
+                onFile={(file) => void scanPairing(file)}
+              />
+              <span className="fine-print">{t("onboard.linkScanHint")}</span>
+            </div>
             <label>
               {t("onboard.linkName")}
               <input
@@ -712,11 +738,14 @@ function RoomList({
   const [mode, setMode] = useState<"create" | "join" | null>(null);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState("");
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!name.trim()) return;
     setBusy(true);
+    setScanError("");
     try {
       if (mode === "join") {
         await onJoin(name.trim());
@@ -732,9 +761,24 @@ function RoomList({
     }
   }
 
+  async function scanInvite(file: File) {
+    setScanError("");
+    setScanning(true);
+    try {
+      const payload = await decodeQRImage(file);
+      if (!payload.startsWith("toget-invite:v1:")) throw new Error(t("sidebar.scanInvalid"));
+      setName(payload);
+    } catch (err) {
+      setScanError(qrScanErrorMessage(t, err, "sidebar.scan"));
+    } finally {
+      setScanning(false);
+    }
+  }
+
   function closeForm() {
     setMode(null);
     setName("");
+    setScanError("");
   }
 
   return (
@@ -762,6 +806,18 @@ function RoomList({
             placeholder={mode === "join" ? t("sidebar.joinPlaceholder") : t("sidebar.roomPlaceholder")}
             maxLength={mode === "join" ? 4096 : 80}
           />
+          {mode === "join" && (
+            <div className="card-scan-row">
+              <QRScanButton
+                label={t("sidebar.scan")}
+                busyLabel={t("sidebar.scanning")}
+                scanning={scanning}
+                onFile={(file) => void scanInvite(file)}
+              />
+              <span className="fine-print">{t("sidebar.scanHint")}</span>
+            </div>
+          )}
+          {scanError && <div className="form-error">{scanError}</div>}
           <div className="new-room-actions">
             <button type="button" className="button ghost" onClick={closeForm}>
               {t("common.cancel")}
@@ -1375,10 +1431,21 @@ function RoomInfo({
                 </button>
               </div>
               {invite && (
-                <div className="invite-secret">
-                  <code>{invite}</code>
-                  <CopyButton value={invite} labels={{ copy: t("roomInfo.copy"), copied: t("roomInfo.copied") }} />
-                </div>
+                <>
+                  <div className="invite-secret">
+                    <code>{invite}</code>
+                    <CopyButton value={invite} labels={{ copy: t("roomInfo.copy"), copied: t("roomInfo.copied") }} />
+                  </div>
+                  <div className="invite-qr">
+                    <QRCodeImage
+                      value={invite}
+                      alt={t("roomInfo.inviteQRAlt")}
+                      size={220}
+                      errorLabel={t("common.qrError")}
+                    />
+                    <p className="fine-print">{t("roomInfo.inviteQRHint")}</p>
+                  </div>
+                </>
               )}
               <p className="fine-print">{t("roomInfo.shareHint")}</p>
             </>

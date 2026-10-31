@@ -47,9 +47,11 @@ Toget is at the very beginning. The order below is chosen so that each milestone
 - [x] New-member history choice: none / recent (current epoch) / all, with a system notice
 - [x] Direct connection by default; address and pin carried in the invite code (relay fallback added in M4)
 - [x] mDNS advertisement and directory-free, signature-verified server-code lookup on one LAN
+- [x] Room-invite and device-pairing codes as terminal or PNG QR codes, with still-image scanning in the web UI
 
 **Status:** the LAN milestone works for message rooms. Remote-room
-attachments, remote leave/archive, and device enrollment are done; QUIC is
+attachments, remote leave/archive, and device enrollment are done; invite and
+pairing codes can be shown as QR codes and scanned from a still image; QUIC is
 not. Relay fallback is implemented in M4. A packet capture still shows metadata (account/device
 IDs in signed request headers) and sealed payloads; it does not show message
 plaintext.

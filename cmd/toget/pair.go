@@ -27,7 +27,9 @@ func newPairCommand() *cobra.Command {
 }
 
 func newPairCreateCommand() *cobra.Command {
-	return &cobra.Command{
+	var qrFlag bool
+	var pngPath string
+	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create a pairing code for a new device",
 		Args:  cobra.NoArgs,
@@ -49,9 +51,17 @@ func newPairCreateCommand() *cobra.Command {
 			fmt.Println()
 			fmt.Println("On the new device run `toget pair join` and paste this code,")
 			fmt.Println("then approve it here with `toget pair approve " + view.ID + "`.")
+			if qrFlag || pngPath != "" {
+				if err := writeSecretQR(view.Code, pngPath, qrFlag); err != nil {
+					return err
+				}
+			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&qrFlag, "qr", false, "print a QR code in the terminal")
+	cmd.Flags().StringVar(&pngPath, "png", "", "write a PNG QR code to this file")
+	return cmd
 }
 
 func newPairListCommand() *cobra.Command {

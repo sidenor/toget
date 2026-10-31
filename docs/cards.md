@@ -118,6 +118,13 @@ scan to text, then paste it into the web UI or `toget card add`. The web UI
 does not open a live camera viewfinder; on a phone browser the file picker can
 offer the camera. The QR image itself is generated locally by the daemon.
 
+The same renderer and still-image scanner also handle `toget-invite:v1:` room
+invites and `toget-pair:v1:` pairing codes. Those QR codes are **not** public
+metadata like a card: they contain a bearer secret. The web UI never offers a
+download for them and the CLI forces PNG output to mode `0600`. Scanning only
+changes the input medium; the invite stays single-use and the pairing code
+keeps its ten-minute expiry.
+
 ## API
 
 | Method | Path | Purpose |

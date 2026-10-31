@@ -2,6 +2,8 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { formatAccountID, formatTime, shortID } from "./format";
 import type { Lang, Translate } from "./i18n";
+import { QRCodeImage, QRScanButton } from "./QR";
+import { decodeQRImage, qrScanErrorMessage } from "./qr";
 import type { Agent, AgentSession, Approval, AuditResponse, CardView, Device, DiscoveredPeer, NodeInfo, PairingView, Room, SearchHit } from "./types";
 import { Badge, CopyButton, Modal, Spinner } from "./ui";
 
@@ -562,13 +564,24 @@ export function DevicesView({ t, notify, onError }: CommonProps) {
                 {pairing.device_name && <span className="pair-device-name"> · {pairing.device_name}</span>}
               </h3>
               {pairing.code && pairing.status === "waiting" && (
-                <div className="pair-code-row">
-                  <code className="pair-code">{pairing.code}</code>
-                  <CopyButton
-                    value={pairing.code}
-                    labels={{ copy: t("common.copy"), copied: t("common.copied") }}
-                  />
-                </div>
+                <>
+                  <div className="pair-code-row">
+                    <code className="pair-code">{pairing.code}</code>
+                    <CopyButton
+                      value={pairing.code}
+                      labels={{ copy: t("common.copy"), copied: t("common.copied") }}
+                    />
+                  </div>
+                  <div className="pair-qr">
+                    <QRCodeImage
+                      value={pairing.code}
+                      alt={t("devices.pairQRAlt")}
+                      size={200}
+                      errorLabel={t("common.qrError")}
+                    />
+                    <p className="fine-print">{t("devices.pairQRHint")}</p>
+                  </div>
+                </>
               )}
               {pairing.fingerprint && (
                 <>
@@ -814,42 +827,15 @@ export function SettingsView({
   }
 
   async function scanCard(file: File) {
-    if (!file.type.startsWith("image/")) {
-      setCardError(t("settings.cardScanImage"));
-      return;
-    }
-    if (file.size > 20 * 1024 * 1024) {
-      setCardError(t("settings.cardScanTooLarge"));
-      return;
-    }
     setCardScanning(true);
     setCardError("");
     try {
-      const bitmap = await createImageBitmap(file);
-      const scale = Math.min(1, 2000 / Math.max(bitmap.width, bitmap.height));
-      const width = Math.max(1, Math.round(bitmap.width * scale));
-      const height = Math.max(1, Math.round(bitmap.height * scale));
-      const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-      const context = canvas.getContext("2d", { willReadFrequently: true });
-      if (!context) throw new Error(t("settings.cardScanImage"));
-      // Transparent pixels decode as black; a white matte matches a printed card.
-      context.fillStyle = "#fff";
-      context.fillRect(0, 0, width, height);
-      context.drawImage(bitmap, 0, 0, width, height);
-      bitmap.close();
-      const pixels = context.getImageData(0, 0, width, height);
-      // Keep the QR decoder out of the initial bundle; most sessions never scan.
-      const { default: jsQR } = await import("jsqr");
-      const found = jsQR(pixels.data, pixels.width, pixels.height);
-      const payload = found?.data.trim() ?? "";
-      if (!payload) throw new Error(t("settings.cardScanNotFound"));
+      const payload = await decodeQRImage(file);
       if (!payload.startsWith("toget-card:v1:")) throw new Error(t("settings.cardScanInvalid"));
       setCardInput(payload);
       notify(t("settings.cardScanned"));
     } catch (err) {
-      setCardError(err instanceof Error ? err.message : String(err));
+      setCardError(qrScanErrorMessage(t, err, "settings.cardScan"));
     } finally {
       setCardScanning(false);
     }
@@ -1035,19 +1021,12 @@ export function SettingsView({
           <p className="muted">{t("settings.cardsText")}</p>
           <div className="card-import">
             <div className="card-scan-row">
-              <label className="button ghost small">
-                {cardScanning ? t("settings.cardScanning") : t("settings.cardScan")}
-                <input
-                  type="file"
-                  accept="image/*"
-                  disabled={cardScanning}
-                  onChange={(event) => {
-                    const file = event.currentTarget.files?.[0];
-                    event.currentTarget.value = "";
-                    if (file) void scanCard(file);
-                  }}
-                />
-              </label>
+              <QRScanButton
+                label={t("settings.cardScan")}
+                busyLabel={t("settings.cardScanning")}
+                scanning={cardScanning}
+                onFile={(file) => void scanCard(file)}
+              />
               <span className="fine-print">{t("settings.cardScanHint")}</span>
             </div>
             <textarea

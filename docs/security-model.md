@@ -87,7 +87,9 @@ headers, room IDs, and timing. The invite code is a bearer secret shown once;
 anyone who obtains it before redemption can join. The pairing code is also a
 bearer secret: anyone who obtains it can request to add a device, but the
 request must still be approved on an existing device and its fingerprint
-compared. A device that holds the account private key can mint certificates
+compared. Showing either code as a QR does not change that exposure: the QR is
+the same secret in another form, so it is shown once in the web UI with no
+download action, and CLI PNG files are forced to mode `0600`. A device that holds the account private key can mint certificates
 for new devices, so compromising one device compromises the account key until
 account-key rotation exists. Revocation only reaches rooms the revoking node
 knows about. The certificate is pinned

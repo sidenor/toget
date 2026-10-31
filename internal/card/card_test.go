@@ -1,7 +1,6 @@
 package card_test
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"os"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sidenor/toget/internal/card"
+	"github.com/sidenor/toget/internal/qr"
 )
 
 func TestCardRoundTrip(t *testing.T) {
@@ -33,10 +33,10 @@ func TestCardRoundTrip(t *testing.T) {
 		string(decoded.Node) != `{"kind":"node"}` {
 		t.Fatalf("decoded card = %+v", decoded)
 	}
-	if _, err := card.QRPNG(encoded, 4); err != nil {
+	if _, err := qr.PNG(encoded, 4); err != nil {
 		t.Fatalf("render QR: %v", err)
 	}
-	text, err := card.QRText(encoded)
+	text, err := qr.Text(encoded)
 	if err != nil || !strings.Contains(text, "█") && !strings.Contains(text, "▀") {
 		t.Fatalf("terminal QR = %q, %v", text, err)
 	}
@@ -117,18 +117,5 @@ func TestStoreSurvivesCorruptFile(t *testing.T) {
 	}
 	if store == nil || len(store.List()) != 0 {
 		t.Fatal("corrupt store should still yield an empty usable store")
-	}
-}
-
-func TestQRPNG(t *testing.T) {
-	data, err := card.QRPNG("toget-card:v1:test", 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.HasPrefix(data, []byte("\x89PNG\r\n\x1a\n")) {
-		t.Fatal("QR output is not a PNG")
-	}
-	if _, err := card.QRPNG("x", 1); err == nil {
-		t.Fatal("invalid scale was accepted")
 	}
 }

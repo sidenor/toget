@@ -54,6 +54,12 @@ The LAN path is real and covered by tests in `internal/node` and
    Room snapshots carry membership and epoch keys (not events), and the new
    device syncs event history from each room's home.
 
+Both `toget-invite:v1:` and `toget-pair:v1:` are display-agnostic strings. The
+CLI can render the same string as a terminal or PNG QR code, and the web UI can
+decode it from a still image locally. The wire format and security rules do not
+change: a QR code is another way to carry the same single-use invite or
+short-lived pairing secret, not a new credential.
+
 Still design-only: QUIC, Protobuf framing, NAT traversal or hole punching,
 and WebSocket transport. Relays and the directory are implemented with HTTPS +
 JSON rather than the future Protobuf framing; see [relay.md](relay.md) for
@@ -391,6 +397,10 @@ account without copying a data directory or private keys.
 9. The new device keeps its own local server identity. The account ID, account
    code, account key, password hash, room roles, and room homes are preserved;
    rooms created on the old device remain hosted there.
+
+The pairing code may be shown as a QR code in the terminal, a PNG, or the web
+UI. It is still the same bearer secret, valid for the same ten minutes and
+shown once; scanning only changes how the string reaches the new device.
 
 Pairing sessions live only in memory and are lost on restart. Account import
 is one transaction; room imports are idempotent, and transient page failures

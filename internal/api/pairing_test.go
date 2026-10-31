@@ -17,6 +17,7 @@ import (
 	"github.com/sidenor/toget/internal/approval"
 	"github.com/sidenor/toget/internal/config"
 	"github.com/sidenor/toget/internal/node"
+	"github.com/sidenor/toget/internal/qr"
 	"github.com/sidenor/toget/internal/room"
 	"github.com/sidenor/toget/internal/session"
 	"github.com/sidenor/toget/internal/storage"
@@ -136,6 +137,12 @@ func TestPairingAPIEndToEnd(t *testing.T) {
 	pairing := decode[node.PairingView](t, body)
 	if pairing.Code == "" || pairing.Status != "waiting" {
 		t.Fatalf("pairing = %s", body)
+	}
+	if _, err := qr.Text(pairing.Code); err != nil {
+		t.Fatalf("pairing code does not fit in a QR code: %v", err)
+	}
+	if _, err := qr.PNG(pairing.Code, 2); err != nil {
+		t.Fatalf("render pairing QR: %v", err)
 	}
 	resp, body = guest.server.request(t, http.MethodPost, "/api/v1/pairing/join", testToken,
 		`{"code":`+quote(pairing.Code)+`,"device_name":"Laptop"}`, nil)

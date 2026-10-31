@@ -11,8 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/sidenor/toget/internal/card"
 	"github.com/sidenor/toget/internal/node"
+	"github.com/sidenor/toget/internal/qr"
 )
 
 func newCardCommand() *cobra.Command {
@@ -67,7 +67,7 @@ func newCardShowCommand() *cobra.Command {
 			fmt.Printf("Node:       expires %s\n", view.NodeExpiresAt.Local().Format(time.RFC3339))
 			fmt.Printf("\n%s\n", view.Card)
 			if qrFlag {
-				text, err := card.QRText(view.Card)
+				text, err := qr.Text(view.Card)
 				if err != nil {
 					return err
 				}

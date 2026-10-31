@@ -99,8 +99,9 @@ To invite a second machine on the same LAN, keep `toget serve` running on both.
 On the inviter's machine:
 
 ```bash
-toget room invite <room-id> --history none
-# sends output like: toget-invite:v1:eyJ...
+toget room invite <room-id> --history none --qr
+# prints the portable code (toget-invite:v1:…) and a terminal QR code
+# add --png invite.png to write a PNG QR code (mode 0600)
 ```
 
 On the other machine:
@@ -109,17 +110,19 @@ On the other machine:
 toget join 'toget-invite:v1:eyJ...'
 ```
 
-The web UI has the same flow: **Room details → Invite someone** shows the code,
-and **Join with code** in the room sidebar redeems it. If the node advertises
-the wrong interface, set `--node-advertise <host:port>` or
+The web UI has the same flow: **Room details → Invite someone** shows the code
+and its QR, **Join with code** in the room sidebar redeems either, and
+**Scan QR image** there reads a screenshot or photo locally in the browser. If
+the node advertises the wrong interface, set `--node-advertise <host:port>` or
 `node_advertise` in `config.json`. `--no-node` keeps a node local-only.
 
 To use the same account on a **second device**, pair the devices instead of
 copying the data directory. Keep `toget serve` running on the existing device:
 
 ```bash
-toget pair create
-# Pairing code (valid for 10 minutes): toget-pair:v1:eyJ...
+toget pair create --qr
+# Pairing code (valid for 10 minutes): toget-pair:v1:eyJ…
+# plus a terminal QR code; --png pair.png writes a PNG (mode 0600)
 ```
 
 On the fresh device, run `toget pair join 'toget-pair:v1:eyJ...' --name Laptop`.
@@ -135,8 +138,10 @@ The new device receives the account record, its own device certificate, and
 the account private key sealed to its encryption key. It also receives room
 membership and epoch keys, then syncs message history from each room's home.
 The pairing code is a short-lived bearer secret, and the account key is never
-transferred in plaintext. The web UI has the same flow under **Devices →
-Link another device**.
+transferred in plaintext. The web UI has the same flow under **Devices → Add
+another device**: it shows the pairing QR, and the onboarding screen can scan a
+screenshot or photo locally. The QR carries the same secret and expires with
+the code.
 
 To hand someone your node without an invite or a directory, show a **business
 card**:
@@ -196,7 +201,8 @@ queue. Same-LAN nodes also discover each other over multicast DNS and can
 resolve a server code without a directory; every discovered endpoint is still
 verified through its pinned TLS certificate and signed manifests. Portable
 business cards can be copied as text or shown as a QR code, and a saved card
-pins the full server ID for its short code.
+pins the full server ID for its short code. Room invites and device-pairing
+codes can also be shown as QR codes and scanned from a still image.
 
 Not implemented yet: NAT traversal or hole punching, account-key rotation,
 account-record sync between paired devices, multiple accounts on one node, and
@@ -293,8 +299,9 @@ go run ./cmd/toget send "@Claude 帮我总结一下刚才聊的"
 局域网邀请：邀请方保持 `toget serve` 运行，然后执行：
 
 ```bash
-toget room invite <房间ID> --history none
-# 输出类似：toget-invite:v1:eyJ...
+toget room invite <房间ID> --history none --qr
+# 显示邀请码（toget-invite:v1:...）和终端二维码
+# 加 --png invite.png 可以写出 PNG 二维码（权限 0600）
 ```
 
 另一台机器执行：
@@ -303,13 +310,14 @@ toget room invite <房间ID> --history none
 toget join 'toget-invite:v1:eyJ...'
 ```
 
-网页端同样支持：**房间详情 → 邀请新成员** 会显示邀请码，侧边栏的 **用邀请码加入** 可以兑换。如果节点广播了错误的网卡地址，启动时加 `--node-advertise <host:port>`，或在配置里设置 `node_advertise`；`--no-node` 可以只保留本地节点。
+网页端同样支持：**房间详情 → 邀请新成员** 会显示邀请码和二维码；侧边栏的 **用邀请码加入** 可以兑换，也可以点 **扫描二维码图片** 在浏览器本地识别截图或照片。如果节点广播了错误的网卡地址，启动时加 `--node-advertise <host:port>`，或在配置里设置 `node_advertise`；`--no-node` 可以只保留本地节点。
 
 **第二台设备**不用拷贝数据目录，走配对即可。旧设备保持 `toget serve` 运行：
 
 ```bash
-toget pair create
-# 输出：toget-pair:v1:eyJ...（10 分钟内有效）
+toget pair create --qr
+# 输出：toget-pair:v1:eyJ...（10 分钟内有效）和终端二维码
+# 加 --png pair.png 可以写出 PNG 二维码（权限 0600）
 ```
 
 新设备执行 `toget pair join 'toget-pair:v1:eyJ...' --name Laptop`，会生成自己的新密钥并显示指纹。回到旧设备核对指纹后批准：
@@ -319,7 +327,7 @@ toget pair list
 toget pair approve <pairing-id>
 ```
 
-新设备会收到账号记录、自己的设备证书，以及用它的加密公钥封装的账号私钥；同时收到房间成员和密钥代次，再从各房间的 home 节点同步历史。配对码是短期 bearer 密钥，账号私钥不会以明文传输。网页端在 **设备 → 连接另一台设备** 里也有同样的流程。
+新设备会收到账号记录、自己的设备证书，以及用它的加密公钥封装的账号私钥；同时收到房间成员和密钥代次，再从各房间的 home 节点同步历史。配对码是短期 bearer 密钥，账号私钥不会以明文传输。网页端在 **设备 → 添加另一台设备** 里也有同样的流程：会显示配对二维码，新设备的引导页可以在本地识别截图或照片；二维码和配对码是同一个秘密，同时过期。
 
 要跳过邀请码和目录，把自己的节点递给人，可以出示**名片**：
 
@@ -350,6 +358,6 @@ toget node lookup 12345678           # 先用已存名片，再走 mDNS，最后
 - [代码结构](docs/repo-layout.md)
 - [路线图](docs/roadmap.md)
 
-**早期实现：本地、局域网和跨网络中继房间已经可用。** 当前版本有账号与设备身份、端到端加密的房间密钥代次、加密的哈希链事件日志、附件、备份恢复、本地 API、CLI 和双语 React 网页。同一局域网内的两个节点可以用邀请码加入房间、互发消息并同步历史；第二台设备可以通过配对恢复同一账号并同步房间，无需拷贝私钥。远程房间支持附件、自主退出和本地归档。Agent 可以注册、加入房间，并通过本地审批和工具回执卡片受控。可选的中继和签名目录已经能跨网络工作，支持直连优先、自动发现中继、多跳路由、环路检测、配额和有限的离线队列。同一局域网里的节点还能通过 mDNS 相互发现，不依赖目录也能用服务器代码找到对方；发现的地址仍会通过固定 TLS 证书和签名清单验证。名片可以复制成文本或显示为二维码，保存后会把完整服务器 ID 固定到对应的八位代码上。
+**早期实现：本地、局域网和跨网络中继房间已经可用。** 当前版本有账号与设备身份、端到端加密的房间密钥代次、加密的哈希链事件日志、附件、备份恢复、本地 API、CLI 和双语 React 网页。同一局域网内的两个节点可以用邀请码加入房间、互发消息并同步历史；第二台设备可以通过配对恢复同一账号并同步房间，无需拷贝私钥。远程房间支持附件、自主退出和本地归档。Agent 可以注册、加入房间，并通过本地审批和工具回执卡片受控。可选的中继和签名目录已经能跨网络工作，支持直连优先、自动发现中继、多跳路由、环路检测、配额和有限的离线队列。同一局域网里的节点还能通过 mDNS 相互发现，不依赖目录也能用服务器代码找到对方；发现的地址仍会通过固定 TLS 证书和签名清单验证。名片可以复制成文本或显示为二维码，保存后会把完整服务器 ID 固定到对应的八位代码上。房间邀请码和设备配对码也可以显示成二维码，并从图片中识别。
 
 还没有实现：NAT 穿透与打洞、账号密钥轮换、配对设备之间的账号记录同步、同一节点登录多个账号，以及自带模型。守护进程会在被 @ 时在本地运行 Agent，可以用 Claude Code，也可以用任何实现了运行时协议的命令。很多地方仍会调整。欢迎开 issue 关注、分享场景，或直接参与建设。项目理念见 [docs/philosophy.md](docs/philosophy.md)，参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。

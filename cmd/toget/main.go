@@ -992,6 +992,8 @@ func newRoomMembersCommand() *cobra.Command {
 func newRoomInviteCommand() *cobra.Command {
 	var history string
 	var ttlSeconds int
+	var qrFlag bool
+	var pngPath string
 	cmd := &cobra.Command{
 		Use:   "invite <room-id>",
 		Short: "Create a single-use invitation",
@@ -1011,18 +1013,28 @@ func newRoomInviteCommand() *cobra.Command {
 			if jsonFlag {
 				return printJSON(result.Invite)
 			}
-			if result.Invite.Code != "" {
-				fmt.Printf("Share this invite code once: %s\nHistory: %s\nExpires: %s\n",
-					result.Invite.Code, result.Invite.History, result.Invite.ExpiresAt.Local().Format(time.RFC3339))
-			} else {
+			if result.Invite.Code == "" {
 				fmt.Printf("Share this secret once: %s\nHistory: %s\nExpires: %s\n",
 					result.Invite.Secret, result.Invite.History, result.Invite.ExpiresAt.Local().Format(time.RFC3339))
+				if qrFlag || pngPath != "" {
+					return errors.New("this invite has no portable code; enable the node transport to share it as a QR code")
+				}
+				return nil
+			}
+			fmt.Printf("Share this invite code once: %s\nHistory: %s\nExpires: %s\n",
+				result.Invite.Code, result.Invite.History, result.Invite.ExpiresAt.Local().Format(time.RFC3339))
+			if qrFlag || pngPath != "" {
+				if err := writeSecretQR(result.Invite.Code, pngPath, qrFlag); err != nil {
+					return err
+				}
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&history, "history", "none", "history attached: none, recent, or all")
 	cmd.Flags().IntVar(&ttlSeconds, "ttl-seconds", 7*24*3600, "invitation lifetime in seconds")
+	cmd.Flags().BoolVar(&qrFlag, "qr", false, "print a QR code in the terminal")
+	cmd.Flags().StringVar(&pngPath, "png", "", "write a PNG QR code to this file")
 	return cmd
 }
 

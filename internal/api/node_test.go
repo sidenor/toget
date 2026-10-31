@@ -16,6 +16,7 @@ import (
 	"github.com/sidenor/toget/internal/approval"
 	"github.com/sidenor/toget/internal/config"
 	"github.com/sidenor/toget/internal/node"
+	"github.com/sidenor/toget/internal/qr"
 	"github.com/sidenor/toget/internal/room"
 	"github.com/sidenor/toget/internal/session"
 	"github.com/sidenor/toget/internal/storage"
@@ -149,6 +150,12 @@ func TestNodeInfoAndPortableInvite(t *testing.T) {
 	}
 	if code.URL != info.Info.URL || code.RoomID != created.Room.ID || code.Secret != invite.Invite.Secret {
 		t.Fatalf("decoded invite = %#v", code)
+	}
+	if _, err := qr.Text(invite.Invite.Code); err != nil {
+		t.Fatalf("invite does not fit in a QR code: %v", err)
+	}
+	if _, err := qr.PNG(invite.Invite.Code, 2); err != nil {
+		t.Fatalf("render invite QR: %v", err)
 	}
 }
 

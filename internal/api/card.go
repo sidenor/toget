@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sidenor/toget/internal/card"
 	"github.com/sidenor/toget/internal/node"
+	"github.com/sidenor/toget/internal/qr"
 )
 
 type cardResponse struct {
@@ -55,7 +55,7 @@ func (s *Server) handleCardQR(w http.ResponseWriter, r *http.Request) {
 		writeCardError(w, err)
 		return
 	}
-	png, err := card.QRPNG(view.Card, scale)
+	png, err := qr.PNG(view.Card, scale)
 	if err != nil {
 		writeError(w, http.StatusRequestEntityTooLarge, "card_too_large", "the card does not fit in a QR code")
 		return
