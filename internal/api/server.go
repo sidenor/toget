@@ -23,6 +23,7 @@ import (
 	"github.com/sidenor/toget/internal/backup"
 	"github.com/sidenor/toget/internal/identity"
 	"github.com/sidenor/toget/internal/node"
+	"github.com/sidenor/toget/internal/notify"
 	"github.com/sidenor/toget/internal/policy"
 	"github.com/sidenor/toget/internal/room"
 	"github.com/sidenor/toget/internal/session"
@@ -50,45 +51,47 @@ type AgentStreamProvider interface {
 
 // Options configures the local API.
 type Options struct {
-	Accounts     *account.Service
-	Rooms        *room.Service
-	Agents       *agent.Service
-	Policies     *policy.Service
-	Approvals    *approval.Service
-	Tools        *tool.Service
-	Node         *node.Service
-	Updates      *update.Monitor
-	Backups      *backup.Service
-	Session      *session.Manager
-	AgentRuns    AgentRunController
-	AgentStreams AgentStreamProvider
-	Version      version.Info
-	Token        string
-	Listen       string
-	UI           fs.FS
-	Logger       *slog.Logger
+	Accounts      *account.Service
+	Rooms         *room.Service
+	Agents        *agent.Service
+	Policies      *policy.Service
+	Approvals     *approval.Service
+	Tools         *tool.Service
+	Node          *node.Service
+	Updates       *update.Monitor
+	Backups       *backup.Service
+	Notifications *notify.Service
+	Session       *session.Manager
+	AgentRuns     AgentRunController
+	AgentStreams  AgentStreamProvider
+	Version       version.Info
+	Token         string
+	Listen        string
+	UI            fs.FS
+	Logger        *slog.Logger
 }
 
 // Server is the loopback HTTP server.
 type Server struct {
-	accounts     *account.Service
-	rooms        *room.Service
-	agents       *agent.Service
-	policies     *policy.Service
-	approvals    *approval.Service
-	tools        *tool.Service
-	node         *node.Service
-	updates      *update.Monitor
-	backups      *backup.Service
-	session      *session.Manager
-	agentRuns    AgentRunController
-	agentStreams AgentStreamProvider
-	version      version.Info
-	token        string
-	listen       string
-	ui           fs.FS
-	logger       *slog.Logger
-	origins      map[string]bool
+	accounts      *account.Service
+	rooms         *room.Service
+	agents        *agent.Service
+	policies      *policy.Service
+	approvals     *approval.Service
+	tools         *tool.Service
+	node          *node.Service
+	updates       *update.Monitor
+	backups       *backup.Service
+	notifications *notify.Service
+	session       *session.Manager
+	agentRuns     AgentRunController
+	agentStreams  AgentStreamProvider
+	version       version.Info
+	token         string
+	listen        string
+	ui            fs.FS
+	logger        *slog.Logger
+	origins       map[string]bool
 }
 
 // New creates a local API server.
@@ -102,24 +105,25 @@ func New(opts Options) *Server {
 		sessions = session.New(session.DefaultTTL)
 	}
 	return &Server{
-		accounts:     opts.Accounts,
-		rooms:        opts.Rooms,
-		agents:       opts.Agents,
-		policies:     opts.Policies,
-		approvals:    opts.Approvals,
-		tools:        opts.Tools,
-		node:         opts.Node,
-		updates:      opts.Updates,
-		backups:      opts.Backups,
-		session:      sessions,
-		agentRuns:    opts.AgentRuns,
-		agentStreams: opts.AgentStreams,
-		version:      opts.Version,
-		token:        opts.Token,
-		listen:       opts.Listen,
-		ui:           opts.UI,
-		logger:       logger,
-		origins:      allowedOrigins(opts.Listen),
+		accounts:      opts.Accounts,
+		rooms:         opts.Rooms,
+		agents:        opts.Agents,
+		policies:      opts.Policies,
+		approvals:     opts.Approvals,
+		tools:         opts.Tools,
+		node:          opts.Node,
+		updates:       opts.Updates,
+		backups:       opts.Backups,
+		notifications: opts.Notifications,
+		session:       sessions,
+		agentRuns:     opts.AgentRuns,
+		agentStreams:  opts.AgentStreams,
+		version:       opts.Version,
+		token:         opts.Token,
+		listen:        opts.Listen,
+		ui:            opts.UI,
+		logger:        logger,
+		origins:       allowedOrigins(opts.Listen),
 	}
 }
 
@@ -247,6 +251,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/restore", s.data(s.handleStageRestore))
 	mux.HandleFunc("DELETE /api/v1/restore", s.data(s.handleCancelRestore))
 	mux.HandleFunc("POST /api/v1/restore/restart", s.data(s.handleRestartRestore))
+
+	// Content-free notifications. Payloads never include message text.
+	mux.HandleFunc("GET /api/v1/notifications", s.data(s.handleGetNotifications))
+	mux.HandleFunc("POST /api/v1/notifications/subscriptions", s.data(s.handleSubscribeNotifications))
+	mux.HandleFunc("PATCH /api/v1/notifications/subscriptions/{id}", s.data(s.handleUpdateNotificationSubscription))
+	mux.HandleFunc("DELETE /api/v1/notifications/subscriptions/{id}", s.data(s.handleDeleteNotificationSubscription))
+	mux.HandleFunc("POST /api/v1/notifications/subscriptions/{id}/test", s.data(s.handleTestNotificationSubscription))
+	mux.HandleFunc("POST /api/v1/notifications/mute", s.data(s.handleMuteNotifications))
 
 	mux.HandleFunc("GET /", s.handleUI)
 	return s.recoverer(s.logRequests(mux))

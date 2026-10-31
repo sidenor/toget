@@ -329,6 +329,23 @@ the previous database, vault key, and attachments into a timestamped
 archive is quarantined under `restore/failed-*` instead of causing a boot loop.
 Backups never leave the machine unless the user moves them.
 
+## Notifications
+
+Settings → Notifications registers the current browser for Web Push. The node
+generates its own VAPID P-256 key pair on first use and keeps the private key
+in the local database; no notification content is sent to a third-party
+service. Payloads contain only `{"v":1,"type":"approval|message","lang":"en|zh"}`.
+Message text, senders, room names, and approval descriptions never enter a
+push payload. Each browser can disable message or approval events, and the
+quiet-hours switch pauses every browser until its deadline.
+
+Web Push requires HTTPS or a loopback origin. On iPhone and iPad, install the
+PWA to the Home Screen first. If the browser permission is denied, notification
+delivery cannot be repaired from Toget; allow notifications in the browser's
+site settings and register the browser again. Delivery failures are recorded
+per subscription, and a push service answering `404` or `410` causes the stale
+subscription to be removed.
+
 ## Observability
 
 - Structured logs to stdout and to a rotating local file.

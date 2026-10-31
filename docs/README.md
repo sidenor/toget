@@ -9,6 +9,7 @@ Start here:
 | [Architecture](architecture.md) | Nodes, account hosts, rooms, relay tree, trust boundaries |
 | [Connectors](connectors.md) | Stable v1 command/connector protocol, Go SDK, compatibility, security |
 | [Agent policies](policies.md) | Allow/deny/review rules, matching, precedence, limits |
+| [Notifications](notifications.md) | Content-free Web Push, subscriptions, quiet hours, limits |
 | [Protocol](protocol.md) | Node protocol, end-to-end envelope, local API, versioning |
 | [Security model](security-model.md) | Assets, who can see what, threats, controls, limits |
 | [Account recovery](account-recovery.md) | Per-device vault recovery, password change, local reset, limits |
@@ -30,13 +31,14 @@ Start here:
 4. Protocol — how nodes, devices, and relays talk.
 5. Connectors — how a local Agent runtime talks to the daemon.
 6. Agent policies — how the node decides what an Agent may do.
-7. Security model — who can decrypt what, and what we do not protect yet.
-8. Account recovery — how passwords and local vault keys are recovered.
-9. Deployment — how a node is installed and operated.
-10. Signed updates — how releases are signed, served, installed, and rolled back.
-11. Tech stack — why these tools.
-12. Repository layout — where code goes.
-13. Roadmap — what to build next.
+7. Notifications — what a push reveals, and what it deliberately does not.
+8. Security model — who can decrypt what, and what we do not protect yet.
+9. Account recovery — how passwords and local vault keys are recovered.
+10. Deployment — how a node is installed and operated.
+11. Signed updates — how releases are signed, served, installed, and rolled back.
+12. Tech stack — why these tools.
+13. Repository layout — where code goes.
+14. Roadmap — what to build next.
 
 ## Decision records
 

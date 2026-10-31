@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"io/fs"
@@ -19,6 +20,7 @@ import (
 	"github.com/sidenor/toget/internal/approval"
 	"github.com/sidenor/toget/internal/backup"
 	"github.com/sidenor/toget/internal/config"
+	"github.com/sidenor/toget/internal/notify"
 	"github.com/sidenor/toget/internal/policy"
 	"github.com/sidenor/toget/internal/room"
 	"github.com/sidenor/toget/internal/session"
@@ -60,23 +62,32 @@ func newTestNodeWithOptions(t *testing.T, ui fs.FS, configure func(*api.Options)
 
 	accounts := account.New(db, v)
 	rooms := room.New(db, v, room.WithDataDir(dir))
+	notificationCtx, stopNotifications := context.WithCancel(context.Background())
+	t.Cleanup(stopNotifications)
+	notifications, err := notify.New(notificationCtx, db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rooms.SetEventHook(notifications.HandleRoomEvent)
+	notifications.Start(notificationCtx)
 	agents := agent.New(db, rooms)
 	policies := policy.New(db, rooms, agents)
 	approvals := approval.New(db, rooms, policies)
 	opts := api.Options{
-		Accounts:  accounts,
-		Rooms:     rooms,
-		Agents:    agents,
-		Policies:  policies,
-		Approvals: approvals,
-		Tools:     tool.New(db, rooms, approvals, policies),
-		Backups:   backup.NewService(db, paths),
-		Session:   session.New(session.DefaultTTL),
-		Version:   version.Current(),
-		Token:     testToken,
-		Listen:    "127.0.0.1:7718",
-		UI:        ui,
-		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Accounts:      accounts,
+		Rooms:         rooms,
+		Agents:        agents,
+		Policies:      policies,
+		Approvals:     approvals,
+		Tools:         tool.New(db, rooms, approvals, policies),
+		Backups:       backup.NewService(db, paths),
+		Notifications: notifications,
+		Session:       session.New(session.DefaultTTL),
+		Version:       version.Current(),
+		Token:         testToken,
+		Listen:        "127.0.0.1:7718",
+		UI:            ui,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	if configure != nil {
 		configure(&opts)

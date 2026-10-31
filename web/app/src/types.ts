@@ -482,3 +482,25 @@ export type RestoreStatus = {
   restart_configured: boolean;
   restart_supported: boolean;
 };
+
+export type NotificationSubscription = {
+  id: string;
+  endpoint_host: string;
+  label: string;
+  language: string;
+  user_agent: string;
+  enabled: boolean;
+  message_events: boolean;
+  approval_events: boolean;
+  muted_until?: string | null;
+  created_at: string;
+  last_success_at?: string | null;
+  last_failure_at?: string | null;
+  failure_count: number;
+};
+
+export type NotificationStatus = {
+  public_key: string;
+  subscriptions: NotificationSubscription[];
+  muted_until?: string | null;
+};

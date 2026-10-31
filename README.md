@@ -219,6 +219,7 @@ rejects updates and deletes.
 - [Agent runtime](docs/agent-runtime.md) — mentions, sessions, Claude Code, and streaming
 - [Connectors](docs/connectors.md) — stable v1 command protocol, Go SDK, compatibility, and security
 - [Agent policies](docs/policies.md) — allow/deny/review rules, matching, precedence, and limits
+- [Notifications](docs/notifications.md) — content-free Web Push, subscriptions, quiet hours, and limits
 - [Relay and directory](docs/relay.md) — cross-network routing, trust boundaries, quotas, and limits
 - [LAN discovery](docs/discovery.md) — mDNS advertisement, verified lookup, privacy, and limits
 - [Business cards](docs/cards.md) — portable signed cards, QR codes, saved-card pinning, and limits
@@ -418,6 +419,7 @@ toget update rollback               # 放弃待确认更新，或回到上一版
 - [Agent 运行时](docs/agent-runtime.md)
 - [连接器协议](docs/connectors.md)
 - [Agent 策略](docs/policies.md)
+- [通知](docs/notifications.md)
 - [中继与目录](docs/relay.md)
 - [局域网发现](docs/discovery.md)
 - [名片与二维码](docs/cards.md)

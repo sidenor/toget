@@ -22,7 +22,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const schemaVersion = 10
+const schemaVersion = 11
 
 // CurrentSchemaVersion is the newest database schema this build understands.
 // Backup/restore uses it to reject archives from newer builds.
@@ -94,7 +94,7 @@ func (d *DB) migrate(ctx context.Context) error {
 	}
 	migrations := []func(context.Context) error{
 		d.migrateV1, d.migrateV2, d.migrateV3, d.migrateV4, d.migrateV5, d.migrateV6, d.migrateV7,
-		d.migrateV8, d.migrateV9,
+		d.migrateV8, d.migrateV9, d.migrateV10,
 	}
 	for from := version; from < schemaVersion; from++ {
 		if from < 1 || from > len(migrations) {
@@ -390,6 +390,45 @@ func (d *DB) migrateV9(ctx context.Context) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("storage: commit v9 migration: %w", err)
+	}
+	return nil
+}
+
+// migrateV10 adds Web Push subscriptions. The local node stores only the
+// push endpoint and the browser's public encryption keys; notification bodies
+// never contain message text or sender details.
+func (d *DB) migrateV10(ctx context.Context) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("storage: begin v10 migration: %w", err)
+	}
+	defer tx.Rollback()
+	for _, statement := range []string{
+		`CREATE TABLE IF NOT EXISTS push_subscriptions (
+			id             TEXT PRIMARY KEY,
+			endpoint       TEXT NOT NULL UNIQUE,
+			p256dh         TEXT NOT NULL,
+			auth           TEXT NOT NULL,
+			language       TEXT NOT NULL DEFAULT '',
+			user_agent     TEXT NOT NULL DEFAULT '',
+			label          TEXT NOT NULL DEFAULT '',
+			enabled        INTEGER NOT NULL DEFAULT 1,
+			message_events INTEGER NOT NULL DEFAULT 1,
+			approval_events INTEGER NOT NULL DEFAULT 1,
+			muted_until    INTEGER,
+			created_at     INTEGER NOT NULL,
+			updated_at     INTEGER NOT NULL,
+			last_success_at INTEGER,
+			last_failure_at INTEGER,
+			failure_count  INTEGER NOT NULL DEFAULT 0)`,
+		`CREATE INDEX IF NOT EXISTS push_subscriptions_enabled ON push_subscriptions(enabled)`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("storage: migrate v10: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storage: commit v10 migration: %w", err)
 	}
 	return nil
 }

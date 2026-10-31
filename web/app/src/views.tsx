@@ -15,6 +15,8 @@ import type {
   Device,
   DiscoveredPeer,
   NodeInfo,
+  NotificationStatus,
+  NotificationSubscription,
   PairingView,
   Policy,
   PolicyDecision,
@@ -1803,6 +1805,367 @@ function BackupPanel({ t, lang, notify, onError }: BackupPanelProps) {
   );
 }
 
+
+const PUSH_ID_KEY = "toget.pushSubscription";
+
+function pushSupported(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    "serviceWorker" in navigator &&
+    "PushManager" in window &&
+    "Notification" in window
+  );
+}
+
+function applicationServerKey(value: string): Uint8Array {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (value.length % 4)) % 4);
+  const raw = atob(padded);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i);
+  return bytes;
+}
+
+function browserLabel(): string {
+  const ua = navigator.userAgent;
+  const browser = /Edg\//.test(ua)
+    ? "Edge"
+    : /Firefox\//.test(ua)
+      ? "Firefox"
+      : /Chrome\//.test(ua)
+        ? "Chrome"
+        : /Safari\//.test(ua)
+          ? "Safari"
+          : "Browser";
+  const os = /iPhone|iPad|iPod/.test(ua)
+    ? "iOS"
+    : /Android/.test(ua)
+      ? "Android"
+      : /Mac OS X/.test(ua)
+        ? "macOS"
+        : /Windows/.test(ua)
+          ? "Windows"
+          : /Linux/.test(ua)
+            ? "Linux"
+            : "";
+  return os ? `${browser} · ${os}` : browser;
+}
+
+function NotificationsPanel({
+  t,
+  lang,
+  notify,
+}: {
+  t: Translate;
+  lang: Lang;
+  notify: (message: string) => void;
+}) {
+  const supported = pushSupported();
+  const [status, setStatus] = useState<NotificationStatus | null>(null);
+  const [localID, setLocalID] = useState(() => localStorage.getItem(PUSH_ID_KEY) ?? "");
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [loadError, setLoadError] = useState("");
+
+  async function load() {
+    try {
+      const next = await api.notificationStatus();
+      setStatus(next);
+      setLoadError("");
+      if (localID && !next.subscriptions.some((sub) => sub.id === localID)) {
+        localStorage.removeItem(PUSH_ID_KEY);
+        setLocalID("");
+      }
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : t("settings.notificationsLoadFailed"));
+    }
+  }
+
+  useEffect(() => {
+    void load();
+    // localStorage is per browser; status changes are reloaded explicitly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lang]);
+
+  const localSub = status?.subscriptions.find((sub) => sub.id === localID);
+  const muted = Boolean(status?.muted_until && new Date(status.muted_until).getTime() > Date.now());
+
+  async function enable() {
+    if (!status || !supported) return;
+    setBusy("enable");
+    setError("");
+    setMessage("");
+    try {
+      const permission =
+        Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
+      if (permission !== "granted") {
+        setError(t(permission === "denied" ? "settings.notificationsPermissionDenied" : "settings.notificationsTestFailed"));
+        return;
+      }
+      let registration = await navigator.serviceWorker.getRegistration();
+      if (!registration) registration = await navigator.serviceWorker.register("/sw.js");
+      await navigator.serviceWorker.ready;
+      const existing = await registration.pushManager.getSubscription();
+      const subscription =
+        existing ??
+        (await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: applicationServerKey(status.public_key) as BufferSource,
+        }));
+      const raw = subscription.toJSON();
+      if (!raw.endpoint || !raw.keys?.p256dh || !raw.keys?.auth) {
+        throw new Error(t("settings.notificationsNoWorker"));
+      }
+      const saved = await api.subscribeNotifications({
+        endpoint: raw.endpoint,
+        p256dh: raw.keys.p256dh,
+        auth: raw.keys.auth,
+        language: lang,
+        user_agent: navigator.userAgent,
+        label: browserLabel(),
+      });
+      localStorage.setItem(PUSH_ID_KEY, saved.id);
+      setLocalID(saved.id);
+      await load();
+      notify(t("settings.notificationsEnabledToast"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("settings.notificationsTestFailed"));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function disable() {
+    setBusy("disable");
+    setError("");
+    setMessage("");
+    try {
+      const registration = await navigator.serviceWorker.getRegistration();
+      const existing = await registration?.pushManager.getSubscription();
+      if (localID) await api.deleteNotificationSubscription(localID);
+      if (existing) await existing.unsubscribe();
+      localStorage.removeItem(PUSH_ID_KEY);
+      setLocalID("");
+      await load();
+      notify(t("settings.notificationsDisabledToast"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("settings.notificationsTestFailed"));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function remove(sub: NotificationSubscription) {
+    if (!window.confirm(t("settings.notificationsDeleteConfirm"))) return;
+    setBusy(sub.id);
+    setError("");
+    setMessage("");
+    try {
+      await api.deleteNotificationSubscription(sub.id);
+      if (sub.id === localID) {
+        const registration = await navigator.serviceWorker.getRegistration();
+        const existing = await registration?.pushManager.getSubscription();
+        if (existing) await existing.unsubscribe();
+        localStorage.removeItem(PUSH_ID_KEY);
+        setLocalID("");
+      }
+      await load();
+      notify(t("settings.notificationsDeleted"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("settings.notificationsTestFailed"));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function update(sub: NotificationSubscription, patch: {
+    enabled?: boolean;
+    message_events?: boolean;
+    approval_events?: boolean;
+  }) {
+    setBusy(sub.id);
+    setError("");
+    try {
+      const updated = await api.updateNotificationSubscription(sub.id, patch);
+      setStatus((current) =>
+        current
+          ? { ...current, subscriptions: current.subscriptions.map((item) => (item.id === updated.id ? updated : item)) }
+          : current,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("settings.notificationsLoadFailed"));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function test(sub: NotificationSubscription) {
+    setBusy(sub.id);
+    setError("");
+    setMessage("");
+    try {
+      await api.testNotificationSubscription(sub.id);
+      setMessage(t("settings.notificationsTestSent"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("settings.notificationsTestFailed"));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function mute(hours: number) {
+    setBusy("mute");
+    setError("");
+    try {
+      setStatus(await api.muteNotifications(hours));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("settings.notificationsLoadFailed"));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  return (
+    <article className="panel wide notification-panel">
+      <div className="backup-heading">
+        <div>
+          <h2>{t("settings.notificationsTitle")}</h2>
+          <p className="muted">{t("settings.notificationsText")}</p>
+        </div>
+        {supported && status && (
+          <button
+            className="button primary"
+            onClick={() => void (localSub ? disable() : enable())}
+            disabled={busy !== ""}
+          >
+            {busy === "enable"
+              ? t("settings.notificationsEnabling")
+              : busy === "disable"
+                ? t("settings.notificationsDisabling")
+                : localSub
+                ? t("settings.notificationsDisable")
+                : t("settings.notificationsEnable")}
+          </button>
+        )}
+      </div>
+      {!supported ? (
+        <div className="backup-callout">
+          <p>{t("settings.notificationsUnsupported")}</p>
+        </div>
+      ) : (
+        <>
+          <p className="fine-print notification-privacy">{t("settings.notificationsPrivacy")}</p>
+          {Notification.permission === "denied" && (
+            <div className="form-error">{t("settings.notificationsPermissionDenied")}</div>
+          )}
+          {error && <div className="form-error">{error}</div>}
+          {message && <p className="form-success">{message}</p>}
+          {loadError && <div className="form-error">{loadError}</div>}
+          {status === null ? (
+            !loadError && <Spinner label={t("common.loading")} />
+          ) : (
+            <>
+              <div className="notification-mute">
+                <div>
+                  <strong>{t("settings.notificationsMuteTitle")}</strong>
+                  <p className="fine-print muted">{t("settings.notificationsMuteText")}</p>
+                  {muted && (
+                    <p className="fine-print muted">
+                      {t("settings.notificationsMutedUntil", {
+                        time: new Date(status.muted_until!).toLocaleString(lang),
+                      })}
+                    </p>
+                  )}
+                </div>
+                <div className="segmented">
+                  <button className={muted ? "" : "active"} onClick={() => void mute(0)} disabled={busy !== ""}>
+                    {t("settings.notificationsMuteOff")}
+                  </button>
+                  {[1, 8, 24].map((hours) => (
+                    <button key={hours} onClick={() => void mute(hours)} disabled={busy !== ""}>
+                      {t("settings.notificationsMuteHour", { hours })}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <h3>{t("settings.notificationsDevices")}</h3>
+              {status.subscriptions.length === 0 ? (
+                <p className="muted">{t("settings.notificationsEmpty")}</p>
+              ) : (
+                <div className="backup-list">
+                  {status.subscriptions.map((sub) => (
+                    <div className="notification-row" key={sub.id}>
+                      <div className="notification-row-main">
+                        <div className="notification-row-title">
+                          <strong>{sub.label || sub.endpoint_host || sub.id}</strong>
+                          {sub.id === localID && (
+                            <span className="chip">{t("settings.notificationsThisBrowser")}</span>
+                          )}
+                        </div>
+                        <p className="fine-print muted">
+                          {t("settings.notificationsEndpoint")}: {sub.endpoint_host || "—"} · {sub.language.toUpperCase()}
+                        </p>
+                        <p className="fine-print muted">
+                          {sub.last_success_at
+                            ? `${t("settings.notificationsLastSuccess")}: ${new Date(sub.last_success_at).toLocaleString(lang)}`
+                            : t("settings.notificationsNever")}
+                          {sub.failure_count > 0 &&
+                            ` · ${t("settings.notificationsFailures", { count: sub.failure_count })}`}
+                          {sub.muted_until && new Date(sub.muted_until) > new Date() &&
+                            ` · ${t("settings.notificationsMutedUntil", {
+                              time: new Date(sub.muted_until).toLocaleString(lang),
+                            })}`}
+                        </p>
+                        <div className="notification-toggles">
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={sub.enabled}
+                              disabled={busy !== ""}
+                              onChange={(event) => void update(sub, { enabled: event.target.checked })}
+                            />
+                            {t("settings.notificationsEnabled")}
+                          </label>
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={sub.message_events}
+                              disabled={busy !== ""}
+                              onChange={(event) => void update(sub, { message_events: event.target.checked })}
+                            />
+                            {t("settings.notificationsMessages")}
+                          </label>
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={sub.approval_events}
+                              disabled={busy !== ""}
+                              onChange={(event) => void update(sub, { approval_events: event.target.checked })}
+                            />
+                            {t("settings.notificationsApprovals")}
+                          </label>
+                        </div>
+                      </div>
+                      <div className="backup-row-actions">
+                        <button className="button ghost small" onClick={() => void test(sub)} disabled={busy !== ""}>
+                          {busy === sub.id ? t("settings.notificationsTesting") : t("settings.notificationsTest")}
+                        </button>
+                        <button className="button ghost small danger" onClick={() => void remove(sub)} disabled={busy !== ""}>
+                          {t("common.delete")}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </>
+      )}
+    </article>
+  );
+}
+
 export function SettingsView({
   t,
   lang,
@@ -2354,6 +2717,7 @@ export function SettingsView({
           )}
         </article>
         <BackupPanel t={t} lang={lang} notify={notify} onError={onError} />
+        <NotificationsPanel t={t} lang={lang} notify={notify} />
         <article className="panel wide">
           <h2>{t("settings.securityTitle")}</h2>
           <p className="muted">{t("settings.securityText")}</p>

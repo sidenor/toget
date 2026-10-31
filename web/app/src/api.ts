@@ -16,6 +16,8 @@ import type {
   Member,
   DiscoveredPeer,
   NodeInfo,
+  NotificationStatus,
+  NotificationSubscription,
   PairingView,
   PairJoinView,
   Policy,
@@ -295,6 +297,30 @@ export const api = {
     request<RestoreStatus["staged"]>("/api/v1/restore", json(body)),
   cancelRestore: () => request<void>("/api/v1/restore", { method: "DELETE" }),
   restartRestore: () => request<{ restarting: boolean }>("/api/v1/restore/restart", json({})),
+
+  notificationStatus: () => request<NotificationStatus>("/api/v1/notifications"),
+  subscribeNotifications: (body: {
+    endpoint: string;
+    p256dh: string;
+    auth: string;
+    language: string;
+    user_agent: string;
+    label: string;
+  }) => request<NotificationSubscription>("/api/v1/notifications/subscriptions", json(body)),
+  updateNotificationSubscription: (
+    id: string,
+    body: { label?: string; enabled?: boolean; message_events?: boolean; approval_events?: boolean; muted_until?: string },
+  ) =>
+    request<NotificationSubscription>(`/api/v1/notifications/subscriptions/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      ...json(body),
+    }),
+  deleteNotificationSubscription: (id: string) =>
+    request<void>(`/api/v1/notifications/subscriptions/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  testNotificationSubscription: (id: string) =>
+    request<{ sent: boolean }>(`/api/v1/notifications/subscriptions/${encodeURIComponent(id)}/test`, json({})),
+  muteNotifications: (hours: number) =>
+    request<NotificationStatus>("/api/v1/notifications/mute", json({ hours })),
 
   async download(path: string, filename: string): Promise<void> {
     const response = await fetch(path, { credentials: "same-origin" });

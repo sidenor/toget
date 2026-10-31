@@ -405,6 +405,7 @@ type Service struct {
 	dataDir      string
 	writeGuard   func(ctx context.Context, roomID, eventType string) error
 	remoteAppend RemoteAppendFunc
+	eventHook    func(ctx context.Context, event *Event)
 }
 
 // Option configures a room service.
@@ -424,6 +425,15 @@ func (s *Service) SetRemoteAppend(fn RemoteAppendFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.remoteAppend = fn
+}
+
+// SetEventHook installs a best-effort observer for new local and remote
+// events. The hook receives an opened event after it is persisted; it must not
+// call back into the room service.
+func (s *Service) SetEventHook(fn func(ctx context.Context, event *Event)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.eventHook = fn
 }
 
 func (s *Service) checkWritable(ctx context.Context, roomID, eventType string) error {
@@ -627,9 +637,13 @@ func (s *Service) Append(ctx context.Context, roomID string, actor Actor, eventT
 	if err == nil {
 		err = s.store.AppendEvent(ctx, sealed)
 	}
+	hook := s.eventHook
 	s.mu.Unlock()
 	if err != nil {
 		return nil, err
+	}
+	if hook != nil {
+		hook(ctx, plain)
 	}
 	return plain, nil
 }
@@ -681,8 +695,9 @@ func (s *Service) prepareLocalLocked(ctx context.Context, roomID string, actor A
 // chain, author device, and signature before persisting it.
 func (s *Service) AppendRemote(ctx context.Context, event *Event) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.appendRemoteLocked(ctx, event, nil)
+	err := s.appendRemoteLocked(ctx, event, nil)
+	s.mu.Unlock()
+	return err
 }
 
 // remoteEventValidator inspects a decrypted event whose signature has already
@@ -782,6 +797,9 @@ func (s *Service) appendRemoteLocked(ctx context.Context, event *Event, validate
 		if err := s.store.AttachToEvent(ctx, stored.ID, attachmentIDs); err != nil {
 			return err
 		}
+	}
+	if s.eventHook != nil {
+		s.eventHook(ctx, &plain)
 	}
 	return nil
 }

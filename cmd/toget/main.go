@@ -32,6 +32,7 @@ import (
 	"github.com/sidenor/toget/internal/identity"
 	"github.com/sidenor/toget/internal/mdns"
 	"github.com/sidenor/toget/internal/node"
+	"github.com/sidenor/toget/internal/notify"
 	"github.com/sidenor/toget/internal/policy"
 	"github.com/sidenor/toget/internal/room"
 	"github.com/sidenor/toget/internal/session"
@@ -332,6 +333,20 @@ func runServe(ctx context.Context) error {
 			return nil
 		},
 	))
+	notificationService, err := notify.New(signalCtx, db, logger, notify.WithSelfAccount(func(ctx context.Context) string {
+		snapshot, err := accounts.Get(ctx)
+		if err != nil {
+			return ""
+		}
+		return snapshot.Account.ID
+	}))
+	if err != nil {
+		logger.Warn("web push notifications disabled", "error", err)
+		notificationService = nil
+	} else {
+		rooms.SetEventHook(notificationService.HandleRoomEvent)
+		notificationService.Start(signalCtx)
+	}
 	var nodeService *node.Service
 	agents := agent.New(db, rooms)
 	policies := policy.New(db, rooms, agents)
@@ -424,23 +439,24 @@ func runServe(ctx context.Context) error {
 
 	backupService := backup.NewService(db, paths)
 	handler := api.New(api.Options{
-		Accounts:     accounts,
-		Rooms:        rooms,
-		Agents:       agents,
-		Policies:     policies,
-		Approvals:    approvals,
-		Tools:        tools,
-		Node:         apiNode,
-		Updates:      updateMonitor,
-		Backups:      backupService,
-		Session:      sessions,
-		AgentRuns:    agentRunner,
-		AgentStreams: agentRunner,
-		Version:      version.Current(),
-		Token:        token,
-		Listen:       cfg.Listen,
-		UI:           ui.FS(),
-		Logger:       logger,
+		Accounts:      accounts,
+		Rooms:         rooms,
+		Agents:        agents,
+		Policies:      policies,
+		Approvals:     approvals,
+		Tools:         tools,
+		Node:          apiNode,
+		Updates:       updateMonitor,
+		Backups:       backupService,
+		Notifications: notificationService,
+		Session:       sessions,
+		AgentRuns:     agentRunner,
+		AgentStreams:  agentRunner,
+		Version:       version.Current(),
+		Token:         token,
+		Listen:        cfg.Listen,
+		UI:            ui.FS(),
+		Logger:        logger,
 	}).Handler()
 
 	server := &http.Server{

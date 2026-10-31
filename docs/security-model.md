@@ -28,8 +28,15 @@ Toget's security model follows one rule: **the endpoint is the trust boundary**.
 | Self-hosted account host | Yes | Yes | Yes | It is the user's endpoint |
 | Relay run by a third party | No | No | Same as official relay | Same envelope rules |
 | Official directory | No | No | Server/account IDs, advertised endpoint, relay route, publish/lookup timing | Verifies manifests; cannot forge or redirect a pinned endpoint |
+| Browser push service | No | No | Subscription endpoint, delivery time, encrypted payload size | Payload is content-free and encrypted to the browser; it cannot read the event type |
 
 The official service has no universal key and no backdoor. There is no "compliance access" path to plaintext.
+
+Web Push notifications are content-free by construction. The node sends only
+`{"v":1,"type":"approval|message","lang":"en|zh"}` encrypted for one browser
+subscription; message text, senders, room names, and approval descriptions
+never enter a push payload. The VAPID private key remains in the local
+database. See [notifications.md](notifications.md).
 
 ## Trust boundaries
 

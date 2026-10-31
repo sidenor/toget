@@ -43,6 +43,7 @@ tags:
   - name: policies
   - name: tools
   - name: backups
+  - name: notifications
   - name: audit
   - name: search
 security:
@@ -584,6 +585,184 @@ paths:
           $ref: "#/components/responses/Locked"
         "502":
           $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/notifications:
+    get:
+      tags: [notifications]
+      operationId: getNotifications
+      summary: Read Web Push configuration and subscriptions
+      description: |
+        Returns the node's VAPID public key and registered browser
+        subscriptions. Push payloads are content-free; subscription endpoints
+        and browser encryption keys are never returned by this API.
+      responses:
+        "200":
+          description: Notification settings and registered browsers.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/notifications/subscriptions:
+    post:
+      tags: [notifications]
+      operationId: subscribeNotifications
+      summary: Register a browser push subscription
+      description: |
+        Stores a standard Web Push subscription. Re-posting the same endpoint
+        refreshes its keys and preserves the user's event preferences.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NotificationSubscriptionInput"
+      responses:
+        "201":
+          description: The registered subscription.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationSubscription"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/notifications/subscriptions/{id}:
+    patch:
+      tags: [notifications]
+      operationId: updateNotificationSubscription
+      summary: Change event preferences for a browser
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NotificationSubscriptionUpdate"
+      responses:
+        "200":
+          description: The updated subscription.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationSubscription"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+    delete:
+      tags: [notifications]
+      operationId: deleteNotificationSubscription
+      summary: Remove a browser subscription
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: The subscription was removed.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/notifications/subscriptions/{id}/test:
+    post:
+      tags: [notifications]
+      operationId: testNotificationSubscription
+      summary: Send a test notification
+      description: Bypasses the global mute and rate limit for one browser.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The push service accepted the test.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationTestResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/notifications/mute:
+    post:
+      tags: [notifications]
+      operationId: muteNotifications
+      summary: Pause notifications on every browser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NotificationMuteRequest"
+      responses:
+        "200":
+          description: Updated notification state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "423":
+          $ref: "#/components/responses/Locked"
         "503":
           $ref: "#/components/responses/Unavailable"
 
@@ -3138,6 +3317,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    Internal:
+      description: The local node could not complete the operation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
 
   schemas:
     Error:
@@ -3473,6 +3658,127 @@ components:
       required: [restarting]
       properties:
         restarting:
+          type: boolean
+
+    NotificationSubscription:
+      type: object
+      additionalProperties: false
+      required:
+        [id, endpoint_host, label, language, user_agent, enabled, message_events,
+         approval_events, created_at, failure_count]
+      properties:
+        id:
+          type: string
+        endpoint_host:
+          type: string
+          description: Hostname of the push service, for identification only.
+        label:
+          type: string
+        language:
+          type: string
+          enum: [en, zh]
+        user_agent:
+          type: string
+        enabled:
+          type: boolean
+        message_events:
+          type: boolean
+        approval_events:
+          type: boolean
+        muted_until:
+          type: string
+          format: date-time
+          description: Per-browser mute deadline. Omitted when not muted.
+        created_at:
+          type: string
+          format: date-time
+        last_success_at:
+          type: string
+          format: date-time
+          description: Last accepted delivery. Omitted when never delivered.
+        last_failure_at:
+          type: string
+          format: date-time
+          description: Last failed delivery. Omitted when never failed.
+        failure_count:
+          type: integer
+          minimum: 0
+
+    NotificationStatus:
+      type: object
+      additionalProperties: false
+      required: [public_key, subscriptions]
+      properties:
+        public_key:
+          type: string
+          description: Base64url VAPID P-256 public key for PushManager.subscribe.
+        subscriptions:
+          type: array
+          items:
+            $ref: "#/components/schemas/NotificationSubscription"
+        muted_until:
+          type: string
+          format: date-time
+          description: Global mute deadline. Omitted when notifications are on.
+
+    NotificationSubscriptionInput:
+      type: object
+      additionalProperties: false
+      required: [endpoint, p256dh, auth]
+      properties:
+        endpoint:
+          type: string
+          format: uri
+          description: Push service endpoint. Must use HTTPS; loopback HTTP is allowed for development.
+        p256dh:
+          type: string
+          description: Base64url uncompressed P-256 browser public key.
+        auth:
+          type: string
+          description: Base64url 16-byte authentication secret.
+        language:
+          type: string
+          description: Preferred notification language. Defaults to English.
+        user_agent:
+          type: string
+          description: Browser description for the settings list.
+        label:
+          type: string
+          description: User-visible device label.
+
+    NotificationSubscriptionUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        label:
+          type: string
+        enabled:
+          type: boolean
+        message_events:
+          type: boolean
+        approval_events:
+          type: boolean
+        muted_until:
+          type: string
+          description: RFC3339 mute deadline; an empty string clears the per-browser mute.
+
+    NotificationMuteRequest:
+      type: object
+      additionalProperties: false
+      required: [hours]
+      properties:
+        hours:
+          type: integer
+          minimum: 0
+          maximum: 168
+          description: Hours to pause notifications; 0 turns them back on.
+
+    NotificationTestResponse:
+      type: object
+      additionalProperties: false
+      required: [sent]
+      properties:
+        sent:
           type: boolean
 
     UpdateStatus:

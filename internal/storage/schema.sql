@@ -284,3 +284,24 @@ CREATE TABLE settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE push_subscriptions (
+    id             TEXT PRIMARY KEY,
+    endpoint       TEXT NOT NULL UNIQUE,
+    p256dh         TEXT NOT NULL,
+    auth           TEXT NOT NULL,
+    language       TEXT NOT NULL DEFAULT '',
+    user_agent     TEXT NOT NULL DEFAULT '',
+    label          TEXT NOT NULL DEFAULT '',
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    message_events INTEGER NOT NULL DEFAULT 1,
+    approval_events INTEGER NOT NULL DEFAULT 1,
+    muted_until    INTEGER,
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL,
+    last_success_at INTEGER,
+    last_failure_at INTEGER,
+    failure_count  INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX push_subscriptions_enabled ON push_subscriptions(enabled);
