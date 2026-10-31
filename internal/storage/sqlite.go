@@ -22,7 +22,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const schemaVersion = 11
+const schemaVersion = 12
 
 // CurrentSchemaVersion is the newest database schema this build understands.
 // Backup/restore uses it to reject archives from newer builds.
@@ -94,7 +94,7 @@ func (d *DB) migrate(ctx context.Context) error {
 	}
 	migrations := []func(context.Context) error{
 		d.migrateV1, d.migrateV2, d.migrateV3, d.migrateV4, d.migrateV5, d.migrateV6, d.migrateV7,
-		d.migrateV8, d.migrateV9, d.migrateV10,
+		d.migrateV8, d.migrateV9, d.migrateV10, d.migrateV11,
 	}
 	for from := version; from < schemaVersion; from++ {
 		if from < 1 || from > len(migrations) {
@@ -433,6 +433,26 @@ func (d *DB) migrateV10(ctx context.Context) error {
 	return nil
 }
 
+// migrateV11 records the pinned official account host. Self-hosted accounts
+// keep an empty value and continue to discover their origin server through a
+// card, mDNS, or the directory.
+func (d *DB) migrateV11(ctx context.Context) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("storage: begin v11 migration: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		`ALTER TABLE accounts ADD COLUMN host_url TEXT NOT NULL DEFAULT ''`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("storage: migrate v11: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storage: commit v11 migration: %w", err)
+	}
+	return nil
+}
+
 func tableExists(ctx context.Context, tx *sql.Tx, name string) (bool, error) {
 	var n int
 	if err := tx.QueryRowContext(ctx,
@@ -494,13 +514,13 @@ func (d *DB) GetServer(ctx context.Context) (*account.Server, error) {
 // GetAccount returns the local account.
 func (d *DB) GetAccount(ctx context.Context) (*account.Account, error) {
 	row := d.db.QueryRowContext(ctx, `
-		SELECT id, server_id, origin_server_id, key_generation, key_rotations,
+		SELECT id, server_id, origin_server_id, host_url, key_generation, key_rotations,
 		       code, name, public_key, private_key, password_hash, created_at
 		FROM accounts ORDER BY created_at LIMIT 1`)
 	var a account.Account
 	var rotations string
 	var created int64
-	if err := row.Scan(&a.ID, &a.ServerID, &a.OriginServerID, &a.KeyGeneration, &rotations,
+	if err := row.Scan(&a.ID, &a.ServerID, &a.OriginServerID, &a.HostURL, &a.KeyGeneration, &rotations,
 		&a.Code, &a.Name, &a.PublicKey, &a.PrivateKey, &a.PasswordHash, &created); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, account.ErrNotFound
@@ -635,6 +655,24 @@ func (d *DB) UpdateAccountPasswordHash(ctx context.Context, accountID, passwordH
 	return nil
 }
 
+// UpdateAccountHost records the pinned official account host. It is a
+// binding, not a preference: callers reject a change once a host is set.
+func (d *DB) UpdateAccountHost(ctx context.Context, accountID, hostURL string) error {
+	result, err := d.db.ExecContext(ctx,
+		`UPDATE accounts SET host_url = ? WHERE id = ?`, hostURL, accountID)
+	if err != nil {
+		return fmt.Errorf("storage: update account host: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("storage: update account host: %w", err)
+	}
+	if affected == 0 {
+		return account.ErrNotFound
+	}
+	return nil
+}
+
 func encodeKeyRotations(rotations []string) (string, error) {
 	if len(rotations) == 0 {
 		return "[]", nil
@@ -683,10 +721,10 @@ func (d *DB) insertAccount(ctx context.Context, server *account.Server, acct *ac
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO accounts (id, server_id, origin_server_id, key_generation, key_rotations,
+		INSERT INTO accounts (id, server_id, origin_server_id, host_url, key_generation, key_rotations,
 			code, name, public_key, private_key, password_hash, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		acct.ID, acct.ServerID, originServerID, generation, rotations,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		acct.ID, acct.ServerID, originServerID, acct.HostURL, generation, rotations,
 		acct.Code, acct.Name, acct.PublicKey, acct.PrivateKey, acct.PasswordHash, toMillis(acct.CreatedAt)); err != nil {
 		if isUniqueViolation(err) {
 			return account.ErrAlreadyExists

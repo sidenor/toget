@@ -288,6 +288,7 @@ type AccountView struct {
 	Name          string      `json:"name"`
 	ServerID      string      `json:"server_id"`
 	ServerCode    string      `json:"server_code"`
+	HostURL       string      `json:"host_url,omitempty"`
 	KeyGeneration int         `json:"key_generation"`
 	CreatedAt     time.Time   `json:"created_at"`
 	Device        *DeviceView `json:"device,omitempty"`
@@ -695,6 +696,7 @@ func accountView(a *account.Account, d *account.Device) *AccountView {
 		Name:          a.Name,
 		ServerID:      a.ServerID,
 		ServerCode:    serverCode,
+		HostURL:       a.HostURL,
 		KeyGeneration: generation,
 		CreatedAt:     a.CreatedAt,
 	}

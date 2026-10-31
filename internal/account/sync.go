@@ -275,6 +275,13 @@ func verifyAccountRevocation(encoded string, accountKeys []ed25519.PublicKey) (*
 	return nil, lastErr
 }
 
+// ValidateDeviceRecord checks that a public device record's certificate binds
+// its keys to the account. It is exported for account hosts, which perform the
+// same validation before storing a synced device.
+func ValidateDeviceRecord(record DeviceRecord, accountID string, accountKeys []ed25519.PublicKey, now time.Time) (*Device, *time.Time, error) {
+	return validateDeviceRecord(record, accountID, accountKeys, now)
+}
+
 func validateDeviceRecord(record DeviceRecord, accountID string, accountKeys []ed25519.PublicKey, now time.Time) (*Device, *time.Time, error) {
 	fail := func(format string, args ...any) (*Device, *time.Time, error) {
 		return nil, nil, fmt.Errorf("%w: %s", ErrInvalidDeviceRecord, fmt.Sprintf(format, args...))
@@ -354,6 +361,12 @@ func validateDeviceRecord(record DeviceRecord, accountID string, accountKeys []e
 	}, revokedAt, nil
 }
 
+// MergeDeviceRecord applies a validated peer record to an existing device.
+// Revocation is monotonic; identity keys can never change.
+func MergeDeviceRecord(existing, incoming *Device, revokedAt *time.Time) (changed, newlyRevoked bool, err error) {
+	return mergeDevice(existing, incoming, revokedAt)
+}
+
 func mergeDevice(existing, incoming *Device, revokedAt *time.Time) (changed, newlyRevoked bool, err error) {
 	if !bytes.Equal(existing.PublicKey, incoming.PublicKey) ||
 		!bytes.Equal(existing.EncryptionPublicKey, incoming.EncryptionPublicKey) {
@@ -419,6 +432,49 @@ func (s *Service) SetDeviceNodeURL(ctx context.Context, deviceID, nodeURL string
 	}
 	device.NodeURL = nodeURL
 	return s.store.UpdateDevice(ctx, device)
+}
+
+// SetHostURL binds an official-hosted account to its pinned host. A
+// self-hosted account (empty host) may gain a host during a migration, but an
+// account that already has one cannot be repointed silently.
+func (s *Service) SetHostURL(ctx context.Context, hostURL string) error {
+	hostURL = strings.TrimSpace(hostURL)
+	if hostURL == "" || !ValidHostURL(hostURL) {
+		return ErrInvalidHostURL
+	}
+	account, err := s.store.GetAccount(ctx)
+	if err != nil {
+		return err
+	}
+	if account.HostURL == hostURL {
+		return nil
+	}
+	if account.HostURL != "" {
+		return ErrHostImmutable
+	}
+	return s.store.UpdateAccountHost(ctx, account.ID, hostURL)
+}
+
+// ValidHostURL accepts an empty address or a pinned HTTPS account-host origin.
+// Unlike a device address, a host address carries no relay route and no path;
+// the host is reached directly at its own endpoint.
+func ValidHostURL(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return true
+	}
+	if !ValidNodeURL(raw) {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Path != "" && parsed.Path != "/") {
+		return false
+	}
+	values, err := url.ParseQuery(parsed.Fragment)
+	if err != nil {
+		return false
+	}
+	return values.Get("relay") == "" && values.Get("target") == ""
 }
 
 // ValidNodeURL accepts an empty address or an HTTPS node address carrying a

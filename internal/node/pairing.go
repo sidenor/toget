@@ -172,6 +172,7 @@ type PairAccount struct {
 	PasswordHash   string    `json:"password_hash"`
 	CreatedAt      time.Time `json:"created_at"`
 	OriginServerID string    `json:"origin_server_id"`
+	HostURL        string    `json:"host_url,omitempty"`
 	KeyGeneration  int       `json:"key_generation,omitempty"`
 	KeyRotations   []string  `json:"key_rotations,omitempty"`
 }
@@ -759,6 +760,7 @@ func (s *Service) buildPairBundle(ctx context.Context, pairingID string, request
 			ID: snapshot.Account.ID, Code: snapshot.Account.Code, Name: snapshot.Account.Name,
 			PublicKey: append([]byte(nil), snapshot.Account.PublicKey...), PasswordHash: snapshot.Account.PasswordHash,
 			CreatedAt: snapshot.Account.CreatedAt, OriginServerID: snapshot.Account.OriginServerID,
+			HostURL:       snapshot.Account.HostURL,
 			KeyGeneration: snapshot.Account.KeyGeneration,
 			KeyRotations:  append([]string(nil), snapshot.Account.KeyRotations...),
 		},
@@ -1117,6 +1119,7 @@ func (s *Service) importPairBundle(ctx context.Context, join *pairJoin, bundle *
 			AccountPublicKey: bundle.Account.PublicKey, AccountPrivateKey: ed25519.PrivateKey(accountKey),
 			PasswordHash: bundle.Account.PasswordHash, CreatedAt: bundle.Account.CreatedAt,
 			OriginServerID: bundle.Account.OriginServerID,
+			HostURL:        bundle.Account.HostURL,
 			KeyGeneration:  bundle.Account.KeyGeneration, KeyRotations: bundle.Account.KeyRotations,
 			Password: join.Password, Device: device, Siblings: siblings,
 		}); err != nil {

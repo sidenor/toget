@@ -39,6 +39,12 @@ var (
 	// ErrInvalidImport means recovered account material is malformed or does
 	// not match its own keys and certificates.
 	ErrInvalidImport = errors.New("invalid account import")
+	// ErrInvalidHostURL means an official account host address is not a
+	// pinned HTTPS origin.
+	ErrInvalidHostURL = errors.New("invalid account host address")
+	// ErrHostImmutable means an account that already has an official host
+	// cannot be silently moved to another one.
+	ErrHostImmutable = errors.New("account host cannot be changed")
 )
 
 const (
@@ -80,6 +86,12 @@ type Account struct {
 	// OriginServerID is the server identity that created the account. It never
 	// changes and is the discovery anchor for account-record sync.
 	OriginServerID string `json:"origin_server_id"`
+	// HostURL is the pinned official account host for an official-hosted
+	// account. It is empty for an account hosted on this machine. When set it
+	// is authoritative for account-record sync; the host is not discovered
+	// from the account ID prefix, because one official host serves many
+	// accounts.
+	HostURL string `json:"host_url,omitempty"`
 	// KeyGeneration starts at 1 and increases with every account-key rotation.
 	// KeyRotations is the signed chain from generation 1 to the current key.
 	KeyGeneration int       `json:"key_generation"`
@@ -133,6 +145,7 @@ type Store interface {
 	ImportAccount(ctx context.Context, server *Server, account *Account, devices []Device) error
 	UpdateAccountKey(ctx context.Context, account *Account, devices []Device) error
 	UpdateAccountPasswordHash(ctx context.Context, accountID, passwordHash string) error
+	UpdateAccountHost(ctx context.Context, accountID, hostURL string) error
 	AddDevice(ctx context.Context, device *Device) error
 	UpdateDevice(ctx context.Context, device *Device) error
 	AccountCodeExists(ctx context.Context, serverID, code string) (bool, error)
@@ -278,6 +291,9 @@ type ImportSpec struct {
 	// bundles do not carry it; those imports fall back to the local server,
 	// which disables account-host bootstrap discovery but not account sync.
 	OriginServerID string
+	// HostURL is the pinned official account host for an official-hosted
+	// account. It is empty for a self-hosted account.
+	HostURL string
 	// KeyGeneration and KeyRotations carry the account's current key history.
 	// Older pairing bundles leave them empty; the account starts at generation
 	// 1 with the imported key.
@@ -366,6 +382,10 @@ func (s *Service) Import(ctx context.Context, spec ImportSpec) (*Snapshot, error
 	if !identity.ValidServerID(originServerID) {
 		return nil, fmt.Errorf("%w: origin server id is invalid", ErrInvalidImport)
 	}
+	hostURL := strings.TrimSpace(spec.HostURL)
+	if !ValidHostURL(hostURL) {
+		return nil, fmt.Errorf("%w: account host address is invalid", ErrInvalidImport)
+	}
 	device := spec.Device
 	device.AccountID = spec.AccountID
 	device.Name = strings.TrimSpace(device.Name)
@@ -434,6 +454,7 @@ func (s *Service) Import(ctx context.Context, spec ImportSpec) (*Snapshot, error
 		ID:             spec.AccountID,
 		ServerID:       server.ID,
 		OriginServerID: originServerID,
+		HostURL:        hostURL,
 		KeyGeneration:  keyGeneration,
 		KeyRotations:   keyRotations,
 		Code:           spec.AccountCode,

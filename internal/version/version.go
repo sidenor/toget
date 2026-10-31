@@ -11,7 +11,7 @@ const (
 	Protocol = 1
 	// Schema is the local database schema version. Keep it in sync with
 	// storage.CurrentSchemaVersion; a test enforces the match.
-	Schema = 11
+	Schema = 12
 )
 
 // App is the user-visible application version. It is a variable so release

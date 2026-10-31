@@ -76,7 +76,7 @@ type Server struct {
 
 // NewServer creates a self-certifying server identity.
 func NewServer(endpoints []Endpoint) (*Server, error) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generate server key: %w", err)
 	}
@@ -84,10 +84,28 @@ func NewServer(endpoints []Endpoint) (*Server, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("generate server nonce: %w", err)
 	}
+	return NewServerFromKey(priv, nonce, endpoints)
+}
+
+// NewServerFromKey restores a server identity from persisted key material and
+// issues a fresh signed manifest for the supplied endpoints. It is used by
+// long-lived services whose identity outlives one process.
+func NewServerFromKey(privateKey ed25519.PrivateKey, nonce []byte, endpoints []Endpoint) (*Server, error) {
+	if len(privateKey) != ed25519.PrivateKeySize {
+		return nil, errors.New("server private key is invalid")
+	}
+	if len(nonce) != 16 {
+		return nil, errors.New("server nonce is invalid")
+	}
+	pub, ok := privateKey.Public().(ed25519.PublicKey)
+	if !ok || len(pub) != ed25519.PublicKeySize {
+		return nil, errors.New("server public key is invalid")
+	}
 	if endpoints == nil {
 		endpoints = []Endpoint{}
 	}
 
+	now := time.Now().UTC()
 	m := Manifest{
 		ServerID:         ServerID(pub),
 		ServerCode:       ServerCode(pub, nonce),
@@ -95,10 +113,10 @@ func NewServer(endpoints []Endpoint) (*Server, error) {
 		ServerNonce:      base64.RawStdEncoding.EncodeToString(nonce),
 		Endpoints:        endpoints,
 		ProtocolVersions: []int{version.Protocol},
-		IssuedAt:         time.Now().UTC().Truncate(time.Second),
-		ExpiresAt:        time.Now().UTC().AddDate(1, 0, 0).Truncate(time.Second),
+		IssuedAt:         now.Truncate(time.Second),
+		ExpiresAt:        now.AddDate(1, 0, 0).Truncate(time.Second),
 	}
-	manifestJSON, err := SignManifest(m, priv)
+	manifestJSON, err := SignManifest(m, privateKey)
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +127,7 @@ func NewServer(endpoints []Endpoint) (*Server, error) {
 		ID:           m.ServerID,
 		Code:         m.ServerCode,
 		PublicKey:    pub,
-		PrivateKey:   priv,
+		PrivateKey:   privateKey,
 		Nonce:        nonce,
 		Manifest:     m,
 		ManifestJSON: manifestJSON,
