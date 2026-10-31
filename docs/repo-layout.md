@@ -3,14 +3,15 @@
 Toget is one repository containing the node, the official service, the local web UI, the reset page, shared packages, deployment assets, and documentation.
 
 > **Current implementation:** the working tree contains `cmd/toget`,
-> `cmd/toget-official`, `internal/{account,agent,api,approval,backup,card,config,directory,directoryproto,identity,mdns,node,protocol,relay,relayproto,room,sealbox,session,storage,tool,ui,vault,version}`,
+> `cmd/toget-official`, `internal/{account,agent,api,approval,backup,card,config,directory,directoryproto,identity,mdns,node,protocol,relay,relayproto,room,sealbox,session,storage,tool,ui,update,vault,version}`,
 > `sdk/connector`, `examples/connector-echo`, `web/app`, `api/`, `proto/`, and
 > `docs/`. The tree below is the target layout; directories such as `device`,
-> `crypto`, `message`, `transport`, `sync`, `discovery`, `official`, `update`,
+> `crypto`, `message`, `transport`, `sync`, `discovery`, `official`,
 > `platform`, `deploy`, `tests`, and the remaining `examples/*` entries are
 > planned, not present yet. The LAN node lives in `internal/node`, the portable
 > card format and QR renderer in `internal/card`, remote-room sync/lifecycle
-> code in `internal/room/remote.go`, and the public connector contract plus Go
+> code in `internal/room/remote.go`, signed release verification and managed
+> installation in `internal/update`, and the public connector contract plus Go
 > SDK in `docs/connectors.md` and `sdk/connector`.
 
 ## Top-level tree
@@ -45,9 +46,11 @@ toget/
 ├── cmd/
 │   ├── toget/
 │   │   ├── main.go                # node, daemon, CLI, relay, self-hosted account host
-│   │   └── connector.go           # connector protocol dry-run command
+│   │   ├── connector.go           # connector protocol dry-run command
+│   │   └── update.go              # update check/status/apply/finish/rollback CLI
 │   └── toget-official/
-│       └── main.go                # directory, official account host, update service
+│       ├── main.go                # directory, relay, static update service
+│       └── update.go              # release keygen/certify/manifest/channel/verify commands
 │
 ├── sdk/
 │   └── connector/                 # public Go SDK for connector protocol v1
@@ -72,8 +75,8 @@ toget/
 │   ├── relayproto/                # relay wire types, routes, signed envelopes
 │   ├── sealbox/                   # room key wrapping and sealed payload helpers
 │   ├── discovery/                 # planned manifest cache and manual-address book (cards live in internal/card)
-│   ├── official/                  # planned update service and official account host
-│   ├── update/                    # version check, download, verify, switch, rollback
+│   ├── official/                  # planned official account host (update service lives in cmd/toget-official + internal/update)
+│   ├── update/                    # implemented signed manifests, static service, atomic install, rollback
 │   ├── ui/                        # local web UI serving, token, origin checks
 │   ├── api/                       # local HTTP API handlers (OpenAPI)
 │   ├── config/                    # config loading, defaults, validation
@@ -185,7 +188,7 @@ toget/
 - `room`, `message`, `account`, `device`, `agent`, and `sync` own the domain rules and do not import HTTP, QUIC, or SQL drivers.
 - `storage` defines interfaces; the SQLite implementation lives beside them. Domain code depends on the interface.
 - `relay` forwards opaque envelopes and must not import `message` decryption or room keys.
-- `official` composes the directory, update service, and official account host from the same building blocks as a self-hosted node.
+- `update` owns release formats, signature verification, static serving, and managed installation; `cmd/toget-official` composes it with the directory and relay. `official` is reserved for the planned official account host.
 - `ui` and `api` translate transport into domain calls; policy decisions belong in the domain.
 
 ### `proto/` is the node contract

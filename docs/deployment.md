@@ -4,9 +4,11 @@
 >
 > **Implemented today:** `toget serve` provides the local account, vault,
 > SQLite log, loopback API/UI, and a same-LAN HTTPS node. `toget-official`
-> provides an optional relay and signed-manifest directory. Public account
-> hosting, official-hosted accounts, NAT traversal, and packaged installers
-> described below are not implemented yet.
+> provides an optional relay, signed-manifest directory, and static signed
+> update service; `toget update` checks, installs, finishes, and rolls back
+> managed releases. Public account hosting, official-hosted accounts, NAT
+> traversal, automatic update checks, and packaged installers described below
+> are not implemented yet.
 
 Toget is deployed as a **node**: one `toget` binary that can act as a daemon, a self-hosted account host, a relay, or the local CLI. Most users run it on one machine and never think about the rest.
 
@@ -39,6 +41,7 @@ The account host is chosen at registration and cannot be moved silently. Moving 
 | `7718` | Local API and web UI | `127.0.0.1` only |
 | `7719` | Relay (HTTPS, pinned certificate) | Public only for `toget-official` or a self-hosted relay |
 | `7720` | Directory (HTTPS, pinned certificate) | Public only for `toget-official` or a self-hosted directory |
+| `7721` | Signed update service | Loopback by default; public only behind TLS or a reverse proxy |
 | `5353/udp` | mDNS discovery (multicast) | Local link only; no router exposure. Enabled by default; `--no-mdns` disables it |
 
 Do not expose `7718` to the network. The local UI is not designed to be a public web app. `7717` is self-authenticated by the certificate pin carried in invite codes; do not put it behind a TLS-terminating proxy, because that changes the certificate the peer pins.
@@ -234,11 +237,32 @@ current limitations.
 
 ## Updates
 
-- The daemon checks the signed release manifest on a schedule.
-- Updates download to a temporary directory, verify the signature and hash, extract a new version directory, switch `current`, and restart with a delay.
-- A health check runs after restart; failure rolls back to the previous version.
-- The previous version is kept until the next successful update.
-- Auto-update is opt-in for self-hosted nodes and on by default for official-hosted accounts, where the user can still choose "not now" unless the release is security-critical or protocol-incompatible.
+Signed releases, a static update service, atomic installation, rollback, and
+stable/beta channels are implemented. The full workflow is in
+[updates.md](updates.md); the short version:
+
+```bash
+toget update check
+toget update apply
+toget update finish    # after a restart, or use update.restart
+toget update rollback
+```
+
+Configure `update.root`, `update.channel_url`, and `update.root_key` (or the
+matching flags). `update.restart` is a local command such as
+`["systemctl", "restart", "toget"]`; without it, an update is staged and waits
+for an operator restart. The daemon reconciles a pending update at startup.
+
+Updates download to a temporary directory, verify the release signature and
+artifact hash, extract a staged version directory, run a health check, switch
+`current`, optionally restart, and roll back automatically on failure. The
+previous version is retained for `update rollback`.
+
+Automatic periodic checks and an in-app update prompt are not implemented yet.
+Run `toget update check` from a timer if the deployment should check regularly
+(and gate `apply` on the operator's policy). Forced-update policy for
+official-hosted accounts depends on the account hosting work that is still
+planned.
 
 ## Backups
 

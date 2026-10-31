@@ -64,7 +64,7 @@ Toget is also a **control surface for Agents**: you can see what an Agent is doi
 | **Official directory** | Maps a server code to a signed server manifest. Optional; saved [business cards](cards.md), QR codes, and manual addresses also work. | M4 |
 | **Phone / tablet App** | A client device: chat, approvals, notifications. Not a persistent node, not a relay, not an account root. | Later |
 | **Desktop app** | A shell around the local web UI, with tray, auto-start, and deep links. | Later |
-| **Official update service** | Serves signed version manifests and release artifacts. | M5 |
+| **Official update service** | Serves signed version manifests and release artifacts. The static service and client update path are implemented. | M5 |
 
 ## Interaction model: rooms, not dashboards
 
@@ -162,7 +162,7 @@ The first usable version should prove one loop end to end. Delivery is staged in
 - sync a second device of the same account;
 - run entirely on a LAN, with the official service optional.
 
-Stages after the MVP add relay and the official directory (M4); official hosting, recovery credentials, and signed updates (M5); and daily-use features such as PWA install, policy templates, and audit export (M6).
+Stages after the MVP add relay and the official directory (M4); official hosting and recovery credentials, with signed updates and the static update service already implemented (M5); and daily-use features such as PWA install, policy templates, and audit export (M6). Automatic update checks and forced-update policy are not implemented.
 
 ## Explicit non-goals for the MVP
 

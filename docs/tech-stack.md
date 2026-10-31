@@ -143,7 +143,7 @@ Rules:
 - **Two binaries:** `cmd/toget` (node, daemon, CLI, relay, account host) and `cmd/toget-official` (directory, official account host, update service). The official binary reuses the same internal packages.
 - **pnpm workspaces** for `web/*` and `packages/*`.
 - **mise** pins Go, Node, pnpm, buf, and other tools.
-- **Taskfile** is the single entry point: `task dev`, `task test`, `task generate`, `task build`, `task release`, `task sign`.
+- **Taskfile** is the single entry point for development: `task dev`, `task test`, `task generate`, `task build`. Release signing and channel generation live in `toget-official release`, not in Taskfile.
 - **No Nx, Bazel, or Turborepo at the start.** They add concepts a small project does not need yet. Turborepo can be added later for caching without changing the layout.
 
 ## Testing and quality
@@ -156,17 +156,18 @@ Rules:
 - **Cross-platform CI:** build and test on Linux, macOS, and Windows, `amd64` and `arm64` where practical.
 - **Static analysis:** `go vet`, `staticcheck`, `govulncheck`, ESLint, TypeScript strict mode, `pnpm audit`.
 - **Generated-code check:** CI fails if regeneration produces a diff.
-- **Release checks:** checksums, SBOM, signature verification, and a smoke test that installs the previous version, updates, and rolls back.
+- **Release checks:** signature and checksum verification, archive-safety and state-validation tests, and an end-to-end smoke test that installs the previous version, stages and finishes an update, rolls back, and exercises automatic rollback after a failed restart.
 
 ## Release and signing
 
 - Release artifacts per device: `daemon/<os>-<arch>/v<version>/`, immutable.
-- `channels/stable.json` and `channels/beta.json` point at the current version.
-- `manifests/v<version>.json` lists artifacts, hashes, protocol and schema versions, and minimum supported versions.
+- `channels/stable.json` and `channels/beta.json` point at a release and a rollout percentage.
+- `manifests/v<version>.json` lists artifacts, hashes, protocol and schema versions, minimum supported versions, and the release level.
 - The manifest is signed by a release key; the release key is certified by the offline root key.
 - Clients embed the root public key and refuse anything that does not chain to it.
-- Checksums and SBOMs ship with every release. Reproducible builds are a goal and are verified in CI where practical.
-- Canary rollout: 1% → 10% → 50% → 100%, with automatic pause on failure.
+- `toget-official release` generates keys, certificates, manifests, and channels, and can verify a channel exactly as a client would. The static update service serves the release tree.
+- Deterministic client-side canary buckets support 1% → 10% → 50% → 100%; automatic rollout pause needs external monitoring, because the service is static.
+- The manifest can reference an SBOM. Automated SBOM generation and reproducible builds are still goals.
 
 ## Deployment and operations
 

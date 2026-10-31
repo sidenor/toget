@@ -183,6 +183,21 @@ A card carries the signed identity and current endpoint, not room access.
 Saving one pins the full server ID, so a different server with the same
 eight-digit code is rejected. See [Business cards](docs/cards.md).
 
+Signed releases and managed updates are implemented:
+
+```bash
+toget update check                  # verify the channel and selected release
+toget update apply                  # download, verify, install, optionally restart
+toget update status                 # current, previous, and pending state
+toget update rollback               # discard pending, or return to previous
+```
+
+Releases are signed by a root-certified release key. A static update service
+publishes channels, manifests, and immutable artifacts; clients verify the
+whole chain and artifact hashes before switching a `current` symlink. A failed
+restart rolls back automatically. See [Signed updates](docs/updates.md) for key
+management, release commands, rollout levels, and configuration.
+
 Data lives in the per-user data directory (`~/.local/share/toget` on Linux,
 `~/Library/Application Support/Toget` on macOS, `%LOCALAPPDATA%\Toget` on
 Windows). Set `TOGET_HOME` to use another directory. `task dev` rebuilds the
@@ -206,6 +221,7 @@ rejects updates and deletes.
 - [LAN discovery](docs/discovery.md) — mDNS advertisement, verified lookup, privacy, and limits
 - [Business cards](docs/cards.md) — portable signed cards, QR codes, saved-card pinning, and limits
 - [Deployment](docs/deployment.md) — self-hosted, official-hosted, relay, and offline modes
+- [Signed updates](docs/updates.md) — release keys, manifests, channels, atomic install, rollback
 - [Technology stack](docs/tech-stack.md) — choices, rationale, and rejected alternatives
 - [Repository layout](docs/repo-layout.md) — where every kind of code belongs
 - [Roadmap](docs/roadmap.md) — milestones and near-term tasks
@@ -239,7 +255,8 @@ pins the full server ID for its short code. Room invites and device-pairing
 codes can also be shown as QR codes and scanned from a still image.
 
 Not implemented yet: NAT traversal or hole punching, multiple accounts on one
-node, and a bundled model. The daemon runs
+node, a bundled model, and periodic automatic update checks (the update
+commands and rollback are implemented). The daemon runs
 Agents locally on a mention, through Claude Code or any command that speaks the
 runtime protocol. Many parts will change as we learn.
 That is exactly why the project is open this early. If you care about
@@ -373,6 +390,17 @@ toget node lookup 12345678           # 先用已存名片，再走 mDNS，最后
 
 名片只带签名的身份和当前地址，不代表房间权限。保存名片会固定完整服务器 ID，同一个八位代码下的其他服务器会被拒绝。详见 [名片与二维码](docs/cards.md)。
 
+签名发布和受管更新已经可用：
+
+```bash
+toget update check                  # 校验渠道并选出适合本机的版本
+toget update apply                  # 下载、校验、安装，可选自动重启
+toget update status                 # 查看当前、上一版和待确认状态
+toget update rollback               # 放弃待确认更新，或回到上一版
+```
+
+发布清单由根密钥认证的发布密钥签名。静态更新服务发布渠道、清单和不可变制品；客户端校验完整签名链和制品哈希后才切换 `current` 软链接，重启失败会自动回滚。密钥管理、发布命令、灰度级别和配置见 [签名更新](docs/updates.md)。
+
 数据默认放在用户数据目录（Linux 为 `~/.local/share/toget`），可用 `TOGET_HOME` 指定。私钥和事件内容在本地加密存储，事件日志只可追加、带哈希链。
 
 ### 文档
@@ -388,10 +416,11 @@ toget node lookup 12345678           # 先用已存名片，再走 mDNS，最后
 - [局域网发现](docs/discovery.md)
 - [名片与二维码](docs/cards.md)
 - [部署](docs/deployment.md)
+- [签名更新](docs/updates.md)
 - [技术栈](docs/tech-stack.md)
 - [代码结构](docs/repo-layout.md)
 - [路线图](docs/roadmap.md)
 
 **早期实现：本地、局域网和跨网络中继房间已经可用。** 当前版本有账号与设备身份、端到端加密的房间密钥代次、加密的哈希链事件日志、附件、备份恢复、本地 API、CLI 和双语 React 网页。同一局域网内的两个节点可以用邀请码加入房间、互发消息并同步历史；第二台设备可以通过配对恢复同一账号并同步房间，无需拷贝私钥。远程房间支持附件、自主退出和本地归档。Agent 可以注册、加入房间，并通过本地审批和工具回执卡片受控；本机 Agent 运行时，网页会显示有大小上限的临时过程输出，最终回答才是写入时间线的持久记录。可选的中继和签名目录已经能跨网络工作，支持直连优先、自动发现中继、多跳路由、环路检测、配额和有限的离线队列。同一局域网里的节点还能通过 mDNS 相互发现，不依赖目录也能用服务器代码找到对方；发现的地址仍会通过固定 TLS 证书和签名清单验证。名片可以复制成文本或显示为二维码，保存后会把完整服务器 ID 固定到对应的八位代码上。房间邀请码和设备配对码也可以显示成二维码，并从图片中识别。
 
-还没有实现：NAT 穿透与打洞、账号密钥轮换、同一节点登录多个账号，以及自带模型。守护进程会在被 @ 时在本地运行 Agent，可以用 Claude Code，也可以用任何实现了运行时协议的命令。很多地方仍会调整。欢迎开 issue 关注、分享场景，或直接参与建设。项目理念见 [docs/philosophy.md](docs/philosophy.md)，参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+还没有实现：NAT 穿透与打洞、同一节点登录多个账号、自带模型，以及定时自动检查更新（更新命令和回滚已经可用）。守护进程会在被 @ 时在本地运行 Agent，可以用 Claude Code，也可以用任何实现了运行时协议的命令。很多地方仍会调整。欢迎开 issue 关注、分享场景，或直接参与建设。项目理念见 [docs/philosophy.md](docs/philosophy.md)，参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。

@@ -87,6 +87,54 @@ func TestLoadCreatesDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestUpdateConfigRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	paths, err := config.Resolve(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Listen: config.DefaultListen}
+	cfg.Update = config.UpdateConfig{
+		Root:          filepath.Join(dir, "managed"),
+		Channel:       "beta",
+		ChannelURL:    "https://releases.example/channels/beta.json",
+		RootKey:       "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		Restart:       []string{"systemctl", "restart", "toget"},
+		HealthURL:     "http://127.0.0.1:7718/healthz",
+		HealthCommand: []string{"--json", "version"},
+	}
+	if err := config.Save(paths, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Update.Root != cfg.Update.Root || loaded.Update.Channel != "beta" ||
+		loaded.Update.ChannelURL != cfg.Update.ChannelURL || loaded.Update.RootKey != cfg.Update.RootKey ||
+		loaded.Update.HealthURL != cfg.Update.HealthURL {
+		t.Fatalf("update config = %+v", loaded.Update)
+	}
+	if len(loaded.Update.Restart) != 3 || loaded.Update.Restart[0] != "systemctl" {
+		t.Fatalf("restart command = %v", loaded.Update.Restart)
+	}
+	if len(loaded.Update.HealthCommand) != 2 || loaded.Update.HealthCommand[0] != "--json" {
+		t.Fatalf("health command = %v", loaded.Update.HealthCommand)
+	}
+
+	cfg.Update.Channel = ""
+	if err := config.Save(paths, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = config.Load(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Update.Channel != "stable" {
+		t.Fatalf("default channel = %q", loaded.Update.Channel)
+	}
+}
+
 func TestLoadRejectsMalformedConfig(t *testing.T) {
 	dir := t.TempDir()
 	paths, err := config.Resolve(dir)

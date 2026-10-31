@@ -127,12 +127,15 @@ NAT. See [relay.md](relay.md), [discovery.md](discovery.md), and
 - [ ] Account reset page: static, open source, no third-party scripts, local file read
 - [x] Device management UI: list, rename, revoke (local and paired devices)
 - [ ] Official room home node (ciphertext only)
-- [ ] Signed release manifests, update service, atomic update and rollback
-- [ ] Stable and beta channels
+- [x] Signed release manifests, update service, atomic update and rollback
+- [x] Stable and beta channels
 
 **Status:** self-hosted local-vault recovery is implemented; the official hosted
 account flow, forced-download registration, and browser reset page are not.
-See [account-recovery.md](account-recovery.md).
+Signed release keys, manifests, channel pointers, a static update service,
+atomic install, startup reconciliation, and CLI rollback are implemented. There
+is no periodic update check or in-app update prompt yet. See
+[account-recovery.md](account-recovery.md) and [updates.md](updates.md).
 
 **Done when:** a user can register on the official service, lose their password, reset it with the recovery credential, and still open old history — while the official service never has a key to read it.
 

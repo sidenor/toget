@@ -419,13 +419,23 @@ Controls:
 
 ### Supply chain and malicious updates
 
-Controls:
+Implemented controls:
 
-- Signed release manifests: root key certifies release keys; release keys sign version manifests; manifests list artifact hashes.
-- Atomic updates: download, verify signature and hash, extract to a new directory, switch the launcher, restart with a delay, health check, roll back on failure.
-- The previous version is kept for rollback.
-- Reproducible builds are a goal; checksums and SBOMs ship with every release.
+- Signed release manifests: an offline root key certifies release keys; release keys sign channels and version manifests; manifests list artifact SHA-256 hashes.
+- Clients embed the root public key and reject anything that does not chain to it. HTTPS is not trusted as the source of truth.
+- Atomic updates: download, verify signature and hash, extract into a staged directory with path/symlink/device/duplicate checks and size limits, reject incompatible app/protocol/schema versions, switch symlinks, optionally restart, run a health check, and roll back on failure.
+- The previous version is kept for rollback. Pending state is reconciled at the next daemon start if the process dies mid-update.
+- The update service is static and only exposes `channels/`, `manifests/`, `daemon/`, and `sbom/`; it has no directory listing or dotfile access.
+- Release private keys are mode `0600` and never served. The root key is intended to stay offline.
 - Dependencies are pinned, scanned, and reviewed; the daemon and protocol are open source and auditable.
+
+Not yet provided:
+
+- Reproducible builds and automated SBOM generation. The manifest can reference and serve an SBOM, but the release process must produce it.
+- A transparency log, threshold signing, or enforced HSM use.
+- Periodic update checks, in-app prompts, and enforced forced-update policy.
+
+See [updates.md](updates.md) for the operational workflow.
 
 ### Directory poisoning
 

@@ -94,6 +94,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newSearchCommand())
 	root.AddCommand(newBackupCommand())
 	root.AddCommand(newRestoreCommand())
+	root.AddCommand(newUpdateCommand())
 	root.AddCommand(newVersionCommand())
 	return root
 }
@@ -290,6 +291,7 @@ func runServe(ctx context.Context) error {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	signalCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	reconcileUpdateOnStartup(logger, cfg)
 
 	accounts := account.New(db, v)
 	var rooms *room.Service

@@ -7,18 +7,26 @@ import (
 )
 
 const (
-	// App is the user-visible application version.
-	App = "0.1.0-dev"
 	// Protocol is the node protocol version.
 	Protocol = 1
-	// Schema is the local database schema version.
-	Schema = 1
+	// Schema is the local database schema version. Keep it in sync with
+	// storage.CurrentSchemaVersion; a test enforces the match.
+	Schema = 9
 )
 
-// Commit and BuildTime are set at build time with -ldflags.
+// App is the user-visible application version. It is a variable so release
+// builds can set it with:
+//
+//	-ldflags "-X github.com/sidenor/toget/internal/version.App=1.2.3"
+var App = "0.1.0-dev"
+
+// Commit, BuildTime, and ReleaseRootKey are set at build time with -ldflags.
+// ReleaseRootKey is the official release trust anchor: a base64url Ed25519
+// public key or a path to a release key file. It is empty in development.
 var (
-	Commit    = "dev"
-	BuildTime = "unknown"
+	Commit         = "dev"
+	BuildTime      = "unknown"
+	ReleaseRootKey = ""
 )
 
 // Info describes a running binary.

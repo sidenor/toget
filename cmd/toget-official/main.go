@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -44,6 +45,11 @@ func newRootCommand() *cobra.Command {
 		relayURL        string
 		noRelay         bool
 		noDirectory     bool
+		updateDir       string
+		updateListen    string
+		updateTLSCert   string
+		updateTLSKey    string
+		updateInsecure  bool
 	)
 	cmd := &cobra.Command{
 		Use:   "toget-official",
@@ -64,6 +70,23 @@ func newRootCommand() *cobra.Command {
 			ctx := cmd.Context()
 			if ctx == nil {
 				ctx = context.Background()
+			}
+			if noRelay && noDirectory && updateDir == "" {
+				return errors.New("the relay, directory, and update service are all disabled")
+			}
+
+			if updateDir != "" {
+				shutdown, address, err := startUpdateService(updateDir, updateListen, updateTLSCert, updateTLSKey, updateInsecure)
+				if err != nil {
+					return err
+				}
+				defer func() {
+					shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					_ = shutdown(shutdownCtx)
+				}()
+				fmt.Printf("Updates:   %s\n", address)
+				fmt.Printf("Releases:  %s\n", updateDir)
 			}
 
 			var relayService *relay.Service
@@ -87,14 +110,14 @@ func newRootCommand() *cobra.Command {
 				fmt.Printf("Relay ID:  %s\n", relayService.RelayID())
 			}
 			if noDirectory {
-				if relayService == nil {
-					return errors.New("both the relay and the directory are disabled")
-				}
 				fmt.Println("Directory: disabled")
 			} else {
 				advertisedRelay := relayURL
-				if advertisedRelay == "" {
+				if advertisedRelay == "" && relayService != nil {
 					advertisedRelay = relayService.URL()
+				}
+				if advertisedRelay == "" {
+					return errors.New("the directory requires --relay-url when the relay is disabled")
 				}
 				directoryService, err := directory.New(directory.Options{
 					Listen:    directoryListen,
@@ -128,6 +151,12 @@ func newRootCommand() *cobra.Command {
 	cmd.Flags().StringVar(&relayURL, "relay-url", "", "default relay advertised to nodes (defaults to this relay)")
 	cmd.Flags().BoolVar(&noRelay, "no-relay", false, "do not run the relay")
 	cmd.Flags().BoolVar(&noDirectory, "no-directory", false, "do not run the directory")
+	cmd.Flags().StringVar(&updateDir, "update-dir", "", "release tree to serve (channels/, manifests/, daemon/, sbom/)")
+	cmd.Flags().StringVar(&updateListen, "update-listen", "127.0.0.1:7721", "update service listen address")
+	cmd.Flags().StringVar(&updateTLSCert, "update-tls-cert", "", "TLS certificate for the update service")
+	cmd.Flags().StringVar(&updateTLSKey, "update-tls-key", "", "TLS private key for the update service")
+	cmd.Flags().BoolVar(&updateInsecure, "update-insecure-http", false, "allow a non-loopback update listener without TLS")
+	cmd.AddCommand(newReleaseCommand())
 	cmd.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print the build version",

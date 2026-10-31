@@ -15,6 +15,7 @@ Start here:
 | [LAN discovery](discovery.md) | mDNS advertisement, verified lookup, privacy, limits |
 | [Business cards](cards.md) | Portable signed cards, QR codes for cards, invites, and pairing, saved-card pinning, limits |
 | [Deployment](deployment.md) | Self-hosted, official-hosted, relay, and offline modes |
+| [Signed updates](updates.md) | Release keys, manifests, channels, static update service, atomic install, rollback |
 | [Technology stack](tech-stack.md) | Chosen stack, rationale, rejected alternatives, version policy |
 | [Repository layout](repo-layout.md) | Directory structure and rules for where code belongs |
 | [Roadmap](roadmap.md) | Milestones, definitions of done, near-term tasks |
@@ -30,9 +31,10 @@ Start here:
 6. Security model — who can decrypt what, and what we do not protect yet.
 7. Account recovery — how passwords and local vault keys are recovered.
 8. Deployment — how a node is installed and operated.
-9. Tech stack — why these tools.
-10. Repository layout — where code goes.
-11. Roadmap — what to build next.
+9. Signed updates — how releases are signed, served, installed, and rolled back.
+10. Tech stack — why these tools.
+11. Repository layout — where code goes.
+12. Roadmap — what to build next.
 
 ## Decision records
 

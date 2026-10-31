@@ -38,6 +38,27 @@ type AgentRuntimeConfig struct {
 	Model   string   `json:"model,omitempty"`
 }
 
+// UpdateConfig points a node at a signed release channel. Updates stay off
+// until Root, ChannelURL, and RootKey are configured. RootKey is a trusted
+// root public key (base64 or a key file path), never a private key.
+type UpdateConfig struct {
+	Root string `json:"root,omitempty"`
+	// Channel is stable or beta. Empty means stable.
+	Channel string `json:"channel,omitempty"`
+	// ChannelURL is the signed channel document, e.g.
+	// https://releases.toget.dev/channels/stable.json.
+	ChannelURL string `json:"channel_url,omitempty"`
+	// RootKey is the embedded trust anchor for release certificates.
+	RootKey string `json:"root_key,omitempty"`
+	// Restart is a local command (never signed) run after switching releases.
+	// When empty, an update is staged and waits for an operator restart.
+	Restart []string `json:"restart,omitempty"`
+	// HealthURL is an optional local endpoint polled after a restart.
+	HealthURL string `json:"health_url,omitempty"`
+	// HealthCommand overrides the default "<binary> --json version" probe.
+	HealthCommand []string `json:"health_command,omitempty"`
+}
+
 // Config is stored in config.json inside the data directory.
 type Config struct {
 	Listen string `json:"listen"`
@@ -66,6 +87,8 @@ type Config struct {
 	AgentTimeoutSeconds int `json:"agent_timeout_seconds,omitempty"`
 	// AgentHistoryLimit is the number of recent events handed to an Agent.
 	AgentHistoryLimit int `json:"agent_history_limit,omitempty"`
+	// Update configures signed release checks and managed installation.
+	Update UpdateConfig `json:"update,omitempty"`
 }
 
 // Paths describes the files a local node owns.
@@ -184,6 +207,9 @@ func (c *Config) applyDefaults() {
 		c.AgentRuntimes = map[string]AgentRuntimeConfig{
 			"claude-code": {Command: "claude"},
 		}
+	}
+	if c.Update.Channel == "" {
+		c.Update.Channel = "stable"
 	}
 }
 

@@ -227,10 +227,12 @@ The daemon is the local runtime on a persistent device. It:
 
 ### Official identity and update service
 
-- Long-term root key signs the official manifest and certifies online release keys.
-- Clients embed the root public key as a trust anchor.
-- Release manifests list versions, protocol/schema versions, artifacts, hashes, and signatures.
-- The update service returns the right artifact for a device's OS/arch and channel.
+- Long-term root key certifies online release keys; only release keys sign channels and manifests.
+- Clients embed the root public key as a trust anchor and verify the whole chain themselves.
+- Release manifests list versions, protocol/schema versions, minimum supported versions, artifacts, hashes, and signatures.
+- The update service is a static file server for `channels/`, `manifests/`, `daemon/`, and `sbom/`. Clients select the artifact for their OS/arch and channel; the server cannot choose or alter one.
+- Managed installs keep immutable version directories, a `current` symlink, a `previous` rollback target, and pending state that is reconciled when the daemon starts.
+- Implemented details: [updates.md](updates.md).
 
 ### Agent runtime
 
