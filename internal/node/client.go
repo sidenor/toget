@@ -502,6 +502,15 @@ func (c *Client) RequestPairing(ctx context.Context, request PairRequest) error 
 	return c.do(ctx, http.MethodPost, "/toget/v1/pair/request", request, nil)
 }
 
+// SyncAccount exchanges the account's device records with a sibling device.
+func (c *Client) SyncAccount(ctx context.Context, request AccountSyncRequest) (*AccountSyncResponse, error) {
+	var response AccountSyncResponse
+	if err := c.do(ctx, http.MethodPost, "/toget/v1/account/sync", request, &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
 // CompletePairing polls a pairing until it is approved or ends. offset
 // resumes a recovery bundle that reported HasMore.
 func (c *Client) CompletePairing(ctx context.Context, pairingID string, offset int) (*PairingComplete, error) {

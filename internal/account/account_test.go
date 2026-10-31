@@ -37,6 +37,11 @@ func TestCreateAndLoadAccount(t *testing.T) {
 	if snapshot.Account.ID[:8] != snapshot.Server.Code {
 		t.Fatalf("account ID prefix %q does not match server code %q", snapshot.Account.ID[:8], snapshot.Server.Code)
 	}
+	if snapshot.Account.ServerID != snapshot.Server.ID ||
+		snapshot.Account.OriginServerID != snapshot.Server.ID {
+		t.Fatalf("account servers = local %q / origin %q, want %q",
+			snapshot.Account.ServerID, snapshot.Account.OriginServerID, snapshot.Server.ID)
+	}
 	if snapshot.Account.Name != "Aiden" {
 		t.Fatalf("name = %q", snapshot.Account.Name)
 	}
@@ -176,5 +181,87 @@ func TestRefreshCertificatesRenewsNearExpiry(t *testing.T) {
 	}
 	if !cert.ExpiresAt.After(time.Now().Add(300 * 24 * time.Hour)) {
 		t.Fatalf("renewed certificate expires too soon: %s", cert.ExpiresAt)
+	}
+}
+
+func TestImportPreservesOriginServerID(t *testing.T) {
+	ctx := context.Background()
+	sourceDir := t.TempDir()
+	sourceVault, err := vault.LoadOrCreate(filepath.Join(sourceDir, "vault.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceDB, err := storage.Open(filepath.Join(sourceDir, "toget.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { sourceDB.Close() })
+	source, err := account.New(sourceDB, sourceVault).Create(ctx, "Aiden", "testpass123", "host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountKey, err := account.New(sourceDB, sourceVault).UnsealPrivateKey(source.Account)
+	if err != nil {
+		t.Fatal(err)
+	}
+	devicePub, devicePriv, err := identity.NewDeviceKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptionPub, encryptionPriv, err := identity.NewEncryptionKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deviceID := identity.NewID()
+	cert, err := identity.SignDeviceCertificate(deviceID, source.Account.ID, devicePub,
+		encryptionPub, accountKey, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := account.ImportSpec{
+		AccountID: source.Account.ID, AccountCode: source.Account.Code, Name: source.Account.Name,
+		AccountPublicKey: source.Account.PublicKey, AccountPrivateKey: accountKey,
+		PasswordHash: source.Account.PasswordHash, CreatedAt: source.Account.CreatedAt,
+		OriginServerID: source.Server.ID,
+		Device: account.Device{
+			ID: deviceID, Name: "laptop", PublicKey: devicePub, PrivateKey: devicePriv,
+			EncryptionPublicKey: encryptionPub, EncryptionPrivateKey: encryptionPriv,
+			Certificate: string(cert), Role: "node",
+		},
+		Siblings: []account.Device{*source.Device},
+	}
+
+	destDir := t.TempDir()
+	destVault, err := vault.LoadOrCreate(filepath.Join(destDir, "vault.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	destDB, err := storage.Open(filepath.Join(destDir, "toget.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { destDB.Close() })
+	dest := account.New(destDB, destVault)
+	bad := spec
+	bad.OriginServerID = "not-a-server"
+	if _, err := dest.Import(ctx, bad); !errors.Is(err, account.ErrInvalidImport) {
+		t.Fatalf("invalid origin import error = %v, want ErrInvalidImport", err)
+	}
+	imported, err := dest.Import(ctx, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imported.Account.ServerID != imported.Server.ID {
+		t.Fatalf("local server id = %q, want %q", imported.Account.ServerID, imported.Server.ID)
+	}
+	if imported.Account.OriginServerID != source.Server.ID {
+		t.Fatalf("origin server id = %q, want %q", imported.Account.OriginServerID, source.Server.ID)
+	}
+	loaded, err := dest.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Account.OriginServerID != source.Server.ID {
+		t.Fatalf("persisted origin server id = %q, want %q", loaded.Account.OriginServerID, source.Server.ID)
 	}
 }

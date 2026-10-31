@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -139,5 +140,93 @@ func TestUnknownRoomAndEvent(t *testing.T) {
 	}
 	if len(rooms) != 0 {
 		t.Fatalf("new database has %d rooms", len(rooms))
+	}
+}
+
+func TestMigrateV5AddsDeviceNodeURL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "toget.db")
+	raw, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = raw.Exec(`
+		CREATE TABLE accounts (
+			id TEXT PRIMARY KEY,
+			server_id TEXT NOT NULL,
+			code TEXT NOT NULL,
+			name TEXT NOT NULL,
+			public_key BLOB NOT NULL,
+			private_key BLOB NOT NULL,
+			password_hash TEXT NOT NULL,
+			created_at INTEGER NOT NULL
+		);
+		INSERT INTO accounts (id, server_id, code, name, public_key, private_key, password_hash, created_at)
+			VALUES ('account', 'server', '123456', 'Aiden', x'01', x'02', 'hash', 0);
+		CREATE TABLE devices (
+			id TEXT PRIMARY KEY,
+			account_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			public_key BLOB NOT NULL,
+			private_key BLOB NOT NULL,
+			encryption_public_key BLOB NOT NULL DEFAULT x'',
+			encryption_private_key BLOB NOT NULL DEFAULT x'',
+			certificate TEXT NOT NULL,
+			role TEXT NOT NULL DEFAULT 'node',
+			revoked_at INTEGER,
+			last_seen_at INTEGER,
+			created_at INTEGER NOT NULL,
+			local INTEGER NOT NULL DEFAULT 0
+		);
+		PRAGMA user_version = 5;`)
+	if err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	version, err := db.SchemaVersion(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != schemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersion)
+	}
+	rows, err := db.db.QueryContext(context.Background(), `PRAGMA table_info(devices)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, kind string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &kind, &notNull, &defaultValue, &pk); err != nil {
+			t.Fatal(err)
+		}
+		if name == "node_url" {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("node_url column was not added by the v5 migration")
+	}
+	var origin string
+	if err := db.db.QueryRowContext(context.Background(),
+		`SELECT origin_server_id FROM accounts WHERE id = 'account'`).Scan(&origin); err != nil {
+		t.Fatal(err)
+	}
+	if origin != "server" {
+		t.Fatalf("origin_server_id = %q, want the local server as backfill", origin)
 	}
 }

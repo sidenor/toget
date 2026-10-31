@@ -43,6 +43,9 @@ type Options struct {
 	Listen       string
 	Advertise    string
 	SyncInterval time.Duration
+	// AccountSyncInterval controls how often paired devices exchange account
+	// records. Zero uses the default.
+	AccountSyncInterval time.Duration
 	// Relay is a pinned relay URL, "auto" to discover one from the directory,
 	// or empty/"off" to disable relay fallback.
 	Relay string
@@ -97,6 +100,11 @@ type Service struct {
 	nonces *NonceCache
 	syncMu sync.Mutex
 
+	accountSyncEvery   time.Duration
+	accountSyncMu      sync.Mutex
+	accountSyncTrigger chan struct{}
+	accountSyncCursor  int
+
 	relaySetting     string
 	relayMu          sync.RWMutex
 	relayBase        string
@@ -137,6 +145,10 @@ func New(opts Options) (*Service, error) {
 	interval := opts.SyncInterval
 	if interval <= 0 {
 		interval = defaultSync
+	}
+	accountSyncInterval := opts.AccountSyncInterval
+	if accountSyncInterval <= 0 {
+		accountSyncInterval = defaultAccountSyncEvery
 	}
 	relaySetting := strings.TrimSpace(opts.Relay)
 	if relaySetting == "off" {
@@ -185,9 +197,10 @@ func New(opts Options) (*Service, error) {
 	return &Service{
 		accounts: opts.Accounts, rooms: opts.Rooms, paths: opts.Paths, cards: cards,
 		listen: listen, advertise: strings.TrimSpace(opts.Advertise),
-		logger: logger, syncEvery: interval,
-		nonces:       NewNonceCache(),
-		relaySetting: relaySetting, relayBase: relayBase, relayFP: relayFP,
+		logger: logger, syncEvery: interval, accountSyncEvery: accountSyncInterval,
+		accountSyncTrigger: make(chan struct{}, 1),
+		nonces:             NewNonceCache(),
+		relaySetting:       relaySetting, relayBase: relayBase, relayFP: relayFP,
 		directorySetting: directorySetting, directoryBase: directoryBase,
 		directoryFP: directoryFP, directoryHTTP: directoryHTTP,
 		mdnsSetting: mdnsSetting,
@@ -263,6 +276,7 @@ func (s *Service) Start(ctx context.Context) error {
 		}
 	}()
 	go s.syncLoop(runCtx)
+	go s.accountSyncLoop(runCtx)
 	if s.relaySetting != "" {
 		go s.relayLoop(runCtx)
 	}
@@ -467,6 +481,7 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("GET /toget/v1/attachments/{id}", s.handleAttachmentDownload)
 	mux.HandleFunc("POST /toget/v1/pair/request", s.handlePairRequest)
 	mux.HandleFunc("POST /toget/v1/pair/complete", s.handlePairComplete)
+	mux.HandleFunc("POST /toget/v1/account/sync", s.handleAccountSync)
 	mux.HandleFunc("POST /toget/v1/rooms/devices", s.handleRegisterDevice)
 	mux.HandleFunc("POST /toget/v1/rooms/devices/revoke", s.handleRevokeDevice)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -980,6 +995,7 @@ func (s *Service) Join(ctx context.Context, rawCode string) (*room.Room, error) 
 	if err != nil {
 		return nil, err
 	}
+	s.TriggerAccountSync()
 	return joined, nil
 }
 

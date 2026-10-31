@@ -118,6 +118,7 @@ func (s *Server) Handler() http.Handler {
 	// Account and device management.
 	mux.HandleFunc("GET /api/v1/devices", s.data(s.handleListDevices))
 	mux.HandleFunc("DELETE /api/v1/devices/{id}", s.data(s.handleRevokeDevice))
+	mux.HandleFunc("POST /api/v1/account/sync", s.data(s.handleAccountSync))
 	mux.HandleFunc("GET /api/v1/pairings", s.data(s.handleListPairings))
 	mux.HandleFunc("POST /api/v1/pairings", s.data(s.handleCreatePairing))
 	mux.HandleFunc("POST /api/v1/pairings/{id}/approve", s.data(s.handleApprovePairing))
@@ -220,6 +221,9 @@ type AccountView struct {
 	CreatedAt  time.Time   `json:"created_at"`
 	Device     *DeviceView `json:"device,omitempty"`
 }
+
+// AccountSyncResult is the public result of one account-sync round.
+type AccountSyncResult = node.AccountSyncResult
 
 // DeviceView is the public shape of a device, without private key material.
 type DeviceView struct {
@@ -416,6 +420,23 @@ func (s *Server) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleAccountSync(w http.ResponseWriter, r *http.Request) {
+	if s.node == nil {
+		writeError(w, http.StatusServiceUnavailable, "node_disabled", "node transport is disabled")
+		return
+	}
+	result, err := s.node.SyncAccount(r.Context())
+	if err != nil {
+		if errors.Is(err, account.ErrNotFound) {
+			writeAccountError(w, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal", "could not sync account records")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func accountView(a *account.Account, d *account.Device) *AccountView {

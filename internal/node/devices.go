@@ -27,9 +27,30 @@ func (s *Service) RevokeAccountDevice(ctx context.Context, deviceID string) ([]s
 	if err := s.accounts.RevokeDevice(ctx, deviceID); err != nil {
 		return nil, err
 	}
+	s.TriggerAccountSync()
+	return s.propagateDeviceRevocations(ctx, snapshot, []string{deviceID}), nil
+}
+
+// propagateDeviceRevocations applies account-level revocations to every room
+// this node belongs to. Room homes rotate their epoch so a revoked device
+// cannot read later messages. Failures are warnings: the account revocation is
+// already durable and account sync retries propagation.
+func (s *Service) propagateDeviceRevocations(ctx context.Context, snapshot *account.Snapshot, deviceIDs []string) []string {
+	if len(deviceIDs) == 0 || snapshot.Device.RevokedAt != nil {
+		return nil
+	}
+	wanted := make(map[string]bool, len(deviceIDs))
+	for _, id := range deviceIDs {
+		if id != "" && id != snapshot.Device.ID {
+			wanted[id] = true
+		}
+	}
+	if len(wanted) == 0 {
+		return nil
+	}
 	rooms, err := s.rooms.ListRooms(ctx)
 	if err != nil {
-		return nil, err
+		return []string{"could not list rooms to propagate the device revocation: " + err.Error()}
 	}
 	warnings := make([]string, 0)
 	for i := range rooms {
@@ -38,7 +59,16 @@ func (s *Service) RevokeAccountDevice(ctx context.Context, deviceID string) ([]s
 		if err != nil {
 			continue
 		}
-		if !containsDevice(devices, deviceID) {
+		matched := make([]string, 0, len(wanted))
+		for id := range wanted {
+			// A room that already revoked the device needs no further work.
+			// A device registered after an earlier propagation is still active
+			// and must be revoked on this round.
+			if hasActiveDevice(devices, id) {
+				matched = append(matched, id)
+			}
+		}
+		if len(matched) == 0 {
 			continue
 		}
 		if record.HomeServerID == snapshot.Server.ID || record.HomeServerID == snapshot.Account.ServerID {
@@ -51,21 +81,34 @@ func (s *Service) RevokeAccountDevice(ctx context.Context, deviceID string) ([]s
 					}
 				}
 			}
-			if _, err := s.rooms.RevokeDevice(ctx, record.ID, snapshot.Account.ID, deviceID, snapshot.Device.ID); err != nil {
-				warnings = append(warnings, fmt.Sprintf("could not revoke the device in %s: %v", record.Name, err))
+			for _, id := range matched {
+				if _, err := s.rooms.RevokeDevice(ctx, record.ID, snapshot.Account.ID, id, snapshot.Device.ID); err != nil {
+					warnings = append(warnings, fmt.Sprintf("could not revoke the device in %s: %v", record.Name, err))
+				}
 			}
 			continue
 		}
-		if err := s.revokeDeviceAtHome(ctx, &record, snapshot, deviceID); err != nil {
-			warnings = append(warnings, fmt.Sprintf("could not revoke the device in %s: %v", record.Name, err))
+		for _, id := range matched {
+			if err := s.revokeDeviceAtHome(ctx, &record, snapshot, id); err != nil {
+				warnings = append(warnings, fmt.Sprintf("could not revoke the device in %s: %v", record.Name, err))
+			}
 		}
 	}
-	return warnings, nil
+	return warnings
 }
 
 func containsDevice(devices []room.RoomDevice, deviceID string) bool {
 	for i := range devices {
 		if devices[i].DeviceID == deviceID {
+			return true
+		}
+	}
+	return false
+}
+
+func hasActiveDevice(devices []room.RoomDevice, deviceID string) bool {
+	for i := range devices {
+		if devices[i].DeviceID == deviceID && devices[i].RevokedAt == nil {
 			return true
 		}
 	}

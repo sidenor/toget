@@ -2702,6 +2702,13 @@ select {
   margin-bottom: 4px;
 }
 
+.pair-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .pair-panel-head .muted {
   font-size: 12.5px;
   line-height: 1.5;

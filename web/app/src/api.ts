@@ -1,5 +1,6 @@
 import type {
   Account,
+  AccountSyncResult,
   Agent,
   AgentSession,
   Approval,
@@ -185,6 +186,7 @@ export const api = {
     }),
 
   devices: () => request<{ devices: Device[] }>("/api/v1/devices"),
+  syncAccount: () => request<AccountSyncResult>("/api/v1/account/sync", json({})),
   revokeDevice: (id: string) =>
     request<{ ok?: boolean; warnings?: string[] } | null>(`/api/v1/devices/${encodeURIComponent(id)}`, {
       method: "DELETE",

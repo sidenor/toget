@@ -200,6 +200,16 @@ func ServerID(pub ed25519.PublicKey) string {
 	return ServerPrefix + crockford.EncodeToString(sum[:])
 }
 
+// ValidServerID reports whether id is a canonical full server fingerprint.
+func ValidServerID(id string) bool {
+	if len(id) <= len(ServerPrefix) || id[:len(ServerPrefix)] != ServerPrefix {
+		return false
+	}
+	encoded := id[len(ServerPrefix):]
+	raw, err := crockford.DecodeString(encoded)
+	return err == nil && len(raw) == sha256.Size && crockford.EncodeToString(raw) == encoded
+}
+
 // ServerCode returns the 8-digit short code derived from a key and nonce.
 func ServerCode(pub ed25519.PublicKey, nonce []byte) string {
 	h := sha256.New()
@@ -356,8 +366,27 @@ func ParseDeviceCertificate(data []byte) (*DeviceCertificate, error) {
 	return &cert, nil
 }
 
-// VerifyDeviceCertificate verifies a certificate against an account key.
+// VerifyDeviceCertificate verifies a certificate against an account key,
+// including its expiry.
 func VerifyDeviceCertificate(data []byte, accountPub ed25519.PublicKey) (*DeviceCertificate, error) {
+	cert, err := VerifyDeviceCertificateSignature(data, accountPub)
+	if err != nil {
+		return nil, err
+	}
+	if cert.ExpiresAt.IsZero() || !time.Now().UTC().Before(cert.ExpiresAt) {
+		return nil, errors.New("device certificate has expired")
+	}
+	return cert, nil
+}
+
+// VerifyDeviceCertificateSignature verifies that a certificate was signed by
+// the account key without enforcing its expiry. Account-record sync uses this
+// so a device that has been offline past its certificate lifetime can still
+// reconnect long enough to receive a renewed certificate.
+func VerifyDeviceCertificateSignature(data []byte, accountPub ed25519.PublicKey) (*DeviceCertificate, error) {
+	if len(accountPub) != ed25519.PublicKeySize {
+		return nil, errors.New("account public key is invalid")
+	}
 	var cert DeviceCertificate
 	if err := json.Unmarshal(data, &cert); err != nil {
 		return nil, fmt.Errorf("decode device certificate: %w", err)
@@ -381,10 +410,92 @@ func VerifyDeviceCertificate(data []byte, accountPub ed25519.PublicKey) (*Device
 	if !ed25519.Verify(accountPub, canonical, sig) {
 		return nil, errors.New("device certificate signature is invalid")
 	}
-	if cert.ExpiresAt.IsZero() || !time.Now().UTC().Before(cert.ExpiresAt) {
-		return nil, errors.New("device certificate has expired")
-	}
 	return &cert, nil
+}
+
+const accountRevocationPurpose = "toget:account-device-revocation:v1"
+
+type accountRevocationPayload struct {
+	Purpose   string    `json:"purpose"`
+	AccountID string    `json:"account_id"`
+	DeviceID  string    `json:"device_id"`
+	RevokedAt time.Time `json:"revoked_at"`
+}
+
+// AccountRevocation is an account-key-signed statement that one device is
+// revoked. It is separate from a device certificate so revocations can be
+// relayed by any device on the account and can never be confused with a
+// certificate signature.
+type AccountRevocation struct {
+	AccountID string    `json:"account_id"`
+	DeviceID  string    `json:"device_id"`
+	RevokedAt time.Time `json:"revoked_at"`
+	Signature string    `json:"signature"`
+}
+
+// SignAccountRevocation signs a device revocation with the account key.
+func SignAccountRevocation(accountID, deviceID string, revokedAt time.Time, accountPriv ed25519.PrivateKey) (string, error) {
+	if accountID == "" || deviceID == "" || revokedAt.IsZero() {
+		return "", errors.New("account revocation is incomplete")
+	}
+	if len(accountPriv) != ed25519.PrivateKeySize {
+		return "", errors.New("account signing key is invalid")
+	}
+	revokedAt = revokedAt.UTC().Truncate(time.Millisecond)
+	payload := accountRevocationPayload{
+		Purpose: accountRevocationPurpose, AccountID: accountID,
+		DeviceID: deviceID, RevokedAt: revokedAt,
+	}
+	canonical, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("encode account revocation: %w", err)
+	}
+	statement := AccountRevocation{
+		AccountID: accountID, DeviceID: deviceID, RevokedAt: revokedAt,
+		Signature: base64.RawStdEncoding.EncodeToString(ed25519.Sign(accountPriv, canonical)),
+	}
+	data, err := json.Marshal(statement)
+	if err != nil {
+		return "", fmt.Errorf("encode signed account revocation: %w", err)
+	}
+	return base64.RawStdEncoding.EncodeToString(data), nil
+}
+
+// VerifyAccountRevocation verifies an account-signed device revocation.
+func VerifyAccountRevocation(encoded string, accountPub ed25519.PublicKey) (*AccountRevocation, error) {
+	if len(accountPub) != ed25519.PublicKeySize {
+		return nil, errors.New("account public key is invalid")
+	}
+	if encoded == "" || len(encoded) > 4096 {
+		return nil, errors.New("account revocation is missing or too large")
+	}
+	data, err := base64.RawStdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("decode account revocation: %w", err)
+	}
+	var statement AccountRevocation
+	if err := json.Unmarshal(data, &statement); err != nil {
+		return nil, fmt.Errorf("decode account revocation payload: %w", err)
+	}
+	if statement.AccountID == "" || statement.DeviceID == "" || statement.RevokedAt.IsZero() || statement.Signature == "" {
+		return nil, errors.New("account revocation is incomplete")
+	}
+	sig, err := base64.RawStdEncoding.DecodeString(statement.Signature)
+	if err != nil {
+		return nil, fmt.Errorf("decode account revocation signature: %w", err)
+	}
+	payload := accountRevocationPayload{
+		Purpose: accountRevocationPurpose, AccountID: statement.AccountID,
+		DeviceID: statement.DeviceID, RevokedAt: statement.RevokedAt.UTC().Truncate(time.Millisecond),
+	}
+	canonical, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("encode account revocation payload: %w", err)
+	}
+	if !ed25519.Verify(accountPub, canonical, sig) {
+		return nil, errors.New("account revocation signature is invalid")
+	}
+	return &statement, nil
 }
 
 // NewID returns a time-ordered UUIDv7 string for local objects.

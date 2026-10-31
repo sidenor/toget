@@ -21,7 +21,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const schemaVersion = 5
+const schemaVersion = 7
 
 // CurrentSchemaVersion is the newest database schema this build understands.
 // Backup/restore uses it to reject archives from newer builds.
@@ -79,62 +79,31 @@ func (d *DB) migrate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	switch {
-	case version == 0:
+	if version > schemaVersion {
+		return fmt.Errorf("storage: database schema %d is newer than this binary (%d)", version, schemaVersion)
+	}
+	if version == 0 {
 		if _, err := d.db.ExecContext(ctx, schemaSQL); err != nil {
 			return fmt.Errorf("storage: create schema: %w", err)
 		}
 		if _, err := d.db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
 			return fmt.Errorf("storage: set schema version: %w", err)
 		}
-	case version == 1:
-		if err := d.migrateV1(ctx); err != nil {
+		return nil
+	}
+	migrations := []func(context.Context) error{
+		d.migrateV1, d.migrateV2, d.migrateV3, d.migrateV4, d.migrateV5, d.migrateV6,
+	}
+	for from := version; from < schemaVersion; from++ {
+		if from < 1 || from > len(migrations) {
+			return fmt.Errorf("storage: no migration path from schema %d", from)
+		}
+		if err := migrations[from-1](ctx); err != nil {
 			return err
 		}
-		if err := d.migrateV2(ctx); err != nil {
-			return err
-		}
-		if err := d.migrateV3(ctx); err != nil {
-			return err
-		}
-		if err := d.migrateV4(ctx); err != nil {
-			return err
-		}
-		if _, err := d.db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
-			return fmt.Errorf("storage: set schema version: %w", err)
-		}
-	case version == 2:
-		if err := d.migrateV2(ctx); err != nil {
-			return err
-		}
-		if err := d.migrateV3(ctx); err != nil {
-			return err
-		}
-		if err := d.migrateV4(ctx); err != nil {
-			return err
-		}
-		if _, err := d.db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
-			return fmt.Errorf("storage: set schema version: %w", err)
-		}
-	case version == 3:
-		if err := d.migrateV3(ctx); err != nil {
-			return err
-		}
-		if err := d.migrateV4(ctx); err != nil {
-			return err
-		}
-		if _, err := d.db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
-			return fmt.Errorf("storage: set schema version: %w", err)
-		}
-	case version == 4:
-		if err := d.migrateV4(ctx); err != nil {
-			return err
-		}
-		if _, err := d.db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
-			return fmt.Errorf("storage: set schema version: %w", err)
-		}
-	case version > schemaVersion:
-		return fmt.Errorf("storage: database schema %d is newer than this binary (%d)", version, schemaVersion)
+	}
+	if _, err := d.db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
+		return fmt.Errorf("storage: set schema version: %w", err)
 	}
 	return nil
 }
@@ -317,6 +286,47 @@ func (d *DB) migrateV4(ctx context.Context) error {
 	return nil
 }
 
+// migrateV5 adds the last known pinned node address for each device. Older
+// rows start empty and learn the address when devices sync again.
+func (d *DB) migrateV5(ctx context.Context) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("storage: begin v5 migration: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE devices ADD COLUMN node_url TEXT NOT NULL DEFAULT ''`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("storage: migrate v5: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storage: commit v5 migration: %w", err)
+	}
+	return nil
+}
+
+// migrateV6 records the server that created the account. Accounts imported
+// before this column existed did not retain their origin server; the local
+// server is the best known anchor and still gives newly paired devices a
+// reachable bootstrap peer.
+func (d *DB) migrateV6(ctx context.Context) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("storage: begin v6 migration: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE accounts ADD COLUMN origin_server_id TEXT NOT NULL DEFAULT ''`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("storage: migrate v6: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET origin_server_id = server_id WHERE origin_server_id = ''`); err != nil {
+		return fmt.Errorf("storage: migrate v6 backfill: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storage: commit v6 migration: %w", err)
+	}
+	return nil
+}
+
 // GetServer returns the local server identity.
 func (d *DB) GetServer(ctx context.Context) (*account.Server, error) {
 	row := d.db.QueryRowContext(ctx, `
@@ -337,11 +347,11 @@ func (d *DB) GetServer(ctx context.Context) (*account.Server, error) {
 // GetAccount returns the local account.
 func (d *DB) GetAccount(ctx context.Context) (*account.Account, error) {
 	row := d.db.QueryRowContext(ctx, `
-		SELECT id, server_id, code, name, public_key, private_key, password_hash, created_at
+		SELECT id, server_id, origin_server_id, code, name, public_key, private_key, password_hash, created_at
 		FROM accounts ORDER BY created_at LIMIT 1`)
 	var a account.Account
 	var created int64
-	if err := row.Scan(&a.ID, &a.ServerID, &a.Code, &a.Name, &a.PublicKey, &a.PrivateKey, &a.PasswordHash, &created); err != nil {
+	if err := row.Scan(&a.ID, &a.ServerID, &a.OriginServerID, &a.Code, &a.Name, &a.PublicKey, &a.PrivateKey, &a.PasswordHash, &created); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, account.ErrNotFound
 		}
@@ -355,7 +365,7 @@ func (d *DB) GetAccount(ctx context.Context) (*account.Account, error) {
 func (d *DB) GetDevice(ctx context.Context, accountID string) (*account.Device, error) {
 	row := d.db.QueryRowContext(ctx, `
 		SELECT id, account_id, name, public_key, private_key, encryption_public_key,
-		       encryption_private_key, certificate, role, revoked_at, last_seen_at, created_at, local
+		       encryption_private_key, certificate, node_url, role, revoked_at, last_seen_at, created_at, local
 		FROM devices WHERE account_id = ? ORDER BY local DESC, created_at LIMIT 1`, accountID)
 	return scanDevice(row)
 }
@@ -364,7 +374,7 @@ func (d *DB) GetDevice(ctx context.Context, accountID string) (*account.Device, 
 func (d *DB) GetDeviceByID(ctx context.Context, deviceID string) (*account.Device, error) {
 	row := d.db.QueryRowContext(ctx, `
 		SELECT id, account_id, name, public_key, private_key, encryption_public_key,
-		       encryption_private_key, certificate, role, revoked_at, last_seen_at, created_at, local
+		       encryption_private_key, certificate, node_url, role, revoked_at, last_seen_at, created_at, local
 		FROM devices WHERE id = ?`, deviceID)
 	return scanDevice(row)
 }
@@ -373,7 +383,7 @@ func (d *DB) GetDeviceByID(ctx context.Context, deviceID string) (*account.Devic
 func (d *DB) ListDevices(ctx context.Context, accountID string) ([]account.Device, error) {
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT id, account_id, name, public_key, private_key, encryption_public_key,
-		       encryption_private_key, certificate, role, revoked_at, last_seen_at, created_at, local
+		       encryption_private_key, certificate, node_url, role, revoked_at, last_seen_at, created_at, local
 		FROM devices WHERE account_id = ? ORDER BY local DESC, created_at`, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("storage: list devices: %w", err)
@@ -394,10 +404,10 @@ func (d *DB) ListDevices(ctx context.Context, accountID string) ([]account.Devic
 func (d *DB) AddDevice(ctx context.Context, dev *account.Device) error {
 	_, err := d.db.ExecContext(ctx, `
 		INSERT INTO devices (id, account_id, name, public_key, private_key, encryption_public_key,
-			encryption_private_key, certificate, role, revoked_at, last_seen_at, created_at, local)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			encryption_private_key, certificate, node_url, role, revoked_at, last_seen_at, created_at, local)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		dev.ID, dev.AccountID, dev.Name, dev.PublicKey, nonNilBytes(dev.PrivateKey), dev.EncryptionPublicKey,
-		nonNilBytes(dev.EncryptionPrivateKey), dev.Certificate, dev.Role, nullableMillis(dev.RevokedAt),
+		nonNilBytes(dev.EncryptionPrivateKey), dev.Certificate, dev.NodeURL, dev.Role, nullableMillis(dev.RevokedAt),
 		nullableMillis(dev.LastSeenAt), toMillis(dev.CreatedAt), boolInt(dev.Local))
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -412,8 +422,8 @@ func (d *DB) AddDevice(ctx context.Context, dev *account.Device) error {
 // certificate.
 func (d *DB) UpdateDevice(ctx context.Context, dev *account.Device) error {
 	_, err := d.db.ExecContext(ctx, `
-		UPDATE devices SET name = ?, role = ?, certificate = ?, revoked_at = ?, last_seen_at = ? WHERE id = ?`,
-		dev.Name, dev.Role, dev.Certificate, nullableMillis(dev.RevokedAt), nullableMillis(dev.LastSeenAt), dev.ID)
+		UPDATE devices SET name = ?, role = ?, certificate = ?, node_url = ?, revoked_at = ?, last_seen_at = ? WHERE id = ?`,
+		dev.Name, dev.Role, dev.Certificate, dev.NodeURL, nullableMillis(dev.RevokedAt), nullableMillis(dev.LastSeenAt), dev.ID)
 	if err != nil {
 		return fmt.Errorf("storage: update device: %w", err)
 	}
@@ -444,10 +454,14 @@ func (d *DB) insertAccount(ctx context.Context, server *account.Server, acct *ac
 		server.ID, server.Code, server.PublicKey, server.PrivateKey, server.Nonce, server.Manifest, toMillis(server.CreatedAt)); err != nil {
 		return fmt.Errorf("storage: insert server: %w", err)
 	}
+	originServerID := acct.OriginServerID
+	if originServerID == "" {
+		originServerID = acct.ServerID
+	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO accounts (id, server_id, code, name, public_key, private_key, password_hash, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		acct.ID, acct.ServerID, acct.Code, acct.Name, acct.PublicKey, acct.PrivateKey, acct.PasswordHash, toMillis(acct.CreatedAt)); err != nil {
+		INSERT INTO accounts (id, server_id, origin_server_id, code, name, public_key, private_key, password_hash, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		acct.ID, acct.ServerID, originServerID, acct.Code, acct.Name, acct.PublicKey, acct.PrivateKey, acct.PasswordHash, toMillis(acct.CreatedAt)); err != nil {
 		if isUniqueViolation(err) {
 			return account.ErrAlreadyExists
 		}
@@ -457,10 +471,10 @@ func (d *DB) insertAccount(ctx context.Context, server *account.Server, acct *ac
 		dev := &devices[i]
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO devices (id, account_id, name, public_key, private_key, encryption_public_key,
-				encryption_private_key, certificate, role, revoked_at, last_seen_at, created_at, local)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				encryption_private_key, certificate, node_url, role, revoked_at, last_seen_at, created_at, local)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			dev.ID, dev.AccountID, dev.Name, dev.PublicKey, nonNilBytes(dev.PrivateKey), dev.EncryptionPublicKey,
-			nonNilBytes(dev.EncryptionPrivateKey), dev.Certificate, dev.Role, nullableMillis(dev.RevokedAt),
+			nonNilBytes(dev.EncryptionPrivateKey), dev.Certificate, dev.NodeURL, dev.Role, nullableMillis(dev.RevokedAt),
 			nullableMillis(dev.LastSeenAt), toMillis(dev.CreatedAt), boolInt(dev.Local)); err != nil {
 			if isUniqueViolation(err) {
 				return account.ErrAlreadyExists
@@ -1192,7 +1206,7 @@ func scanDevice(row rowScanner) (*account.Device, error) {
 	var created int64
 	var local int
 	if err := row.Scan(&dev.ID, &dev.AccountID, &dev.Name, &dev.PublicKey, &dev.PrivateKey,
-		&dev.EncryptionPublicKey, &dev.EncryptionPrivateKey, &dev.Certificate, &dev.Role,
+		&dev.EncryptionPublicKey, &dev.EncryptionPrivateKey, &dev.Certificate, &dev.NodeURL, &dev.Role,
 		&revoked, &lastSeen, &created, &local); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, account.ErrNotFound

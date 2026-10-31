@@ -54,7 +54,7 @@ func newEmptyNode(t *testing.T) (*testNode, *account.Service, *room.Service) {
 	))
 	service, err := node.New(node.Options{
 		Accounts: accounts, Rooms: rooms, Paths: paths,
-		Listen: "127.0.0.1:0", SyncInterval: time.Hour,
+		Listen: "127.0.0.1:0", SyncInterval: time.Hour, AccountSyncInterval: time.Hour,
 	})
 	if err != nil {
 		t.Fatal(err)

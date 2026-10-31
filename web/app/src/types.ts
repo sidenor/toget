@@ -20,6 +20,13 @@ export type Device = {
   created_at: string;
 };
 
+export type AccountSyncResult = {
+  peers: number;
+  synced: number;
+  warnings?: string[];
+  revoked?: string[];
+};
+
 export type Account = {
   id: string;
   name: string;

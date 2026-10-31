@@ -72,30 +72,39 @@ type Server struct {
 
 // Account is the person this node belongs to.
 type Account struct {
-	ID           string    `json:"id"`
-	ServerID     string    `json:"server_id"`
-	Code         string    `json:"code"`
-	Name         string    `json:"name"`
-	PublicKey    []byte    `json:"-"`
-	PrivateKey   []byte    `json:"-"`
-	PasswordHash string    `json:"-"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID string `json:"id"`
+	// ServerID is the local server identity. It is the home for rooms created
+	// on this machine, including rooms created after joining through pairing.
+	ServerID string `json:"server_id"`
+	// OriginServerID is the server identity that created the account. It never
+	// changes and is the discovery anchor for account-record sync.
+	OriginServerID string    `json:"origin_server_id"`
+	Code           string    `json:"code"`
+	Name           string    `json:"name"`
+	PublicKey      []byte    `json:"-"`
+	PrivateKey     []byte    `json:"-"`
+	PasswordHash   string    `json:"-"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // Device is the machine running this node.
 type Device struct {
-	ID                   string     `json:"id"`
-	AccountID            string     `json:"account_id"`
-	Name                 string     `json:"name"`
-	PublicKey            []byte     `json:"-"`
-	PrivateKey           []byte     `json:"-"`
-	EncryptionPublicKey  []byte     `json:"-"`
-	EncryptionPrivateKey []byte     `json:"-"`
-	Certificate          string     `json:"certificate"`
-	Role                 string     `json:"role"`
-	RevokedAt            *time.Time `json:"revoked_at,omitempty"`
-	LastSeenAt           *time.Time `json:"last_seen_at,omitempty"`
-	CreatedAt            time.Time  `json:"created_at"`
+	ID                   string `json:"id"`
+	AccountID            string `json:"account_id"`
+	Name                 string `json:"name"`
+	PublicKey            []byte `json:"-"`
+	PrivateKey           []byte `json:"-"`
+	EncryptionPublicKey  []byte `json:"-"`
+	EncryptionPrivateKey []byte `json:"-"`
+	Certificate          string `json:"certificate"`
+	// NodeURL is the device's last known pinned node address, including its
+	// TLS fingerprint and optional relay route. It is only used to reach
+	// sibling devices for account-record sync; it grants no trust by itself.
+	NodeURL    string     `json:"node_url,omitempty"`
+	Role       string     `json:"role"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	LastSeenAt *time.Time `json:"last_seen_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
 	// Local marks the device running this node. A paired device stores its
 	// siblings' public certificates but never their private keys.
 	Local bool `json:"local,omitempty"`
@@ -208,14 +217,15 @@ func (s *Service) Create(ctx context.Context, name, password, deviceName string)
 	}
 
 	account := &Account{
-		ID:           accountID,
-		ServerID:     server.ID,
-		Code:         accountCode,
-		Name:         name,
-		PublicKey:    accountPub,
-		PrivateKey:   []byte(sealedAccountKey),
-		PasswordHash: passwordHash,
-		CreatedAt:    now,
+		ID:             accountID,
+		ServerID:       server.ID,
+		OriginServerID: server.ID,
+		Code:           accountCode,
+		Name:           name,
+		PublicKey:      accountPub,
+		PrivateKey:     []byte(sealedAccountKey),
+		PasswordHash:   passwordHash,
+		CreatedAt:      now,
 	}
 	device := &Device{
 		ID:                   deviceID,
@@ -249,6 +259,10 @@ type ImportSpec struct {
 	AccountPrivateKey ed25519.PrivateKey
 	PasswordHash      string
 	CreatedAt         time.Time
+	// OriginServerID is the server that created the account. Older pairing
+	// bundles do not carry it; those imports fall back to the local server,
+	// which disables account-host bootstrap discovery but not account sync.
+	OriginServerID string
 	// Device is this machine's new device identity with plaintext keys. The
 	// service seals them with the local vault.
 	Device Device
@@ -292,6 +306,13 @@ func (s *Service) Import(ctx context.Context, spec ImportSpec) (*Snapshot, error
 	if err != nil {
 		return nil, err
 	}
+	originServerID := strings.TrimSpace(spec.OriginServerID)
+	if originServerID == "" {
+		originServerID = server.ID
+	}
+	if !identity.ValidServerID(originServerID) {
+		return nil, fmt.Errorf("%w: origin server id is invalid", ErrInvalidImport)
+	}
 	device := spec.Device
 	device.AccountID = spec.AccountID
 	device.Name = strings.TrimSpace(device.Name)
@@ -314,6 +335,9 @@ func (s *Service) Import(ctx context.Context, spec ImportSpec) (*Snapshot, error
 	if device.Certificate == "" {
 		return nil, fmt.Errorf("%w: device certificate is missing", ErrInvalidImport)
 	}
+	if !ValidNodeURL(device.NodeURL) {
+		return nil, fmt.Errorf("%w: device node address is invalid", ErrInvalidImport)
+	}
 	devices := []Device{device}
 	seen := map[string]bool{device.ID: true}
 	for i := range spec.Siblings {
@@ -325,7 +349,8 @@ func (s *Service) Import(ctx context.Context, spec ImportSpec) (*Snapshot, error
 		sibling.EncryptionPrivateKey = nil
 		if sibling.ID == "" || seen[sibling.ID] ||
 			len(sibling.PublicKey) != ed25519.PublicKeySize ||
-			len(sibling.EncryptionPublicKey) != 32 || sibling.Certificate == "" {
+			len(sibling.EncryptionPublicKey) != 32 || sibling.Certificate == "" ||
+			!ValidNodeURL(sibling.NodeURL) {
 			return nil, fmt.Errorf("%w: sibling device is invalid", ErrInvalidImport)
 		}
 		if sibling.Role == "" {
@@ -353,14 +378,15 @@ func (s *Service) Import(ctx context.Context, spec ImportSpec) (*Snapshot, error
 		return nil, fmt.Errorf("seal device encryption key: %w", err)
 	}
 	account := &Account{
-		ID:           spec.AccountID,
-		ServerID:     server.ID,
-		Code:         spec.AccountCode,
-		Name:         name,
-		PublicKey:    append([]byte(nil), spec.AccountPublicKey...),
-		PrivateKey:   []byte(sealedAccountKey),
-		PasswordHash: spec.PasswordHash,
-		CreatedAt:    spec.CreatedAt.UTC().Truncate(time.Millisecond),
+		ID:             spec.AccountID,
+		ServerID:       server.ID,
+		OriginServerID: originServerID,
+		Code:           spec.AccountCode,
+		Name:           name,
+		PublicKey:      append([]byte(nil), spec.AccountPublicKey...),
+		PrivateKey:     []byte(sealedAccountKey),
+		PasswordHash:   spec.PasswordHash,
+		CreatedAt:      spec.CreatedAt.UTC().Truncate(time.Millisecond),
 	}
 	devices[0].PrivateKey = []byte(sealedDeviceKey)
 	devices[0].EncryptionPrivateKey = []byte(sealedEncryptionKey)

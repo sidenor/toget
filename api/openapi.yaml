@@ -240,6 +240,36 @@ paths:
         "423":
           $ref: "#/components/responses/Locked"
 
+  /api/v1/account/sync:
+    post:
+      tags: [devices]
+      operationId: syncAccount
+      summary: Exchange account device records with paired devices now
+      description: |
+        Devices also sync in the background every 30 seconds and after pairing
+        or revocation. This route runs one round immediately. Each reachable
+        sibling receives the full public device set over pinned HTTPS; private
+        keys never leave the device. The local device cannot revoke itself and
+        an already-revoked device receives read-only records so it discovers
+        the revocation.
+      responses:
+        "200":
+          description: One sync round finished. Unreachable peers are warnings, not failures.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSyncResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "503":
+          description: Node transport is disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/pairings:
     get:
       tags: [devices]
@@ -2342,6 +2372,30 @@ components:
           type: string
         arch:
           type: string
+
+    AccountSyncResult:
+      type: object
+      additionalProperties: false
+      required: [peers, synced]
+      properties:
+        peers:
+          type: integer
+          minimum: 0
+          description: Paired devices with a known address in this round.
+        synced:
+          type: integer
+          minimum: 0
+          description: Peers that completed an exchange.
+        warnings:
+          type: array
+          items:
+            type: string
+          description: Unreachable peers, rejected records, or offline room homes.
+        revoked:
+          type: array
+          items:
+            type: string
+          description: Device IDs first learned as revoked in this round.
 
     Pairing:
       type: object

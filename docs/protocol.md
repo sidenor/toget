@@ -142,6 +142,11 @@ serves:
 | `POST` | `/toget/v1/rooms/leave` | Submit a signed self-leave event; home rotates the epoch |
 | `POST` | `/toget/v1/rooms/attachments` | Upload sealed attachment ciphertext; metadata in the signed query |
 | `GET` | `/toget/v1/attachments/{id}` | Download sealed attachment ciphertext for a room member |
+| `POST` | `/toget/v1/pair/request` | Submit a pairing request with fresh device keys |
+| `POST` | `/toget/v1/pair/complete` | Poll an approved pairing and receive the sealed account bundle |
+| `POST` | `/toget/v1/account/sync` | Exchange public account device records with a sibling device |
+| `POST` | `/toget/v1/rooms/devices` | Register this device in a room with its account-signed certificate |
+| `POST` | `/toget/v1/rooms/devices/revoke` | Ask a room home to revoke a device and rotate the epoch |
 
 Every request except health carries `X-Toget-Timestamp`, `X-Toget-Nonce`,
 `X-Toget-Signature`, `X-Toget-Account`, and `X-Toget-Device`. The signature
@@ -418,10 +423,57 @@ revocation still stands and the room revocation is reported as a warning.
 Any device that already holds the account private key can still mint a new
 certificate for itself; a compromised device therefore compromises the
 account key until account-key rotation exists. Rooms a node has never joined
-cannot be revoked from it, because it does not know they exist. Device lists
-are copied at pairing time and are not yet replicated afterward: a device
-added or revoked on one machine may still appear active in another machine's
-account record, although room-level revocation is enforced where it reaches.
+cannot be revoked from it, because it does not know they exist.
+
+### Account record sync
+
+**Implemented today for paired devices.** Each device keeps a public copy of
+the account's device set and exchanges it with reachable siblings over the
+same pinned HTTPS transport:
+
+- Every 30 seconds, and immediately after pairing, account import, a
+  revocation, or a merge that changed the set, a device sends its full record
+  set to up to eight active siblings (rotating when an account has more).
+- If no sibling address is known, the device resolves the account host (the
+  server code is the first eight digits of the account ID) through a saved
+  card, mDNS, or the directory, verifies that the result has the account's
+  full origin server ID and account ID, and uses it as a bootstrap peer. The
+  reply teaches both sides the current sibling addresses. The origin server ID
+  is recorded when the account is created, carried in every pairing bundle,
+  and never changes, so a device paired through several hops still knows which
+  server is the account host.
+- A record contains the device ID, name, signing and encryption public keys,
+  account-signed certificate, last known node URL, role, and creation time.
+  Private keys are never included. The local device's URL is replaced with its
+  live address on export, so peers learn a new address after a restart or
+  network change.
+- The receiver verifies every certificate with the account public key and
+  requires it to bind the record's ID and keys. It verifies signatures without
+  checking certificate expiry: a device that has been offline for a year must
+  still be able to sync a renewed certificate.
+- Records add unknown devices and update a name, role, renewed certificate, or
+  reachability hint. Keys on an existing device are immutable. A local device
+  record is never overwritten by a peer, and a node URL is only a hint;
+  identity still comes from the certificate.
+- A revoked device carries an account-signed revocation statement
+  (`toget:account-device-revocation:v1`) naming the account, device, and time.
+  Revocation is monotonic: any device may relay the proof, the earliest signed
+  time wins, and no later record can un-revoke it.
+- A revoked device may still call a sibling. The responder returns its records
+  read-only and does not merge anything from the revoked device, so the
+  revoked device discovers its own revocation even if it was offline when the
+  user revoked it.
+- Revocations are applied to every room this device knows about and propagated
+  to remote room homes, which mark the device revoked and rotate the epoch.
+  Failures are warnings and are retried by later account-sync rounds.
+
+Account sync is eventual, not a consensus protocol. A peer that has been
+offline still shows the old state until it reconnects, and a device revoked
+while offline can present a still-valid certificate to a peer that has not
+learned the revocation. Room homes are the enforcement point for room keys,
+and the signed revocation proof converges to every reachable device.
+Account-key rotation is still required to recover from a compromised account
+key.
 
 ## New-member history
 

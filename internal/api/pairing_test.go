@@ -75,7 +75,7 @@ func newPairAPINode(t *testing.T, createAccount bool) *pairAPINode {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	lan, err = node.New(node.Options{
 		Accounts: accounts, Rooms: rooms, Paths: paths,
-		Listen: "127.0.0.1:0", SyncInterval: time.Hour, Logger: logger,
+		Listen: "127.0.0.1:0", SyncInterval: time.Hour, AccountSyncInterval: time.Hour, Logger: logger,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -237,6 +237,14 @@ func TestPairingAPIEndToEnd(t *testing.T) {
 	guestSnapshot, err := guest.accounts.Get(ctx)
 	if err != nil {
 		t.Fatal(err)
+	}
+	resp, body = host.server.request(t, http.MethodPost, "/api/v1/account/sync", testToken, "{}", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("account sync = %d %s", resp.StatusCode, body)
+	}
+	syncResult := decode[api.AccountSyncResult](t, body)
+	if syncResult.Peers < 1 {
+		t.Fatalf("account sync result = %s, want at least one paired peer", body)
 	}
 	resp, body = host.server.request(t, http.MethodDelete, "/api/v1/devices/"+guestSnapshot.Device.ID, testToken, "", nil)
 	if resp.StatusCode != http.StatusNoContent {

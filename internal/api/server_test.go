@@ -130,6 +130,10 @@ func TestNodeDisabledAPI(t *testing.T) {
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("node sync = %d, want 503", resp.StatusCode)
 	}
+	resp, _ = node.request(t, http.MethodPost, "/api/v1/account/sync", testToken, "", nil)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("account sync = %d, want 503", resp.StatusCode)
+	}
 	resp, _ = node.request(t, http.MethodPost, "/api/v1/rooms/anything/sync", testToken, "", nil)
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("room sync = %d, want 503", resp.StatusCode)

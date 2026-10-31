@@ -657,7 +657,36 @@ func newAccountCommand() *cobra.Command {
 	cmd := &cobra.Command{Use: "account", Short: "Manage the local account"}
 	cmd.AddCommand(newAccountCreateCommand())
 	cmd.AddCommand(newAccountShowCommand())
+	cmd.AddCommand(newAccountSyncCommand())
 	return cmd
+}
+
+func newAccountSyncCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "sync",
+		Short: "Exchange account records with paired devices now",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			var result api.AccountSyncResult
+			if err := c.Post(cmd.Context(), "/api/v1/account/sync", nil, &result); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(result)
+			}
+			fmt.Printf("Account sync: %d peer(s), %d reachable.\n", result.Peers, result.Synced)
+			if len(result.Revoked) > 0 {
+				fmt.Printf("Newly revoked: %s\n", strings.Join(result.Revoked, ", "))
+			}
+			for _, warning := range result.Warnings {
+				fmt.Printf("warning: %s\n", warning)
+			}
+			return nil
+		},
+	}
 }
 
 func newAccountCreateCommand() *cobra.Command {

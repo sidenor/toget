@@ -69,7 +69,7 @@ func newNodeWithOptions(t *testing.T, name string, configure func(*node.Options)
 	))
 	options := node.Options{
 		Accounts: accounts, Rooms: rooms, Paths: paths,
-		Listen: "127.0.0.1:0", SyncInterval: time.Hour,
+		Listen: "127.0.0.1:0", SyncInterval: time.Hour, AccountSyncInterval: time.Hour,
 	}
 	if configure != nil {
 		configure(&options)

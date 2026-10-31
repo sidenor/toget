@@ -432,6 +432,7 @@ export function DevicesView({ t, notify, onError }: CommonProps) {
   const [pairings, setPairings] = useState<PairingView[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [syncingAccount, setSyncingAccount] = useState(false);
   const [pairError, setPairError] = useState("");
   const [pairWarnings, setPairWarnings] = useState<string[]>([]);
 
@@ -474,6 +475,23 @@ export function DevicesView({ t, notify, onError }: CommonProps) {
       setPairError(err instanceof Error ? err.message : t("common.error"));
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function syncAccount() {
+    setPairError("");
+    setPairWarnings([]);
+    setSyncingAccount(true);
+    try {
+      const result = await api.syncAccount();
+      const summary = t("devices.syncResult", { synced: result.synced, peers: result.peers });
+      const warnings = result.warnings || [];
+      notify(warnings.length ? `${summary} ${warnings.join(" · ")}` : summary);
+      await load();
+    } catch (err) {
+      setPairError(err instanceof Error ? err.message : t("common.error"));
+    } finally {
+      setSyncingAccount(false);
     }
   }
 
@@ -545,9 +563,14 @@ export function DevicesView({ t, notify, onError }: CommonProps) {
             <h2>{t("devices.pairTitle")}</h2>
             <p className="muted">{t("devices.pairText")}</p>
           </div>
-          <button className="button primary" onClick={() => void createPairing()} disabled={creating}>
-            {creating ? t("onboard.linking") : t("devices.pairCreate")}
-          </button>
+          <div className="pair-panel-actions">
+            <button className="button ghost" onClick={() => void syncAccount()} disabled={syncingAccount}>
+              {syncingAccount ? t("devices.syncing") : t("devices.syncNow")}
+            </button>
+            <button className="button primary" onClick={() => void createPairing()} disabled={creating}>
+              {creating ? t("onboard.linking") : t("devices.pairCreate")}
+            </button>
+          </div>
         </div>
         {pairError && <div className="form-error">{pairError}</div>}
         {pairWarnings.map((warning) => (

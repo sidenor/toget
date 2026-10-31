@@ -2,6 +2,8 @@ package identity
 
 import (
 	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -142,5 +144,71 @@ func TestAccountID(t *testing.T) {
 	}
 	if len(AccountID("12345678", "901234")) != 14 {
 		t.Fatal("account ID is not 14 digits")
+	}
+}
+
+func TestAccountRevocationSignAndVerify(t *testing.T) {
+	accountPub, accountPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revokedAt := time.Now().UTC().Truncate(time.Millisecond)
+	encoded, err := SignAccountRevocation("12345678901234", "device-1", revokedAt, accountPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := VerifyAccountRevocation(encoded, accountPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proof.AccountID != "12345678901234" || proof.DeviceID != "device-1" || !proof.RevokedAt.Equal(revokedAt) {
+		t.Fatalf("unexpected revocation: %#v", proof)
+	}
+	if _, err := VerifyAccountRevocation(encoded, ed25519.PublicKey(make([]byte, ed25519.PublicKeySize))); err == nil {
+		t.Fatal("revocation verified with the wrong account key")
+	}
+	data, err := base64.RawStdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var statement AccountRevocation
+	if err := json.Unmarshal(data, &statement); err != nil {
+		t.Fatal(err)
+	}
+	statement.DeviceID = "device-2"
+	tampered, err := json.Marshal(statement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyAccountRevocation(base64.RawStdEncoding.EncodeToString(tampered), accountPub); err == nil {
+		t.Fatal("tampered revocation was accepted")
+	}
+	if _, err := VerifyAccountRevocation("not-base64", accountPub); err == nil {
+		t.Fatal("malformed revocation was accepted")
+	}
+}
+
+func TestDeviceCertificateSignatureAllowsExpiredCertificate(t *testing.T) {
+	accountPub, accountPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	devicePub, _, err := NewDeviceKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptionPub, _, err := NewEncryptionKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := SignDeviceCertificate("device-1", "account-1", devicePub, encryptionPub, accountPriv, time.Now().AddDate(-2, 0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyDeviceCertificate(cert, accountPub); err == nil {
+		t.Fatal("expired certificate was accepted")
+	}
+	if _, err := VerifyDeviceCertificateSignature(cert, accountPub); err != nil {
+		t.Fatalf("signature-only verification rejected an expired certificate: %v", err)
 	}
 }

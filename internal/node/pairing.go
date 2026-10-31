@@ -144,6 +144,9 @@ type PairRequest struct {
 	DeviceName          string `json:"device_name"`
 	SigningPublicKey    []byte `json:"signing_public_key"`
 	EncryptionPublicKey []byte `json:"encryption_public_key"`
+	// NodeURL is the new device's pinned node address. It lets the account
+	// sync reach this device later without waiting for a reverse connection.
+	NodeURL string `json:"node_url,omitempty"`
 }
 
 // PairDevice is the public identity of one device in a pairing bundle.
@@ -154,6 +157,7 @@ type PairDevice struct {
 	PublicKey           []byte     `json:"public_key"`
 	EncryptionPublicKey []byte     `json:"encryption_public_key,omitempty"`
 	Certificate         string     `json:"certificate"`
+	NodeURL             string     `json:"node_url,omitempty"`
 	Role                string     `json:"role"`
 	RevokedAt           *time.Time `json:"revoked_at,omitempty"`
 	CreatedAt           time.Time  `json:"created_at"`
@@ -372,6 +376,10 @@ func (s *Service) RequestPairing(req *PairRequest) error {
 	if req.DeviceName == "" || len(req.DeviceName) > 64 {
 		return fmt.Errorf("%w: device name is invalid", ErrPairingState)
 	}
+	req.NodeURL = strings.TrimSpace(req.NodeURL)
+	if err := ValidateNodeURL(req.NodeURL); err != nil {
+		return fmt.Errorf("%w: device node address is invalid: %v", ErrPairingState, err)
+	}
 	now := time.Now().UTC()
 	s.pairMu.Lock()
 	defer s.pairMu.Unlock()
@@ -394,6 +402,9 @@ func (s *Service) RequestPairing(req *PairRequest) error {
 		if session.Request.DeviceID == req.DeviceID &&
 			ConstantTimeEqual(string(session.Request.SigningPublicKey), string(req.SigningPublicKey)) &&
 			ConstantTimeEqual(string(session.Request.EncryptionPublicKey), string(req.EncryptionPublicKey)) {
+			// A retry may carry a fresher address or display name.
+			session.Request.NodeURL = req.NodeURL
+			session.Request.DeviceName = req.DeviceName
 			return nil
 		}
 		return fmt.Errorf("%w: another device already requested this pairing", ErrPairingState)
@@ -472,6 +483,9 @@ func (s *Service) approvePairing(ctx context.Context, accountID string, request 
 	if snapshot.Account.ID != accountID {
 		return nil, ErrPairingNotFound
 	}
+	if err := s.accounts.SetDeviceNodeURL(ctx, snapshot.Device.ID, s.Address(ctx)); err != nil {
+		s.logger.Warn("pairing: record local node address", "error", err)
+	}
 	accountKey, err := s.accounts.UnsealPrivateKey(snapshot.Account)
 	if err != nil {
 		return nil, err
@@ -491,6 +505,9 @@ func (s *Service) approvePairing(ctx context.Context, accountID string, request 
 			return nil, fmt.Errorf("%w: device already belongs to another account", ErrPairingState)
 		}
 		existing.Certificate = string(cert)
+		if request.NodeURL != "" {
+			existing.NodeURL = request.NodeURL
+		}
 		if err := s.accounts.UpdateDevice(ctx, existing); err != nil {
 			return nil, err
 		}
@@ -499,7 +516,7 @@ func (s *Service) approvePairing(ctx context.Context, accountID string, request 
 			ID: request.DeviceID, AccountID: accountID, Name: request.DeviceName,
 			PublicKey:           append([]byte(nil), request.SigningPublicKey...),
 			EncryptionPublicKey: append([]byte(nil), request.EncryptionPublicKey...),
-			Certificate:         string(cert), Role: "node", CreatedAt: now,
+			Certificate:         string(cert), NodeURL: request.NodeURL, Role: "node", CreatedAt: now,
 		}
 		if err := s.accounts.AddDevice(ctx, device); err != nil {
 			return nil, err
@@ -736,7 +753,7 @@ func (s *Service) buildPairBundle(ctx context.Context, pairingID string, request
 		Account: PairAccount{
 			ID: snapshot.Account.ID, Code: snapshot.Account.Code, Name: snapshot.Account.Name,
 			PublicKey: append([]byte(nil), snapshot.Account.PublicKey...), PasswordHash: snapshot.Account.PasswordHash,
-			CreatedAt: snapshot.Account.CreatedAt, OriginServerID: snapshot.Account.ServerID,
+			CreatedAt: snapshot.Account.CreatedAt, OriginServerID: snapshot.Account.OriginServerID,
 		},
 		AccountKeySealed: string(sealedKey),
 		Device:           pairDeviceFromAccount(current),
@@ -754,7 +771,7 @@ func pairDeviceFromAccount(device *account.Device) PairDevice {
 		ID: device.ID, AccountID: device.AccountID, Name: device.Name,
 		PublicKey:           append([]byte(nil), device.PublicKey...),
 		EncryptionPublicKey: append([]byte(nil), device.EncryptionPublicKey...),
-		Certificate:         device.Certificate, Role: device.Role,
+		Certificate:         device.Certificate, NodeURL: device.NodeURL, Role: device.Role,
 		RevokedAt: device.RevokedAt, CreatedAt: device.CreatedAt,
 	}
 }
@@ -926,6 +943,7 @@ func (s *Service) runPairJoin(ctx context.Context, join *pairJoin) {
 		DeviceID: join.DeviceID, DeviceName: join.DeviceName,
 		SigningPublicKey:    join.SigningKey.Public().(ed25519.PublicKey),
 		EncryptionPublicKey: join.EncryptionPub,
+		NodeURL:             s.Address(ctx),
 	}
 	if err := client.RequestPairing(ctx, request); err != nil {
 		s.finishPairJoin(join, "failed", err.Error(), nil)
@@ -973,7 +991,11 @@ func (s *Service) runPairJoin(ctx context.Context, join *pairJoin) {
 					warnings = append(warnings, fmt.Sprintf("could not sync room %s yet: %v", roomID, err))
 				}
 			}
+			if err := s.accounts.SetDeviceNodeURL(ctx, join.DeviceID, s.Address(ctx)); err != nil {
+				warnings = append(warnings, fmt.Sprintf("could not record this device's node address: %v", err))
+			}
 			s.finishPairJoin(join, "ready", "", warnings)
+			s.TriggerAccountSync()
 			return
 		case "canceled":
 			s.finishPairJoin(join, "canceled", complete.Reason, nil)
@@ -1075,7 +1097,8 @@ func (s *Service) importPairBundle(ctx context.Context, join *pairJoin, bundle *
 			AccountID: bundle.Account.ID, AccountCode: bundle.Account.Code, Name: bundle.Account.Name,
 			AccountPublicKey: bundle.Account.PublicKey, AccountPrivateKey: ed25519.PrivateKey(accountKey),
 			PasswordHash: bundle.Account.PasswordHash, CreatedAt: bundle.Account.CreatedAt,
-			Device: device, Siblings: siblings,
+			OriginServerID: bundle.Account.OriginServerID,
+			Device:         device, Siblings: siblings,
 		}); err != nil {
 			return nil, nil, err
 		}
@@ -1108,7 +1131,7 @@ func accountDeviceFromPair(device PairDevice) account.Device {
 		ID: device.ID, AccountID: device.AccountID, Name: device.Name,
 		PublicKey:           append([]byte(nil), device.PublicKey...),
 		EncryptionPublicKey: append([]byte(nil), device.EncryptionPublicKey...),
-		Certificate:         device.Certificate, Role: role,
+		Certificate:         device.Certificate, NodeURL: device.NodeURL, Role: role,
 		RevokedAt: device.RevokedAt, CreatedAt: device.CreatedAt,
 	}
 }

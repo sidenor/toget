@@ -81,6 +81,12 @@ Two Toget nodes on the same LAN currently talk over HTTPS on `7717`:
 - Revocation marks the account device and every known room device revoked,
   then rotates the room epoch. New messages no longer decrypt to the revoked
   device. Offline room homes are retried and reported as warnings.
+- Paired devices exchange their public account device sets over pinned HTTPS.
+  Every record is bound to an account-signed certificate; private keys never
+  leave a device. Revocations travel as account-signed statements, are
+  permanent once seen, and can be relayed by any device. A revoked device is
+  answered read-only so it learns that it was revoked, but its records are
+  never merged.
 
 Residual risks: the host sees IP addresses, account and device IDs in request
 headers, room IDs, and timing. The invite code is a bearer secret shown once;
@@ -92,7 +98,10 @@ the same secret in another form, so it is shown once in the web UI with no
 download action, and CLI PNG files are forced to mode `0600`. A device that holds the account private key can mint certificates
 for new devices, so compromising one device compromises the account key until
 account-key rotation exists. Revocation only reaches rooms the revoking node
-knows about. The certificate is pinned
+knows about, and account-device sync is eventual: a device that stays offline
+keeps its old view until it reconnects, and a revoked device can appear active
+to a peer that has not yet received the signed revocation. Room homes enforce
+the revocation for room keys as soon as they receive it. The certificate is pinned
 but not publicly audited. Remote administration beyond attachments,
 self-leave, and local archival is unsupported rather than securely
 implemented.
@@ -266,6 +275,7 @@ Controls:
 
 - Each device has its own key and certificate.
 - A device can be revoked from another device or from the account host.
+- The signed revocation spreads to reachable sibling devices, so they stop listing the stolen device as active.
 - Revocation rotates room epoch keys, so the stolen device cannot read new messages.
 - Local caches are encrypted at rest where the OS supports it.
 - Switching accounts wipes local keys and caches.

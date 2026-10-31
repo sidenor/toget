@@ -9,14 +9,15 @@ CREATE TABLE servers (
 );
 
 CREATE TABLE accounts (
-    id            TEXT PRIMARY KEY,
-    server_id     TEXT NOT NULL REFERENCES servers(id),
-    code          TEXT NOT NULL,
-    name          TEXT NOT NULL,
-    public_key    BLOB NOT NULL,
-    private_key   BLOB NOT NULL,
-    password_hash TEXT NOT NULL,
-    created_at    INTEGER NOT NULL,
+    id               TEXT PRIMARY KEY,
+    server_id        TEXT NOT NULL REFERENCES servers(id),
+    origin_server_id TEXT NOT NULL DEFAULT '',
+    code             TEXT NOT NULL,
+    name             TEXT NOT NULL,
+    public_key       BLOB NOT NULL,
+    private_key      BLOB NOT NULL,
+    password_hash    TEXT NOT NULL,
+    created_at       INTEGER NOT NULL,
     UNIQUE(server_id, code)
 );
 
@@ -29,6 +30,7 @@ CREATE TABLE devices (
     encryption_public_key    BLOB NOT NULL DEFAULT x'',
     encryption_private_key   BLOB NOT NULL DEFAULT x'',
     certificate              TEXT NOT NULL,
+    node_url                 TEXT NOT NULL DEFAULT '',
     role                     TEXT NOT NULL DEFAULT 'node',
     revoked_at               INTEGER,
     last_seen_at             INTEGER,

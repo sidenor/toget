@@ -40,6 +40,7 @@ Toget is at the very beginning. The order below is chosen so that each milestone
 
 - [x] Node-to-node handshake over pinned HTTPS on the LAN (QUIC is still planned)
 - [x] Device enrollment approved by an existing device, with sealed account-key transfer and room-key snapshots
+- [x] Account record sync between paired devices: certificate-verified device sets, account-signed revocation proofs, and read-only revoked-device discovery
 - [x] Invite a second account into a room; membership event and epoch rotation
 - [x] End-to-end envelope: sealed payloads, X25519 + HKDF key wrapping, AEAD, AAD binding (HPKE migration optional)
 - [x] Room home node: ordering, replication, per-participant copies, single retry on sequence conflict
@@ -50,9 +51,9 @@ Toget is at the very beginning. The order below is chosen so that each milestone
 - [x] Room-invite and device-pairing codes as terminal or PNG QR codes, with still-image scanning in the web UI
 
 **Status:** the LAN milestone works for message rooms. Remote-room
-attachments, remote leave/archive, and device enrollment are done; invite and
-pairing codes can be shown as QR codes and scanned from a still image; QUIC is
-not. Relay fallback is implemented in M4. A packet capture still shows metadata (account/device
+attachments, remote leave/archive, device enrollment, and account-record sync
+are done; invite and pairing codes can be shown as QR codes and scanned from a
+still image; QUIC is not. Relay fallback is implemented in M4. A packet capture still shows metadata (account/device
 IDs in signed request headers) and sealed payloads; it does not show message
 plaintext.
 

@@ -101,7 +101,7 @@ The account host is the machine or service that stores the account's records, ve
 - **Official:** the Toget service. Convenient; the user does not need a public address.
 - **Self-hosted:** the user's PC, NAS, or VPS. The user controls the machine; it must be reachable directly or through a relay.
 
-The account host is the source of truth for account records and membership. It is not the only place where room history is stored.
+The account host assigns the account code and is the canonical store for login and account records. It is not the only place where account records or room history live: paired devices keep their own copies, exchange account device sets over pinned HTTPS, and converge on certificate-signed additions and revocation proofs. Every device records the origin server ID at pairing, independently of its own local server ID, so it can still find the account host after several pairing hops.
 
 ### Devices
 
@@ -118,6 +118,9 @@ the new device submits fresh signing and encryption keys, and the existing
 device signs a certificate after the user compares fingerprints. The account
 private key is sealed to the new device's encryption key; no private key is
 copied in plaintext, and the password hash and account code are preserved.
+After pairing, devices periodically exchange the public account device set, so
+a device added through one sibling appears on the others without another
+pairing, and a signed revocation converges to every reachable device.
 
 Switching accounts: log out, wipe local keys and caches, then join the new account as a new device. A device is never a member of two accounts.
 

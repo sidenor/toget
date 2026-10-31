@@ -18,6 +18,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/sidenor/toget/internal/account"
+	"github.com/sidenor/toget/internal/relayproto"
 )
 
 // TLSMaterial is a loaded node certificate and its pinning fingerprint.
@@ -73,6 +76,36 @@ func ParsePinnedURL(raw string) (string, string, error) {
 	parsed.Path = strings.TrimSuffix(parsed.Path, "/")
 	parsed.RawPath = ""
 	return parsed.String(), fingerprint, nil
+}
+
+// ValidateNodeURL checks a pinned direct node address and its optional relay
+// route. An empty address is allowed for older clients that do not know their
+// externally reachable address yet.
+func ValidateNodeURL(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	if !account.ValidNodeURL(raw) {
+		return errors.New("node address must be an HTTPS URL")
+	}
+	direct, relay := relayproto.SplitAddress(raw)
+	if _, _, err := ParsePinnedURL(direct); err != nil {
+		return err
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return errors.New("node address is invalid")
+	}
+	if strings.Contains(parsed.Fragment, "relay=") && relay == "" {
+		return errors.New("node relay route is invalid")
+	}
+	if relay != "" {
+		if _, _, _, err := relayproto.ParseNodeRoute(relay); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // PinnedTLSConfig trusts exactly one self-signed certificate.
