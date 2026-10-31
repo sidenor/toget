@@ -138,6 +138,20 @@ The pairing code is a short-lived bearer secret, and the account key is never
 transferred in plaintext. The web UI has the same flow under **Devices →
 Link another device**.
 
+To hand someone your node without an invite or a directory, show a **business
+card**:
+
+```bash
+toget card show --qr                 # card text plus a terminal QR code
+toget card show --png card.png       # PNG QR code for a chat window or print
+toget card add '<toget-card:v1:…>'   # verify and save someone else's card
+toget node lookup 12345678           # saved card first, then mDNS, then directory
+```
+
+A card carries the signed identity and current endpoint, not room access.
+Saving one pins the full server ID, so a different server with the same
+eight-digit code is rejected. See [Business cards](docs/cards.md).
+
 Data lives in the per-user data directory (`~/.local/share/toget` on Linux,
 `~/Library/Application Support/Toget` on macOS, `%LOCALAPPDATA%\Toget` on
 Windows). Set `TOGET_HOME` to use another directory. `task dev` rebuilds the
@@ -158,6 +172,7 @@ rejects updates and deletes.
 - [Agent runtime](docs/agent-runtime.md) — mentions, sessions, Claude Code, and command runtimes
 - [Relay and directory](docs/relay.md) — cross-network routing, trust boundaries, quotas, and limits
 - [LAN discovery](docs/discovery.md) — mDNS advertisement, verified lookup, privacy, and limits
+- [Business cards](docs/cards.md) — portable signed cards, QR codes, saved-card pinning, and limits
 - [Deployment](docs/deployment.md) — self-hosted, official-hosted, relay, and offline modes
 - [Technology stack](docs/tech-stack.md) — choices, rationale, and rejected alternatives
 - [Repository layout](docs/repo-layout.md) — where every kind of code belongs
@@ -179,7 +194,9 @@ directory work across networks, with direct-first fallback, automatic relay
 discovery, multi-hop routes, loop detection, quotas, and a bounded offline
 queue. Same-LAN nodes also discover each other over multicast DNS and can
 resolve a server code without a directory; every discovered endpoint is still
-verified through its pinned TLS certificate and signed manifests.
+verified through its pinned TLS certificate and signed manifests. Portable
+business cards can be copied as text or shown as a QR code, and a saved card
+pins the full server ID for its short code.
 
 Not implemented yet: NAT traversal or hole punching, account-key rotation,
 account-record sync between paired devices, multiple accounts on one node, and
@@ -304,6 +321,17 @@ toget pair approve <pairing-id>
 
 新设备会收到账号记录、自己的设备证书，以及用它的加密公钥封装的账号私钥；同时收到房间成员和密钥代次，再从各房间的 home 节点同步历史。配对码是短期 bearer 密钥，账号私钥不会以明文传输。网页端在 **设备 → 连接另一台设备** 里也有同样的流程。
 
+要跳过邀请码和目录，把自己的节点递给人，可以出示**名片**：
+
+```bash
+toget card show --qr                 # 显示名片文本和终端二维码
+toget card show --png card.png       # 生成 PNG 二维码，可发聊天或打印
+toget card add '<toget-card:v1:…>'   # 验证并保存别人的名片
+toget node lookup 12345678           # 先用已存名片，再走 mDNS，最后查目录
+```
+
+名片只带签名的身份和当前地址，不代表房间权限。保存名片会固定完整服务器 ID，同一个八位代码下的其他服务器会被拒绝。详见 [名片与二维码](docs/cards.md)。
+
 数据默认放在用户数据目录（Linux 为 `~/.local/share/toget`），可用 `TOGET_HOME` 指定。私钥和事件内容在本地加密存储，事件日志只可追加、带哈希链。
 
 ### 文档
@@ -316,11 +344,12 @@ toget pair approve <pairing-id>
 - [Agent 运行时](docs/agent-runtime.md)
 - [中继与目录](docs/relay.md)
 - [局域网发现](docs/discovery.md)
+- [名片与二维码](docs/cards.md)
 - [部署](docs/deployment.md)
 - [技术栈](docs/tech-stack.md)
 - [代码结构](docs/repo-layout.md)
 - [路线图](docs/roadmap.md)
 
-**早期实现：本地、局域网和跨网络中继房间已经可用。** 当前版本有账号与设备身份、端到端加密的房间密钥代次、加密的哈希链事件日志、附件、备份恢复、本地 API、CLI 和双语 React 网页。同一局域网内的两个节点可以用邀请码加入房间、互发消息并同步历史；第二台设备可以通过配对恢复同一账号并同步房间，无需拷贝私钥。远程房间支持附件、自主退出和本地归档。Agent 可以注册、加入房间，并通过本地审批和工具回执卡片受控。可选的中继和签名目录已经能跨网络工作，支持直连优先、自动发现中继、多跳路由、环路检测、配额和有限的离线队列。同一局域网里的节点还能通过 mDNS 相互发现，不依赖目录也能用服务器代码找到对方；发现的地址仍会通过固定 TLS 证书和签名清单验证。
+**早期实现：本地、局域网和跨网络中继房间已经可用。** 当前版本有账号与设备身份、端到端加密的房间密钥代次、加密的哈希链事件日志、附件、备份恢复、本地 API、CLI 和双语 React 网页。同一局域网内的两个节点可以用邀请码加入房间、互发消息并同步历史；第二台设备可以通过配对恢复同一账号并同步房间，无需拷贝私钥。远程房间支持附件、自主退出和本地归档。Agent 可以注册、加入房间，并通过本地审批和工具回执卡片受控。可选的中继和签名目录已经能跨网络工作，支持直连优先、自动发现中继、多跳路由、环路检测、配额和有限的离线队列。同一局域网里的节点还能通过 mDNS 相互发现，不依赖目录也能用服务器代码找到对方；发现的地址仍会通过固定 TLS 证书和签名清单验证。名片可以复制成文本或显示为二维码，保存后会把完整服务器 ID 固定到对应的八位代码上。
 
 还没有实现：NAT 穿透与打洞、账号密钥轮换、配对设备之间的账号记录同步、同一节点登录多个账号，以及自带模型。守护进程会在被 @ 时在本地运行 Agent，可以用 Claude Code，也可以用任何实现了运行时协议的命令。很多地方仍会调整。欢迎开 issue 关注、分享场景，或直接参与建设。项目理念见 [docs/philosophy.md](docs/philosophy.md)，参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。

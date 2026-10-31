@@ -3,11 +3,13 @@
 Toget is one repository containing the node, the official service, the local web UI, the reset page, shared packages, deployment assets, and documentation.
 
 > **Current implementation:** the working tree contains `cmd/toget`,
-> `cmd/toget-official`, `internal/{account,agent,api,approval,backup,config,identity,node,protocol,room,session,storage,tool,ui,vault,version}`,
+> `cmd/toget-official`, `internal/{account,agent,api,approval,backup,card,config,directory,directoryproto,identity,mdns,node,protocol,relay,relayproto,room,sealbox,session,storage,tool,ui,vault,version}`,
 > `web/app`, `api/`, `proto/`, and `docs/`. The tree below is the target
-> layout; directories such as `relay`, `transport`, `sync`, `official`,
-> `deploy`, `tests`, and `examples` are planned, not present yet. The LAN node
-> lives in `internal/node`, and remote-room sync/lifecycle code lives in
+> layout; directories such as `device`, `crypto`, `message`, `transport`,
+> `sync`, `discovery`, `official`, `update`, `platform`, `deploy`, `tests`,
+> and `examples` are planned, not present yet. The LAN node lives in
+> `internal/node`, the portable card format and QR renderer in
+> `internal/card`, and remote-room sync/lifecycle code in
 > `internal/room/remote.go`.
 
 ## Top-level tree
@@ -51,16 +53,21 @@ toget/
 │   ├── identity/                  # keys, signatures, trust anchors, manifests
 │   ├── crypto/                    # HPKE, AEAD, KDF, PAKE wrappers; no domain logic
 │   ├── protocol/                  # generated Protobuf types and validation
-│   ├── transport/                 # QUIC, WSS fallback, framing, handshake, reconnect
-│   ├── relay/                     # parent table, routing, forwarding, offline queue
+│   ├── transport/                 # planned QUIC/WSS framing; the implemented path is HTTPS + long-poll
 │   ├── room/                      # rooms, membership, epochs, events, ordering
 │   ├── message/                   # envelope construction, inner/outer split, attachments
 │   ├── sync/                      # cursors, deltas, snapshots, outbox replay
 │   ├── storage/                   # storage interfaces and SQLite implementation
 │   ├── agent/                     # Agent identity, sessions, supervision, permissions
+│   ├── card/                      # implemented portable card container, saved-card store, QR renderer
 │   ├── mdns/                      # implemented _toget._tcp.local. advertisement and browse cache
-│   ├── discovery/                 # planned manifest cache, QR/manual addresses (directory client lives in node/)
-│   ├── official/                  # directory, update service, official account host
+│   ├── directory/                 # implemented public directory service
+│   ├── directoryproto/            # directory wire types
+│   ├── relay/                     # implemented parent table, routing, forwarding, offline queue
+│   ├── relayproto/                # relay wire types, routes, signed envelopes
+│   ├── sealbox/                   # room key wrapping and sealed payload helpers
+│   ├── discovery/                 # planned manifest cache and manual-address book (cards live in internal/card)
+│   ├── official/                  # planned update service and official account host
 │   ├── update/                    # version check, download, verify, switch, rollback
 │   ├── ui/                        # local web UI serving, token, origin checks
 │   ├── api/                       # local HTTP API handlers (OpenAPI)
@@ -121,6 +128,9 @@ toget/
 │   ├── architecture.md
 │   ├── protocol.md
 │   ├── security-model.md
+│   ├── discovery.md
+│   ├── cards.md
+│   ├── relay.md
 │   ├── deployment.md
 │   ├── tech-stack.md
 │   ├── repo-layout.md

@@ -9,6 +9,9 @@ Start here:
 | [Architecture](architecture.md) | Nodes, account hosts, rooms, relay tree, trust boundaries |
 | [Protocol](protocol.md) | Node protocol, end-to-end envelope, local API, versioning |
 | [Security model](security-model.md) | Assets, who can see what, threats, controls, limits |
+| [Relay and directory](relay.md) | Cross-network routing, trust boundaries, quotas, limits |
+| [LAN discovery](discovery.md) | mDNS advertisement, verified lookup, privacy, limits |
+| [Business cards](cards.md) | Portable signed cards, QR codes, saved-card pinning, limits |
 | [Deployment](deployment.md) | Self-hosted, official-hosted, relay, and offline modes |
 | [Technology stack](tech-stack.md) | Chosen stack, rationale, rejected alternatives, version policy |
 | [Repository layout](repo-layout.md) | Directory structure and rules for where code belongs |

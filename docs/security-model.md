@@ -128,6 +128,36 @@ address and the requested code, but the pinned TLS and manifest checks stop a
 successful impersonation. A host can disable advertisement and browsing when
 the local link is untrusted.
 
+### Implemented business card boundary
+
+A portable card carries an account's signed one-year identity manifest and a
+signed 24-hour node manifest as text or a QR code. It is public metadata, not
+a secret and not a credential:
+
+- The card contains the server ID, account ID, eight-digit code, HTTPS
+  endpoint, TLS certificate fingerprint, optional relay route, and an
+  unsigned local label. It contains no room ID, room key, message, device key,
+  or account private key.
+- Import verifies the identity signature and freshness, the node manifest
+  signature (expiry optional so a card can be saved later), the binding
+  between both manifests, the account-ID prefix, the HTTPS endpoint, the
+  certificate pin, and the relay route target.
+- The embedded endpoint is a hint. Before use, lookup opens a fresh pinned TLS
+  connection and re-verifies `/toget/v1/identity` and `/toget/v1/info`, so an
+  expired or tampered address cannot substitute a different key.
+- Saving a card pins the full server ID for its eight-digit code. A different
+  server ID from mDNS or the directory is rejected, and conflicting saved
+  cards fail closed. This is the strongest first-contact check in the
+  implemented product: the short code alone is grindable.
+
+Residual risk: a card is forwardable, cacheable, and photographable. Anyone
+who obtains it learns the account ID and advertised network endpoint, and can
+try to reach the node. The label is not signed and can be changed by a
+forwarder. A card for an identity that later changes endpoints goes stale; it
+does not by itself revoke or rotate an identity. Cards are stored locally at
+mode `0600`, omitted from encrypted backups, and can be removed, but removal
+does not reach copies held by other people.
+
 ### Implemented relay and directory boundary
 
 A node behind NAT can register with a relay over outbound pinned HTTPS. The
@@ -349,7 +379,7 @@ Controls:
 - Manifests are self-certifying: the client checks `server_code == hash(root_pubkey || nonce)`.
 - A manifest that does not match is rejected, even if it is signed by the directory. The client checks the signed node manifest and pinned endpoint itself.
 - Only the relay route inside the signed node manifest is used; an unsigned directory hint cannot redirect traffic.
-- Cached cards and QR codes bypass the directory entirely.
+- A saved business card is tried before the directory and pins the full `server_id`; a directory answer with a different ID for that code is rejected.
 - The 8-digit code is only about 27 bits. An attacker can grind a key pair until the short code matches a target. The code is a routing hint, not an authentication factor; clients compare the full `server_id` with a pinned or QR-provided value when the threat model requires it, and always verify the manifest signature.
 
 ### Local attackers and shared machines

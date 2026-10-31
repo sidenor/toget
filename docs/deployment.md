@@ -141,15 +141,15 @@ relays out of the path.
 ### Same-LAN discovery
 
 `toget serve` advertises `_toget._tcp.local.` over multicast DNS by default.
-`toget node lookup <code>` uses a verified LAN result before asking the
-directory, so a local network without internet can still resolve a server
-code. The advertisement contains the server ID, server code, endpoint, and TLS
-fingerprint; it does not contain account or room data.
+`toget node lookup <code>` tries a saved business card first, then a verified
+LAN result, then the directory, so a local network without internet can still
+resolve a server code. The advertisement contains the server ID, server code,
+endpoint, and TLS fingerprint; it does not contain account or room data.
 
 ```bash
 toget serve --no-mdns        # disable advertisement and browsing
 toget node discover          # list current local advertisements
-toget node lookup 12345678   # verified LAN first, directory fallback
+toget node lookup 12345678   # saved card, verified LAN, directory fallback
 ```
 
 Discovery requires UDP `5353` and IGMP on the local link. It does not cross
@@ -157,6 +157,26 @@ routers, VLANs, or NAT, and many guest Wi-Fi networks block multicast. The
 multicast packet is only a hint: lookup fetches and verifies the signed
 identity and node manifests over the advertised certificate pin. See
 [discovery.md](discovery.md).
+
+### Business cards
+
+A card is a directory-free, copyable introduction. It embeds the account's
+signed identity manifest and a 24-hour node manifest, and can be shown as text
+or a QR code. The receiver verifies both signatures and then the live node
+before using the address.
+
+```bash
+toget card show                     # card text
+toget card show --qr                # terminal QR code
+toget card show --png /tmp/card.png # PNG for print or chat
+toget card add '<toget-card:v1:…>'  # verify and save
+toget card list
+```
+
+Saved cards live in `cards.json` with mode `0600` and are not part of
+encrypted backups, so a restore onto a fresh data home does not bring them.
+Re-import them if you want the pins. A saved card pins the full server ID for
+its eight-digit code. See [cards.md](cards.md).
 
 ### Relay
 

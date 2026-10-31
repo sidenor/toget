@@ -194,7 +194,8 @@ traffic-analysis and availability risk, not a content-confidentiality risk.
 
 The eight-digit code is a routing hint, not an authentication factor. It has
 about 27 bits and can be ground by an attacker; first-contact authentication
-should use a QR code or a pinned full `server_id`. Publish requests are
+should use a [business card](cards.md) or a pinned full `server_id`. Publish
+requests are
 unauthenticated apart from the signed manifests and are rate-limited per IP.
 A directory is a single process in this implementation: no replication, no
 consensus, and no signed directory responses. Clients must be configured with

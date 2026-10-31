@@ -60,7 +60,7 @@ Toget is also a **control surface for Agents**: you can see what an Agent is doi
 | **Local web UI** | Room list, conversation, Agent status, approval cards, device and relay settings. Bound to `127.0.0.1:7718` or a Unix socket. | M1 |
 | **Account host** | Stores account records, verifies login, assigns the account code, keeps the device list, and can host rooms. Self-hosted first; official hosting in M5. | M1 / M5 |
 | **Relay** | Forwards encrypted envelopes when direct connections fail. Any public node can relay; the official service is the default. | M4 |
-| **Official directory** | Maps a server code to a signed server manifest. Optional; cached cards and manual addresses also work. | M4 |
+| **Official directory** | Maps a server code to a signed server manifest. Optional; saved [business cards](cards.md), QR codes, and manual addresses also work. | M4 |
 | **Phone / tablet App** | A client device: chat, approvals, notifications. Not a persistent node, not a relay, not an account root. | Later |
 | **Desktop app** | A shell around the local web UI, with tray, auto-start, and deep links. | Later |
 | **Official update service** | Serves signed version manifests and release artifacts. | M5 |

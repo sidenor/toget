@@ -76,6 +76,17 @@ export type NodeInfo = {
   protocol: number;
 };
 
+export type CardView = {
+  server_id: string;
+  server_code: string;
+  account_id: string;
+  label?: string;
+  card: string;
+  added_at?: string;
+  identity_expires_at: string;
+  node_expires_at: string;
+};
+
 export type DiscoveredPeer = {
   server_id: string;
   server_code: string;

@@ -50,8 +50,19 @@ func manifestPayload(manifest *Manifest) ([]byte, error) {
 	return json.Marshal(copy)
 }
 
-// VerifyManifest validates a node manifest against a server public key.
+// VerifyManifest validates a current node manifest against a server public key.
 func VerifyManifest(manifest *Manifest, publicKey ed25519.PublicKey) error {
+	return verifyManifest(manifest, publicKey, true)
+}
+
+// verifyManifestSignature checks a node manifest without requiring it to be
+// fresh. A card can be imported after its 24-hour node manifest has expired;
+// the card is still only a hint and the live node is verified before use.
+func verifyManifestSignature(manifest *Manifest, publicKey ed25519.PublicKey) error {
+	return verifyManifest(manifest, publicKey, false)
+}
+
+func verifyManifest(manifest *Manifest, publicKey ed25519.PublicKey, requireFresh bool) error {
 	if manifest == nil || manifest.Format != ManifestFormat || manifest.Version != 1 {
 		return errors.New("unsupported node manifest")
 	}
@@ -73,7 +84,11 @@ func VerifyManifest(manifest *Manifest, publicKey ed25519.PublicKey) error {
 			return errors.New("node manifest relay target does not match its server ID")
 		}
 	}
-	if manifest.ExpiresAt.IsZero() || time.Now().UTC().After(manifest.ExpiresAt) {
+	now := time.Now().UTC()
+	if manifest.IssuedAt.IsZero() || manifest.IssuedAt.After(now.Add(5*time.Minute)) {
+		return errors.New("node manifest was issued in the future")
+	}
+	if requireFresh && (manifest.ExpiresAt.IsZero() || !now.Before(manifest.ExpiresAt)) {
 		return errors.New("node manifest has expired")
 	}
 	signature, err := base64.RawStdEncoding.DecodeString(manifest.Signature)

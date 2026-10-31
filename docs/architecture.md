@@ -74,9 +74,11 @@ detection and quotas. An optional directory maps an eight-digit server code to
 a self-certifying signed manifest and can advertise a default relay. Nodes also
 advertise and browse `_toget._tcp.local.` over mDNS for directory-free
 same-LAN discovery; a discovered endpoint is only used after its pinned TLS
-certificate and signed identity and node manifests verify. The phone client,
-official account hosting, and account-key rotation shown above are still
-design-only; NAT traversal is not implemented.
+certificate and signed identity and node manifests verify. Portable business
+cards carry those same signed manifests as text or a QR code and can be saved
+as an explicit full-server-ID pin. The phone client, official account
+hosting, and account-key rotation shown above are still design-only; NAT
+traversal is not implemented.
 
 ## Account and device model
 
@@ -197,10 +199,10 @@ The daemon is the local runtime on a persistent device. It:
 ### Official directory
 
 - Maps a server code to a signed identity manifest and node manifest (`server_id`, endpoint, TLS pin, relay route, protocol version).
-- Optional: clients can use cached cards, QR codes, peer exchange, or a manual address.
+- Optional: clients can use saved [business cards](cards.md), QR codes, peer exchange, or a manual address.
 - Cannot forge a server's manifest: both manifests are verified by the directory before storage and by the client on lookup. The client pins the endpoint from the signed node manifest, not from the directory's word.
-- Code collisions are rejected with `code_taken`; deterministic collision resolution is not implemented. The 8-digit code is a routing hint and can be ground, so first-contact assurance should pin the full `server_id` from a QR code or cached card.
-- Implemented details and limits: [relay.md](relay.md).
+- Code collisions are rejected with `code_taken`; deterministic collision resolution is not implemented. The 8-digit code is a routing hint and can be ground, so first-contact assurance should pin the full `server_id` from a business card or QR code.
+- Implemented details and limits: [relay.md](relay.md) and [cards.md](cards.md).
 
 ### Official identity and update service
 

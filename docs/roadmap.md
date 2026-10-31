@@ -90,6 +90,7 @@ stable connector SDK. See [agent-runtime.md](agent-runtime.md).
 - [x] Relay selection and "no relay" settings (`--node-relay`, `--node-directory`, config)
 - [x] Rate limits, quotas, size limits, and backpressure
 - [x] Multi-hop path calculation and loop detection
+- [x] Portable business cards as text or QR, with signed manifests and full-ID pinning
 - [ ] QUIC hole punching, UDP port mapping, and general NAT traversal
 - [ ] WebSocket transport (the implemented fallback is HTTPS long-poll)
 - [ ] Standalone relay-only mode for ordinary nodes
@@ -100,9 +101,10 @@ requests. The relay cannot read room content. Clients try a direct pinned
 connection first and fall back to the relay; auto relay discovery, multi-hop
 routing, loop detection, quotas, and a 55-second offline queue are implemented
 and tested. NAT traversal is still absent, so a relay is required whenever the
-LAN/VPN path is not reachable. Same-LAN mDNS discovery is implemented; QR
-business cards are next. See [relay.md](relay.md) and
-[discovery.md](discovery.md).
+LAN/VPN path is not reachable. Same-LAN mDNS discovery and portable QR
+business cards are implemented; neither removes the relay requirement across
+NAT. See [relay.md](relay.md), [discovery.md](discovery.md), and
+[cards.md](cards.md).
 
 **Done when:** two users behind different NATs share a room through a relay, the relay cannot read the messages, and a direct connection is used automatically when the network allows it.
 

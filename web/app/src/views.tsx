@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { formatAccountID, formatTime, shortID } from "./format";
 import type { Lang, Translate } from "./i18n";
-import type { Agent, AgentSession, Approval, AuditResponse, Device, DiscoveredPeer, NodeInfo, PairingView, Room, SearchHit } from "./types";
+import type { Agent, AgentSession, Approval, AuditResponse, CardView, Device, DiscoveredPeer, NodeInfo, PairingView, Room, SearchHit } from "./types";
 import { Badge, CopyButton, Modal, Spinner } from "./ui";
 
 export type CommonProps = {
@@ -744,6 +744,7 @@ export function SettingsView({
   lock,
   account,
   status,
+  notify,
   onError,
 }: CommonProps & {
   account: { id: string; name: string; server_id: string };
@@ -754,11 +755,20 @@ export function SettingsView({
 }) {
   const [node, setNode] = useState<{ enabled: boolean; info?: NodeInfo } | null>(null);
   const [discovery, setDiscovery] = useState<{ enabled: boolean; peers: DiscoveredPeer[] } | null>(null);
+  const [ownCard, setOwnCard] = useState<CardView | null>(null);
+  const [cards, setCards] = useState<CardView[]>([]);
+  const [cardInput, setCardInput] = useState("");
+  const [cardInputLabel, setCardInputLabel] = useState("");
+  const [cardBusy, setCardBusy] = useState(false);
+  const [cardScanning, setCardScanning] = useState(false);
+  const [cardError, setCardError] = useState("");
   const [syncing, setSyncing] = useState(false);
 
   useEffect(() => {
     api.node().then(setNode).catch(() => setNode({ enabled: false }));
     api.nodeDiscover().then(setDiscovery).catch(() => setDiscovery({ enabled: false, peers: [] }));
+    api.nodeCard().then((result) => setOwnCard(result.card)).catch(() => setOwnCard(null));
+    api.nodeCards().then((result) => setCards(result.cards)).catch(() => setCards([]));
   }, []);
 
   async function sync() {
@@ -769,6 +779,79 @@ export function SettingsView({
       onError(err);
     } finally {
       setSyncing(false);
+    }
+  }
+
+  async function addCard() {
+    if (!cardInput.trim()) return;
+    setCardBusy(true);
+    setCardError("");
+    try {
+      const result = await api.addNodeCard(cardInput.trim(), cardInputLabel.trim());
+      setCards((current) => [result.card, ...current.filter((item) => item.server_id !== result.card.server_id)]);
+      setCardInput("");
+      setCardInputLabel("");
+      notify(t("settings.cardAddSuccess"));
+    } catch (err) {
+      setCardError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCardBusy(false);
+    }
+  }
+
+  async function removeCard(id: string) {
+    setCardBusy(true);
+    setCardError("");
+    try {
+      await api.removeNodeCard(id);
+      setCards((current) => current.filter((item) => item.server_id !== id));
+      notify(t("settings.cardRemoveSuccess"));
+    } catch (err) {
+      setCardError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCardBusy(false);
+    }
+  }
+
+  async function scanCard(file: File) {
+    if (!file.type.startsWith("image/")) {
+      setCardError(t("settings.cardScanImage"));
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      setCardError(t("settings.cardScanTooLarge"));
+      return;
+    }
+    setCardScanning(true);
+    setCardError("");
+    try {
+      const bitmap = await createImageBitmap(file);
+      const scale = Math.min(1, 2000 / Math.max(bitmap.width, bitmap.height));
+      const width = Math.max(1, Math.round(bitmap.width * scale));
+      const height = Math.max(1, Math.round(bitmap.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) throw new Error(t("settings.cardScanImage"));
+      // Transparent pixels decode as black; a white matte matches a printed card.
+      context.fillStyle = "#fff";
+      context.fillRect(0, 0, width, height);
+      context.drawImage(bitmap, 0, 0, width, height);
+      bitmap.close();
+      const pixels = context.getImageData(0, 0, width, height);
+      // Keep the QR decoder out of the initial bundle; most sessions never scan.
+      const { default: jsQR } = await import("jsqr");
+      const found = jsQR(pixels.data, pixels.width, pixels.height);
+      const payload = found?.data.trim() ?? "";
+      if (!payload) throw new Error(t("settings.cardScanNotFound"));
+      if (!payload.startsWith("toget-card:v1:")) throw new Error(t("settings.cardScanInvalid"));
+      setCardInput(payload);
+      notify(t("settings.cardScanned"));
+    } catch (err) {
+      setCardError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCardScanning(false);
     }
   }
 
@@ -895,6 +978,116 @@ export function SettingsView({
                 ))}
               </dl>
             </>
+          )}
+        </article>
+        <article className="panel wide">
+          <h2>{t("settings.cardTitle")}</h2>
+          <p className="muted">{t("settings.cardText")}</p>
+          {cardError && <div className="form-error">{cardError}</div>}
+          {ownCard ? (
+            <div className="card-layout">
+              <div className="card-details">
+                <dl className="facts vertical">
+                  <div>
+                    <dt>{t("settings.cardLabel")}</dt>
+                    <dd>{ownCard.label || t("common.none")}</dd>
+                  </div>
+                  <div>
+                    <dt>{t("settings.server")}</dt>
+                    <dd className="mono">{ownCard.server_code}</dd>
+                  </div>
+                  <div>
+                    <dt>{t("settings.account")}</dt>
+                    <dd className="mono">{formatAccountID(ownCard.account_id)}</dd>
+                  </div>
+                  <div>
+                    <dt>{t("settings.cardIdentityExpires")}</dt>
+                    <dd>{new Date(ownCard.identity_expires_at).toLocaleDateString()}</dd>
+                  </div>
+                  <div>
+                    <dt>{t("settings.cardNodeExpires")}</dt>
+                    <dd>{new Date(ownCard.node_expires_at).toLocaleDateString()}</dd>
+                  </div>
+                </dl>
+                <details className="card-text">
+                  <summary>{t("settings.cardCopy")}</summary>
+                  <textarea readOnly value={ownCard.card} rows={5} onFocus={(event) => event.currentTarget.select()} />
+                  <CopyButton
+                    value={ownCard.card}
+                    labels={{ copy: t("common.copy"), copied: t("common.copied") }}
+                  />
+                </details>
+              </div>
+              <div className="card-qr">
+                <img src="/api/v1/card/qr?scale=8" alt={t("settings.cardQRHint")} width={248} height={248} />
+                <p className="fine-print">{t("settings.cardQRHint")}</p>
+                <a className="button ghost small" href="/api/v1/card/qr?scale=10" download={`toget-card-${ownCard.server_code}.png`}>
+                  {t("settings.cardDownload")}
+                </a>
+              </div>
+            </div>
+          ) : (
+            <p className="muted">{t("settings.cardUnavailable")}</p>
+          )}
+        </article>
+        <article className="panel wide">
+          <h2>{t("settings.cardsTitle")}</h2>
+          <p className="muted">{t("settings.cardsText")}</p>
+          <div className="card-import">
+            <div className="card-scan-row">
+              <label className="button ghost small">
+                {cardScanning ? t("settings.cardScanning") : t("settings.cardScan")}
+                <input
+                  type="file"
+                  accept="image/*"
+                  disabled={cardScanning}
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0];
+                    event.currentTarget.value = "";
+                    if (file) void scanCard(file);
+                  }}
+                />
+              </label>
+              <span className="fine-print">{t("settings.cardScanHint")}</span>
+            </div>
+            <textarea
+              value={cardInput}
+              onChange={(event) => setCardInput(event.target.value)}
+              placeholder={t("settings.cardPlaceholder")}
+              rows={3}
+            />
+            <div className="card-import-actions">
+              <input
+                value={cardInputLabel}
+                onChange={(event) => setCardInputLabel(event.target.value)}
+                placeholder={t("settings.cardAddLabel")}
+              />
+              <button className="button primary" onClick={() => void addCard()} disabled={cardBusy || !cardInput.trim()}>
+                {t("settings.cardAdd")}
+              </button>
+            </div>
+          </div>
+          {cards.length === 0 ? (
+            <p className="muted">{t("settings.cardsEmpty")}</p>
+          ) : (
+            <div className="card-list">
+              {cards.map((saved) => (
+                <article className="card-row" key={saved.server_id}>
+                  <div>
+                    <h3>{saved.label || saved.server_code}</h3>
+                    <p className="muted mono">
+                      {saved.server_code} · {shortID(saved.server_id)}
+                    </p>
+                    <p className="fine-print">
+                      {t("settings.cardIdentityExpires")}: {new Date(saved.identity_expires_at).toLocaleDateString()}
+                    </p>
+                  </div>
+                  <button className="button ghost danger" onClick={() => void removeCard(saved.server_id)} disabled={cardBusy}>
+                    {t("common.delete")}
+                  </button>
+                </article>
+              ))}
+            </div>
           )}
         </article>
         <article className="panel">

@@ -234,7 +234,8 @@ func (s *Service) verifyMDNSPeer(ctx context.Context, peer mdns.Peer) (*Director
 			break
 		}
 		endpoint := "https://" + net.JoinHostPort(address.String(), strconv.Itoa(peer.Port))
-		record, err := s.verifyPinnedPeer(attemptCtx, endpoint, fingerprint, peer)
+		record, err := s.verifyPinnedPeer(attemptCtx, endpoint, fingerprint,
+			peer.ServerID, peer.ServerCode, peer.LastSeen, "mdns")
 		if err == nil {
 			return record, nil
 		}
@@ -246,7 +247,7 @@ func (s *Service) verifyMDNSPeer(ctx context.Context, peer mdns.Peer) (*Director
 	return nil, fmt.Errorf("LAN peer %s at %s: %w", peer.ServerCode, strings.Join(peer.Addresses, ","), lastErr)
 }
 
-func (s *Service) verifyPinnedPeer(ctx context.Context, endpoint, fingerprint string, peer mdns.Peer) (*DirectoryRecord, error) {
+func (s *Service) verifyPinnedPeer(ctx context.Context, endpoint, fingerprint, serverID, serverCode string, updated time.Time, source string) (*DirectoryRecord, error) {
 	attemptCtx, cancel := context.WithTimeout(ctx, mdnsPeerTimeout)
 	defer cancel()
 	tlsConfig, err := PinnedTLSConfig(fingerprint)
@@ -263,8 +264,8 @@ func (s *Service) verifyPinnedPeer(ctx context.Context, endpoint, fingerprint st
 	if err != nil {
 		return nil, fmt.Errorf("identity manifest is invalid: %w", err)
 	}
-	if im.ServerID != peer.ServerID || im.ServerCode != peer.ServerCode {
-		return nil, errors.New("LAN advertisement does not match the identity manifest")
+	if im.ServerID != serverID || im.ServerCode != serverCode {
+		return nil, errors.New("discovered peer does not match the identity manifest")
 	}
 	serverKey, err := identity.DecodePublicKey(im.RootPubKey)
 	if err != nil {
@@ -282,11 +283,11 @@ func (s *Service) verifyPinnedPeer(ctx context.Context, endpoint, fingerprint st
 		return nil, fmt.Errorf("node manifest is invalid: %w", err)
 	}
 	if manifest.ServerID != im.ServerID || manifest.ServerCode != im.ServerCode ||
-		manifest.ServerID != peer.ServerID || manifest.ServerCode != peer.ServerCode {
-		return nil, errors.New("LAN manifests disagree about the server identity")
+		manifest.ServerID != serverID || manifest.ServerCode != serverCode {
+		return nil, errors.New("discovered manifests disagree about the server identity")
 	}
 	if manifest.TLSFingerprint != fingerprint {
-		return nil, errors.New("LAN node certificate does not match its advertisement")
+		return nil, errors.New("discovered node certificate does not match its hint")
 	}
 	parsed, err := url.Parse(manifest.Endpoint)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
@@ -300,7 +301,6 @@ func (s *Service) verifyPinnedPeer(ctx context.Context, endpoint, fingerprint st
 		}
 		relayURL = manifest.RelayURL
 	}
-	updated := peer.LastSeen
 	if updated.IsZero() {
 		updated = time.Now().UTC()
 	}
@@ -308,7 +308,7 @@ func (s *Service) verifyPinnedPeer(ctx context.Context, endpoint, fingerprint st
 		ServerID: im.ServerID, ServerCode: im.ServerCode, AccountID: manifest.AccountID,
 		Endpoint: manifest.Endpoint, URL: relayproto.JoinAddress(direct, relayURL),
 		DirectURL: direct, RelayURL: relayURL, TLSFingerprint: fingerprint,
-		UpdatedAt: updated, Source: "mdns",
+		UpdatedAt: updated, Source: source,
 	}, nil
 }
 

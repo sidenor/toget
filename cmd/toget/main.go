@@ -80,6 +80,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newAccountCommand())
 	root.AddCommand(newDeviceCommand())
 	root.AddCommand(newPairCommand())
+	root.AddCommand(newCardCommand())
 	root.AddCommand(newRoomCommand())
 	root.AddCommand(newJoinCommand())
 	root.AddCommand(newNodeCommand())

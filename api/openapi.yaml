@@ -496,13 +496,21 @@ paths:
     get:
       tags: [node]
       operationId: lookupServer
-      summary: Resolve a server code over the LAN or public directory
+      summary: Resolve a server code over saved cards, the LAN, or the public directory
       description: |
-        First verifies a node advertising this code on the local network over
-        pinned TLS, including its signed identity and node manifests. If no LAN
-        node answers, falls back to the configured directory and repeats the
-        signature checks locally. A compromised directory cannot substitute an
-        endpoint without failing those checks.
+        Resolves in this order:
+
+        1. A saved card for this server code. The card's endpoint is used only
+           after the live node proves its identity over pinned TLS.
+        2. A node advertising this code on the local network, verified over
+           pinned TLS with its signed identity and node manifests.
+        3. The configured directory, with the same signature checks repeated
+           locally.
+
+        A saved card also pins the full server ID for its eight-digit code: a
+        different server ID from mDNS or the directory is rejected. A
+        compromised directory cannot substitute an endpoint without failing
+        these checks.
       parameters:
         - name: code
           in: query
@@ -525,7 +533,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "404":
-          description: No LAN node or directory entry has this server code.
+          description: No saved card, LAN node, or directory entry has this server code.
           content:
             application/json:
               schema:
@@ -535,7 +543,7 @@ paths:
         "423":
           $ref: "#/components/responses/Locked"
         "502":
-          description: The LAN peer or directory could not be reached or returned an invalid record.
+          description: The saved card, LAN peer, or directory could not be reached or returned an invalid record.
           content:
             application/json:
               schema:
@@ -563,6 +571,178 @@ paths:
                     type: boolean
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/card:
+    get:
+      tags: [node]
+      operationId: getOwnCard
+      summary: Render this node's portable business card
+      description: |
+        Builds a `toget-card:v1:` string containing this account's signed
+        one-year identity manifest and a freshly signed 24-hour node manifest.
+        The card is a portable introduction: it works without a directory, but
+        a receiver always verifies the live node before trusting it. The
+        default label is the account name.
+      parameters:
+        - name: label
+          in: query
+          required: false
+          description: Optional display label embedded in the card (up to 128 characters).
+          schema:
+            type: string
+            maxLength: 128
+      responses:
+        "200":
+          description: The current card.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardResponse"
+        "400":
+          description: The label is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/card/qr:
+    get:
+      tags: [node]
+      operationId: getOwnCardQR
+      summary: Render this node's business card as a PNG QR code
+      parameters:
+        - name: label
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 128
+        - name: scale
+          in: query
+          required: false
+          description: Pixels per QR module.
+          schema:
+            type: integer
+            minimum: 2
+            maximum: 32
+            default: 8
+      responses:
+        "200":
+          description: A PNG QR code for the current card.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: The scale or label is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          description: The card is too large to fit in a QR code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/cards:
+    get:
+      tags: [node]
+      operationId: listSavedCards
+      summary: List saved business cards
+      description: Returns an empty list when the node transport is disabled.
+      responses:
+        "200":
+          description: Saved cards, sorted by label and server ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "423":
+          $ref: "#/components/responses/Locked"
+    post:
+      tags: [node]
+      operationId: addSavedCard
+      summary: Verify and save a business card
+      description: |
+        Verifies the embedded identity and node signatures before saving. An
+        expired 24-hour node manifest is still accepted because the card is
+        only a hint: the live node is re-verified when the card is used.
+        Saving a card with the same server ID updates it in place.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddCardRequest"
+      responses:
+        "201":
+          description: The verified saved card.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardResponse"
+        "400":
+          description: The card is malformed, fails verification, belongs to this node, or the label is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/cards/{id}:
+    delete:
+      tags: [node]
+      operationId: removeSavedCard
+      summary: Remove a saved business card
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Full server ID (`tog1:s:…`) of the saved card.
+          schema:
+            type: string
+      responses:
+        "204":
+          description: The card was removed.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No saved card has this server ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "423":
           $ref: "#/components/responses/Locked"
         "503":
@@ -3142,8 +3322,69 @@ components:
           format: date-time
         source:
           type: string
-          enum: [directory, mdns]
+          enum: [directory, mdns, card]
           description: Where the verified record came from.
+
+    CardView:
+      type: object
+      additionalProperties: false
+      required: [server_id, server_code, account_id, card, identity_expires_at, node_expires_at]
+      properties:
+        server_id:
+          type: string
+        server_code:
+          type: string
+          pattern: "^[0-9]{8}$"
+        account_id:
+          type: string
+          pattern: "^[0-9]{14}$"
+        label:
+          type: string
+          maxLength: 128
+        card:
+          type: string
+          description: Portable `toget-card:v1:` payload.
+        added_at:
+          type: string
+          format: date-time
+          description: When this node saved the card. Absent on this node's own card.
+        identity_expires_at:
+          type: string
+          format: date-time
+        node_expires_at:
+          type: string
+          format: date-time
+
+    CardResponse:
+      type: object
+      additionalProperties: false
+      required: [card]
+      properties:
+        card:
+          $ref: "#/components/schemas/CardView"
+
+    CardsResponse:
+      type: object
+      additionalProperties: false
+      required: [cards]
+      properties:
+        cards:
+          type: array
+          items:
+            $ref: "#/components/schemas/CardView"
+
+    AddCardRequest:
+      type: object
+      additionalProperties: false
+      required: [card]
+      properties:
+        card:
+          type: string
+          description: Portable `toget-card:v1:` payload.
+        label:
+          type: string
+          maxLength: 128
+          description: Optional local display label; defaults to the card's label or server code.
 
     DiscoveredPeer:
       type: object

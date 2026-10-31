@@ -58,9 +58,11 @@ Still design-only: QUIC, Protobuf framing, NAT traversal or hole punching,
 and WebSocket transport. Relays and the directory are implemented with HTTPS +
 JSON rather than the future Protobuf framing; see [relay.md](relay.md) for
 their wire format, trust boundaries, and limits. LAN discovery is implemented
-with a small mDNS responder and browser; see [discovery.md](discovery.md). The
-rest of this document describes the target design; sections marked
-“implemented today” use HTTPS + JSON rather than the future framing.
+with a small mDNS responder and browser; see [discovery.md](discovery.md).
+Portable business cards carry signed manifests as text or QR codes; see
+[cards.md](cards.md). The rest of this document describes the target design;
+sections marked “implemented today” use HTTPS + JSON rather than the future
+framing.
 
 ## Identifiers
 
@@ -86,7 +88,7 @@ Clients parse the account ID by its total length, so more digits can be added la
 3. It verifies the manifest signature with the server root key and checks that `server_code == hash(root_pubkey || nonce)`.
 4. It connects to one of the advertised endpoints, directly or through a relay.
 
-Implemented today: `toget node lookup <code>` first verifies a node advertising that code on the local network and otherwise asks the configured directory, then re-verifies both the identity manifest and the signed node manifest locally. A LAN result is fetched from `/toget/v1/identity` and `/toget/v1/info` over the advertised certificate pin. Every result includes the node's HTTPS endpoint, TLS pin, and signed relay route; neither mDNS nor the directory is trusted alone.
+Implemented today: `toget node lookup <code>` first tries a saved [business card](cards.md), then verifies a node advertising that code on the local network, then asks the configured directory. It re-verifies the identity manifest and the signed node manifest locally in every case. A card or LAN result is fetched from `/toget/v1/identity` and `/toget/v1/info` over the pinned certificate. Every result includes the node's HTTPS endpoint, TLS pin, and signed relay route; none of the card, mDNS, or directory is trusted alone. A saved card pins the full server ID for its code, so a different server presenting the same eight-digit code is rejected.
 
 The directory is a convenience, not a root of trust. It cannot forge a server's manifest, but the 8-digit code is short enough to grind; pin the full `server_id` from a QR code or cached card when first-contact impersonation matters.
 

@@ -1712,6 +1712,121 @@ select {
   gap: 14px;
 }
 
+.card-layout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.card-details {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+.card-qr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.card-qr img {
+  display: block;
+  width: 248px;
+  height: 248px;
+  padding: 8px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
+.card-text {
+  margin-top: 12px;
+}
+
+.card-text summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.card-text textarea {
+  width: 100%;
+  margin: 8px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.card-import textarea {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.card-scan-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.card-scan-row label.button {
+  cursor: pointer;
+}
+
+.card-scan-row label.button:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.card-scan-row input[type="file"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.card-import-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.card-import-actions input {
+  flex: 1;
+}
+
+.card-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.card-row h3 {
+  margin: 0 0 2px;
+  font-size: 14px;
+}
+
+.card-row p {
+  margin: 0;
+  font-size: 11px;
+}
+
 .segmented {
   display: inline-flex;
   padding: 3px;

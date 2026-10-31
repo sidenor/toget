@@ -75,6 +75,7 @@ type Paths struct {
 	VaultKey       string
 	APIToken       string
 	Config         string
+	Cards          string
 	WebCache       string
 	DownloadsDir   string
 	AttachmentsDir string
@@ -130,6 +131,7 @@ func Resolve(home string) (Paths, error) {
 		VaultKey:       filepath.Join(abs, "vault.key"),
 		APIToken:       filepath.Join(abs, "api-token"),
 		Config:         filepath.Join(abs, "config.json"),
+		Cards:          filepath.Join(abs, "cards.json"),
 		WebCache:       filepath.Join(abs, "web"),
 		DownloadsDir:   filepath.Join(abs, "downloads"),
 		AttachmentsDir: filepath.Join(abs, "attachments"),

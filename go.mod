@@ -10,6 +10,7 @@ require (
 	golang.org/x/term v0.47.0
 	google.golang.org/protobuf v1.36.12
 	modernc.org/sqlite v1.61.0
+	rsc.io/qr v0.2.0
 )
 
 require (

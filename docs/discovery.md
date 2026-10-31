@@ -42,8 +42,11 @@ mDNS uses UDP port `5353`. No additional TCP port is opened.
 
 ## Lookup flow
 
-`toget node lookup <server-code>` and `GET /api/v1/node/lookup` try the local
-network first:
+`toget node lookup <server-code>` and `GET /api/v1/node/lookup` resolve in
+this order: a saved [business card](cards.md), then the local network, then
+the configured directory.
+
+For the LAN step:
 
 1. Send a PTR query for `_toget._tcp.local.` and inspect the local cache.
 2. Collect advertisements matching the eight-digit code.
@@ -57,10 +60,14 @@ network first:
    that the endpoint is HTTPS.
 6. Return the verified record with `"source": "mdns"`.
 
-If no LAN node answers within about 1.2 seconds, lookup falls back to the
-configured directory. If several different server IDs verify for one code,
-lookup fails instead of silently choosing one. A node with no directory can
-still resolve locally visible servers.
+A saved card is tried before mDNS: its embedded endpoint is verified live the
+same way and returns `"source": "card"`. If the card's endpoint is stale, mDNS
+and the directory may still resolve the same server ID; a different server ID
+for a code that has a saved card is rejected. If no LAN node answers within
+about 1.2 seconds, lookup falls back to the configured directory. If several
+different server IDs verify for one code, lookup fails instead of silently
+choosing one. A node with no directory can still resolve a peer from a saved
+card or a locally visible advertisement.
 
 The `/toget/v1/identity` endpoint serves the same signed identity manifest that
 is published to a directory. It is public because the directory already
@@ -83,8 +90,8 @@ An attacker can still advertise a different, valid Toget identity that happens
 to use the same eight-digit code. The code is a routing hint with about 27
 bits, not an authentication factor. First contact remains vulnerable to code
 grinding in both mDNS and directory lookup; compare the full server ID, use an
-invite code, a QR card, or a previously pinned identity when impersonation
-matters.
+invite code, a [business card](cards.md), or a previously pinned identity when
+impersonation matters.
 
 The advertisement list shown by `toget node discover`, the web Settings page,
 and `GET /api/v1/node/discover` is not verified. It is intentionally marked as
@@ -98,7 +105,8 @@ only the code the user asked for.
 toget serve --no-mdns                 # disable advertisement and browsing
 toget node discover                   # list current LAN advertisements
 toget node discover --json
-toget node lookup 12345678            # LAN first, then directory
+toget card show --qr                  # directory-free business card
+toget node lookup 12345678            # saved card, LAN, then directory
 toget node info                       # discovery state and nearby count
 ```
 

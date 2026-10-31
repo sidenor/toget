@@ -5,6 +5,7 @@ import type {
   Approval,
   ApprovalAction,
   Attachment,
+  CardView,
   AuditResponse,
   CreateRoomResponse,
   Device,
@@ -108,6 +109,13 @@ export const api = {
   redeemInvite: (secret: string) =>
     request<{ room: Room; member: Member; event?: RoomEvent | null }>("/api/v1/invites/redeem", json({ secret })),
   node: () => request<{ enabled: boolean; info?: NodeInfo }>("/api/v1/node"),
+  nodeCard: (label = "") =>
+    request<{ card: CardView }>(`/api/v1/card${label ? `?label=${encodeURIComponent(label)}` : ""}`),
+  nodeCards: () => request<{ cards: CardView[] }>("/api/v1/cards"),
+  addNodeCard: (card: string, label = "") =>
+    request<{ card: CardView }>("/api/v1/cards", json({ card, label })),
+  removeNodeCard: (id: string) =>
+    request<void>(`/api/v1/cards/${encodeURIComponent(id)}`, { method: "DELETE" }),
   nodeDiscover: () =>
     request<{ enabled: boolean; peers: DiscoveredPeer[] }>("/api/v1/node/discover"),
   syncAllRooms: () => request<{ ok: boolean }>("/api/v1/node/sync", { method: "POST" }),

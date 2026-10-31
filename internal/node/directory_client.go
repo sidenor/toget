@@ -30,7 +30,7 @@ type DirectoryRecord struct {
 	RelayURL       string    `json:"relay_url,omitempty"`
 	TLSFingerprint string    `json:"tls_fingerprint"`
 	UpdatedAt      time.Time `json:"updated_at"`
-	// Source is "directory" or "mdns".
+	// Source is "directory", "mdns", or "card".
 	Source string `json:"source,omitempty"`
 }
 
@@ -154,17 +154,40 @@ func (s *Service) LookupServer(ctx context.Context, code string) (*DirectoryReco
 			return nil, errors.New("server code must be 8 digits")
 		}
 	}
-	// LAN discovery is tried first: it avoids a public round trip when the
-	// node is on the same network. Discovery advertisements are only hints;
-	// lookupMDNS verifies the node's identity and certificate before
-	// returning a record.
-	var discoveryErr error
+	// A saved card is an explicit pin. Try it first, and refuse a different
+	// server with the same short code from any later source.
+	var savedCards []verifiedCard
+	var cardErr error
+	if s != nil {
+		savedCards, cardErr = s.verifiedCardsForCode(code)
+		if cardErr != nil {
+			return nil, cardErr
+		}
+		if len(savedCards) > 0 {
+			record, err := s.lookupSavedCards(ctx, savedCards)
+			if err == nil {
+				return record, nil
+			}
+			cardErr = err
+		}
+	}
+	// LAN discovery avoids a public round trip when the node is on the same
+	// network. Advertisements are only hints; lookupMDNS verifies the node's
+	// identity and certificate before returning a record.
+	discoveryErr := cardErr
 	if s != nil && s.mdnsSetting != "" {
 		record, err := s.lookupMDNS(ctx, code)
 		if err == nil {
-			return record, nil
+			if pinErr := checkSavedCardPin(savedCards, record); pinErr != nil {
+				discoveryErr = pinErr
+			} else {
+				return record, nil
+			}
+		} else if discoveryErr == nil {
+			discoveryErr = err
+		} else {
+			discoveryErr = fmt.Errorf("%v; LAN discovery: %w", discoveryErr, err)
 		}
-		discoveryErr = err
 	}
 	if s == nil || s.directoryBase == "" {
 		if discoveryErr != nil {
@@ -224,12 +247,16 @@ func (s *Service) LookupServer(ctx context.Context, code string) (*DirectoryReco
 			return nil, errors.New("directory relay route is invalid")
 		}
 	}
-	return &DirectoryRecord{
+	record := &DirectoryRecord{
 		ServerID: im.ServerID, ServerCode: im.ServerCode, AccountID: nm.AccountID,
 		Endpoint: nm.Endpoint, URL: relayproto.JoinAddress(direct, relayURL),
 		DirectURL: direct, RelayURL: relayURL, TLSFingerprint: nm.TLSFingerprint,
 		UpdatedAt: out.UpdatedAt, Source: "directory",
-	}, nil
+	}
+	if err := checkSavedCardPin(savedCards, record); err != nil {
+		return nil, err
+	}
+	return record, nil
 }
 
 func (s *Service) directoryRequest(ctx context.Context, method, path string, payload []byte) (*http.Response, []byte, error) {

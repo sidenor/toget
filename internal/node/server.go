@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sidenor/toget/internal/account"
+	"github.com/sidenor/toget/internal/card"
 	"github.com/sidenor/toget/internal/config"
 	"github.com/sidenor/toget/internal/identity"
 	"github.com/sidenor/toget/internal/mdns"
@@ -77,6 +78,7 @@ type Service struct {
 	accounts  *account.Service
 	rooms     *room.Service
 	paths     config.Paths
+	cards     *card.Store
 	listen    string
 	advertise string
 	logger    *slog.Logger
@@ -176,8 +178,12 @@ func New(opts Options) (*Service, error) {
 	if mdnsSetting != "" && mdnsSetting != "on" {
 		return nil, errors.New(`node mdns: expected "on" or "off"`)
 	}
+	cards, err := card.Open(opts.Paths.Cards)
+	if err != nil {
+		logger.Warn("saved cards could not be loaded", "error", err)
+	}
 	return &Service{
-		accounts: opts.Accounts, rooms: opts.Rooms, paths: opts.Paths,
+		accounts: opts.Accounts, rooms: opts.Rooms, paths: opts.Paths, cards: cards,
 		listen: listen, advertise: strings.TrimSpace(opts.Advertise),
 		logger: logger, syncEvery: interval,
 		nonces:       NewNonceCache(),

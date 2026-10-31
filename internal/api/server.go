@@ -130,6 +130,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/pairing/join/{id}", s.protected(s.handleCancelPairJoin))
 
 	// Rooms, membership, messages, search, and audit.
+	mux.HandleFunc("GET /api/v1/card", s.data(s.handleGetCard))
+	mux.HandleFunc("GET /api/v1/card/qr", s.data(s.handleCardQR))
+	mux.HandleFunc("GET /api/v1/cards", s.data(s.handleListCards))
+	mux.HandleFunc("POST /api/v1/cards", s.data(s.handleAddCard))
+	mux.HandleFunc("DELETE /api/v1/cards/{id}", s.data(s.handleRemoveCard))
 	mux.HandleFunc("GET /api/v1/node", s.data(s.handleNodeInfo))
 	mux.HandleFunc("GET /api/v1/node/discover", s.data(s.handleNodeDiscover))
 	mux.HandleFunc("GET /api/v1/node/lookup", s.data(s.handleNodeLookup))
