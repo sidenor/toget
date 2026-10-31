@@ -29,6 +29,7 @@ servers:
     description: Default local node
 tags:
   - name: system
+  - name: updates
   - name: session
   - name: account
   - name: devices
@@ -136,6 +137,201 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/OriginDenied"
+
+  /api/v1/update:
+    get:
+      tags: [updates]
+      operationId: getUpdateStatus
+      summary: Read the update monitor state
+      description: |
+        Returns the installed release, last check result, dismissal, staged
+        update, and managed-install state. Unavailable when updates are not
+        configured on this node.
+      responses:
+        "200":
+          description: Current update status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/update/check:
+    post:
+      tags: [updates]
+      operationId: checkForUpdate
+      summary: Check the signed channel for an update
+      description: |
+        Verifies the channel and manifest, selects this OS/arch, applies the
+        rollout bucket and compatibility rules, and records the result for the
+        in-app banner. The body is optional.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateCheckRequest"
+      responses:
+        "200":
+          description: The verified check result and updated monitor state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateCheckResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/update/apply:
+    post:
+      tags: [updates]
+      operationId: applyUpdate
+      summary: Stage an offered release
+      description: |
+        Downloads and verifies the artifact, extracts it to a staged version
+        directory, runs a preflight check, switches `current`, and optionally
+        runs the configured restart command. A restart is never implied by an
+        automatic check.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateApplyRequest"
+      responses:
+        "200":
+          description: The staged update and updated monitor state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateApplyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/update/dismiss:
+    post:
+      tags: [updates]
+      operationId: dismissUpdate
+      summary: Postpone an update banner
+      description: |
+        Defaults to 24 hours. Recommended and security releases can be
+        postponed for at most seven days; a forced release for at most 24
+        hours.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateDismissRequest"
+      responses:
+        "200":
+          description: Updated monitor state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+    delete:
+      tags: [updates]
+      operationId: clearUpdateDismissal
+      summary: Show a postponed update again
+      responses:
+        "200":
+          description: Updated monitor state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/update/rollback:
+    post:
+      tags: [updates]
+      operationId: rollbackUpdate
+      summary: Discard a pending update or return to the previous release
+      responses:
+        "200":
+          description: The rollback result and updated monitor state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateApplyResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/update/restart:
+    post:
+      tags: [updates]
+      operationId: restartForUpdate
+      summary: Run the configured local restart command
+      description: |
+        Starts the local restart command after a short delay. Only available
+        when `update.restart` is configured and the platform supports a
+        detached restart; Windows returns `restart_not_configured` or an
+        update error instead.
+      responses:
+        "202":
+          description: The restart command was launched.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateRestartResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/Unavailable"
 
   /api/v1/account:
     get:
@@ -2549,7 +2745,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     BadGateway:
-      description: A LAN peer could not be reached or returned an invalid response.
+      description: A downstream peer or service failed, or an update operation could not complete.
       content:
         application/json:
           schema:
@@ -2772,6 +2968,472 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Device"
+
+    UpdateStatus:
+      type: object
+      additionalProperties: false
+      required: [enabled, mode, channel, check_interval, current, restart_configured, restart_supported]
+      properties:
+        enabled:
+          type: boolean
+          description: Whether the update monitor is configured and running.
+        mode:
+          type: string
+          enum: [notify, auto, off]
+          description: Scheduled check policy. `auto` stages but never restarts.
+        channel:
+          type: string
+          examples: [stable]
+        check_interval:
+          type: string
+          description: Effective Go duration between scheduled checks.
+          examples: ["6h0m0s"]
+        last_check:
+          type:
+            - string
+            - "null"
+          format: date-time
+        last_error:
+          type: string
+        current:
+          $ref: "#/components/schemas/UpdateCurrent"
+        result:
+          $ref: "#/components/schemas/UpdateCheckResult"
+        dismissed:
+          type: boolean
+        dismissed_until:
+          type:
+            - string
+            - "null"
+          format: date-time
+        staged:
+          $ref: "#/components/schemas/UpdateApplyResult"
+        status:
+          $ref: "#/components/schemas/UpdateInstallStatus"
+        restart_configured:
+          type: boolean
+        restart_supported:
+          type: boolean
+          description: False on Windows, where a staged update needs a manual service restart.
+        config_error:
+          type: string
+
+    UpdateCurrent:
+      type: object
+      additionalProperties: false
+      required: [app, protocol, schema]
+      properties:
+        app:
+          type: string
+        protocol:
+          type: integer
+        schema:
+          type: integer
+        release:
+          type: string
+        manifest_sha256:
+          type: string
+
+    UpdateReleaseKey:
+      type: object
+      additionalProperties: false
+      required: [format, version, key_id, public_key, root, not_before, not_after]
+      properties:
+        format:
+          type: string
+          const: toget-release-key
+        version:
+          type: integer
+        key_id:
+          type: string
+        public_key:
+          type: string
+        root:
+          type: string
+        not_before:
+          type: string
+          format: date-time
+        not_after:
+          type: string
+          format: date-time
+        signature:
+          type: string
+
+    UpdateChannel:
+      type: object
+      additionalProperties: false
+      required: [format, version, channel, release, manifest, rollout, published_at, release_key]
+      properties:
+        format:
+          type: string
+          const: toget-release-channel
+        version:
+          type: integer
+        channel:
+          type: string
+        release:
+          type: string
+        manifest:
+          type: string
+          format: uri
+        rollout:
+          type: integer
+          minimum: 1
+          maximum: 100
+        published_at:
+          type: string
+          format: date-time
+        release_key:
+          $ref: "#/components/schemas/UpdateReleaseKey"
+        signature:
+          type: string
+
+    UpdateArtifact:
+      type: object
+      additionalProperties: false
+      required: [os, arch, url, sha256, size, format, executable]
+      properties:
+        os:
+          type: string
+        arch:
+          type: string
+        url:
+          type: string
+          format: uri
+        sha256:
+          type: string
+        size:
+          type: integer
+          format: int64
+          minimum: 1
+        format:
+          type: string
+        executable:
+          type: string
+
+    UpdateFileRef:
+      type: object
+      additionalProperties: false
+      required: [url, sha256, size]
+      properties:
+        url:
+          type: string
+          format: uri
+        sha256:
+          type: string
+        size:
+          type: integer
+          format: int64
+          minimum: 1
+
+    UpdateManifest:
+      type: object
+      additionalProperties: false
+      required: [format, version, release, protocol, schema, level, published_at, artifacts, release_key]
+      properties:
+        format:
+          type: string
+          const: toget-release-manifest
+        version:
+          type: integer
+        release:
+          type: string
+        protocol:
+          type: integer
+        schema:
+          type: integer
+        min_app:
+          type: string
+        min_protocol:
+          type: integer
+        level:
+          type: string
+          enum: [recommended, security, forced]
+        changelog:
+          type: string
+        published_at:
+          type: string
+          format: date-time
+        artifacts:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/UpdateArtifact"
+        sbom:
+          $ref: "#/components/schemas/UpdateFileRef"
+        release_key:
+          $ref: "#/components/schemas/UpdateReleaseKey"
+        signature:
+          type: string
+
+    UpdateCheckRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        force:
+          type: boolean
+          default: false
+          description: Ignore the staged rollout percentage.
+
+    UpdateCheckResult:
+      type: object
+      additionalProperties: false
+      required: [channel_url, manifest_url, channel, manifest, manifest_sha256, current, available, reason]
+      properties:
+        channel_url:
+          type: string
+          format: uri
+        manifest_url:
+          type: string
+          format: uri
+        channel:
+          $ref: "#/components/schemas/UpdateChannel"
+        manifest:
+          $ref: "#/components/schemas/UpdateManifest"
+        manifest_sha256:
+          type: string
+        artifact:
+          $ref: "#/components/schemas/UpdateArtifact"
+        sbom:
+          $ref: "#/components/schemas/UpdateFileRef"
+        current:
+          $ref: "#/components/schemas/UpdateCurrent"
+        available:
+          type: boolean
+        reason:
+          type: string
+          enum:
+            - available
+            - up_to_date
+            - newer_installed
+            - rollout
+            - no_artifact
+            - schema_downgrade
+            - protocol_downgrade
+            - app_too_old
+            - protocol_too_old
+        rollout_percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        rollout_bucket:
+          type: integer
+          minimum: 0
+          maximum: 99
+        downgrade:
+          type: boolean
+        warning:
+          type: string
+
+    UpdateCheckResponse:
+      type: object
+      additionalProperties: false
+      required: [result, update]
+      properties:
+        result:
+          $ref: "#/components/schemas/UpdateCheckResult"
+        update:
+          $ref: "#/components/schemas/UpdateStatus"
+
+    UpdateApplyRequest:
+      type: object
+      additionalProperties: false
+      required: [release]
+      properties:
+        release:
+          type: string
+          minLength: 1
+          maxLength: 64
+
+    UpdateDismissRequest:
+      type: object
+      additionalProperties: false
+      required: [release]
+      properties:
+        release:
+          type: string
+          minLength: 1
+          maxLength: 64
+        hours:
+          type: integer
+          minimum: 0
+          maximum: 168
+          default: 24
+          description: Quiet period in hours. Zero uses the 24-hour default.
+
+    UpdateApplyResult:
+      type: object
+      additionalProperties: false
+      required: [release, state]
+      properties:
+        release:
+          type: string
+        previous:
+          type: string
+        executable:
+          type: string
+        state:
+          $ref: "#/components/schemas/UpdateInstallState"
+        up_to_date:
+          type: boolean
+        restarted:
+          type: boolean
+        needs_restart:
+          type: boolean
+        warning:
+          type: string
+
+    UpdateRollbackResult:
+      type: object
+      additionalProperties: false
+      required: [state]
+      properties:
+        release:
+          type: string
+        previous:
+          type: string
+        state:
+          $ref: "#/components/schemas/UpdateInstallState"
+        restarted:
+          type: boolean
+        needs_restart:
+          type: boolean
+
+    UpdateApplyResponse:
+      type: object
+      additionalProperties: false
+      required: [result, update]
+      properties:
+        result:
+          oneOf:
+            - $ref: "#/components/schemas/UpdateApplyResult"
+            - $ref: "#/components/schemas/UpdateRollbackResult"
+        update:
+          $ref: "#/components/schemas/UpdateStatus"
+
+    UpdateRestartResponse:
+      type: object
+      additionalProperties: false
+      required: [restarting]
+      properties:
+        restarting:
+          type: boolean
+          const: true
+
+    UpdatePending:
+      type: object
+      additionalProperties: false
+      required: [release, manifest_sha256, protocol, schema, started_at]
+      properties:
+        release:
+          type: string
+        manifest_sha256:
+          type: string
+        protocol:
+          type: integer
+        schema:
+          type: integer
+        channel:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+        previous:
+          type: string
+        previous_manifest_sha256:
+          type: string
+        previous_protocol:
+          type: integer
+        previous_schema:
+          type: integer
+
+    UpdateInstallState:
+      type: object
+      additionalProperties: false
+      required: [format, version, rollout_id]
+      properties:
+        format:
+          type: string
+          const: toget-update-state
+        version:
+          type: integer
+        rollout_id:
+          type: string
+        current:
+          type: string
+        current_manifest_sha256:
+          type: string
+        current_protocol:
+          type: integer
+        current_schema:
+          type: integer
+        previous:
+          type: string
+        previous_manifest_sha256:
+          type: string
+        previous_protocol:
+          type: integer
+        previous_schema:
+          type: integer
+        pending:
+          $ref: "#/components/schemas/UpdatePending"
+
+    UpdateInstalledVersion:
+      type: object
+      additionalProperties: false
+      required: [path]
+      properties:
+        format:
+          type: string
+        version:
+          type: integer
+        release:
+          type: string
+        protocol:
+          type: integer
+        schema:
+          type: integer
+        executable:
+          type: string
+        executable_sha256:
+          type: string
+        manifest_sha256:
+          type: string
+        archive_sha256:
+          type: string
+        channel:
+          type: string
+        installed_at:
+          type: string
+          format: date-time
+        adopted:
+          type: boolean
+        path:
+          type: string
+
+    UpdateInstallStatus:
+      type: object
+      additionalProperties: false
+      required: [root, initialized, state]
+      properties:
+        root:
+          type: string
+        initialized:
+          type: boolean
+        state:
+          $ref: "#/components/schemas/UpdateInstallState"
+        current_link:
+          type: string
+        previous_link:
+          type: string
+        versions:
+          type: array
+          items:
+            $ref: "#/components/schemas/UpdateInstalledVersion"
+        issues:
+          type: array
+          items:
+            type: string
 
     Status:
       type: object
