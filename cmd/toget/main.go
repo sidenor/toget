@@ -46,7 +46,10 @@ var (
 	listenFlag        string
 	nodeListenFlag    string
 	nodeAdvertiseFlag string
+	nodeRelayFlag     string
+	nodeDirectoryFlag string
 	noNodeFlag        bool
+	noRelayFlag       bool
 	stdinReader       = bufio.NewReader(os.Stdin)
 )
 
@@ -218,7 +221,10 @@ func newServeCommand() *cobra.Command {
 	cmd.Flags().StringVar(&listenFlag, "listen", "", "loopback listen address (default: 127.0.0.1:7718)")
 	cmd.Flags().StringVar(&nodeListenFlag, "node-listen", "", "LAN node listen address (default: 0.0.0.0:7717, \"off\" disables it)")
 	cmd.Flags().StringVar(&nodeAdvertiseFlag, "node-advertise", "", "host:port that peers should use for this node")
+	cmd.Flags().StringVar(&nodeRelayFlag, "node-relay", "", "pinned relay URL or \"auto\" for directory discovery")
+	cmd.Flags().StringVar(&nodeDirectoryFlag, "node-directory", "", "pinned public directory URL")
 	cmd.Flags().BoolVar(&noNodeFlag, "no-node", false, "disable the LAN node transport")
+	cmd.Flags().BoolVar(&noRelayFlag, "no-relay", false, "disable relay fallback")
 	return cmd
 }
 
@@ -235,6 +241,15 @@ func runServe(ctx context.Context) error {
 	}
 	if nodeAdvertiseFlag != "" {
 		cfg.NodeAdvertise = nodeAdvertiseFlag
+	}
+	if nodeRelayFlag != "" {
+		cfg.NodeRelay = nodeRelayFlag
+	}
+	if nodeDirectoryFlag != "" {
+		cfg.NodeDirectory = nodeDirectoryFlag
+	}
+	if noRelayFlag {
+		cfg.NodeRelay = "off"
 	}
 	if noNodeFlag {
 		cfg.NodeListen = config.NodeListenOff
@@ -292,6 +307,8 @@ func runServe(ctx context.Context) error {
 		Paths:     paths,
 		Listen:    cfg.NodeListen,
 		Advertise: cfg.NodeAdvertise,
+		Relay:     cfg.NodeRelay,
+		Directory: cfg.NodeDirectory,
 		Logger:    logger,
 	})
 	if err != nil {
@@ -1060,11 +1077,44 @@ func newNodeCommand() *cobra.Command {
 				fmt.Println("LAN node transport is disabled.")
 				return nil
 			}
-			fmt.Printf("URL:       %s\n", result.Info.URL)
-			fmt.Printf("Server:    %s\n", result.Info.ServerID)
-			fmt.Printf("Account:   %s\n", result.Info.AccountID)
-			fmt.Printf("Device:    %s\n", result.Info.DeviceID)
+			fmt.Printf("URL:         %s\n", result.Info.URL)
+			fmt.Printf("Direct:      %s\n", result.Info.DirectURL)
+			if result.Info.RelayURL != "" {
+				fmt.Printf("Relay:       %s (%s)\n", result.Info.RelayURL, relayStatus(result.Info.RelayConnected))
+			}
+			if result.Info.DirectoryURL != "" {
+				fmt.Printf("Directory:   %s\n", result.Info.DirectoryURL)
+			}
+			fmt.Printf("Server:      %s\n", result.Info.ServerID)
+			fmt.Printf("Account:     %s\n", result.Info.AccountID)
+			fmt.Printf("Device:      %s\n", result.Info.DeviceID)
 			fmt.Printf("Fingerprint: %s\n", result.Info.TLSFingerprint)
+			return nil
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "lookup <server-code>",
+		Short: "Resolve a server code through the public directory",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			var record node.DirectoryRecord
+			if err := c.Get(cmd.Context(), "/api/v1/node/lookup?code="+url.QueryEscape(args[0]), &record); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(record)
+			}
+			fmt.Printf("Server:      %s\n", record.ServerID)
+			fmt.Printf("Code:        %s\n", record.ServerCode)
+			fmt.Printf("URL:         %s\n", record.URL)
+			if record.RelayURL != "" {
+				fmt.Printf("Relay:       %s\n", record.RelayURL)
+			}
+			fmt.Printf("Fingerprint: %s\n", record.TLSFingerprint)
 			return nil
 		},
 	})
@@ -2117,6 +2167,13 @@ func newSearchCommand() *cobra.Command {
 	cmd.Flags().IntVar(&limit, "limit", 50, "maximum hits")
 	cmd.Flags().StringVar(&roomID, "room", "", "only this room")
 	return cmd
+}
+
+func relayStatus(connected bool) string {
+	if connected {
+		return "connected"
+	}
+	return "disconnected"
 }
 
 func resolveConfig() (config.Paths, config.Config, error) {

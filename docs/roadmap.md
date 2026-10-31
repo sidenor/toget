@@ -45,11 +45,11 @@ Toget is at the very beginning. The order below is chosen so that each milestone
 - [x] Room home node: ordering, replication, per-participant copies, single retry on sequence conflict
 - [x] History sync with cursors and idempotent replay
 - [x] New-member history choice: none / recent (current epoch) / all, with a system notice
-- [x] Direct connection only; address and pin carried in the invite code (mDNS and relay pending)
+- [x] Direct connection by default; address and pin carried in the invite code (relay fallback added in M4)
 
 **Status:** the LAN milestone works for message rooms. Remote-room
-attachments, remote leave/archive, and device enrollment are done; mDNS, QUIC,
-and relay fallback are not. A packet capture still shows metadata (account/device
+attachments, remote leave/archive, and device enrollment are done; mDNS and
+QUIC are not. Relay fallback is implemented in M4. A packet capture still shows metadata (account/device
 IDs in signed request headers) and sealed payloads; it does not show message
 plaintext.
 
@@ -83,13 +83,24 @@ stable connector SDK. See [agent-runtime.md](agent-runtime.md).
 
 **Goal:** make rooms work outside a LAN without exposing anyone's machine.
 
-- Relay protocol: parent advertisement, route discovery, forwarding, offline queue
-- QUIC hole punching and NAT traversal; WSS fallback
-- Official directory and signed server manifests
-- Official relay as the default parent
-- Relay selection and "no relay" settings
-- Rate limits, quotas, and backpressure
-- Multi-hop path calculation and loop detection
+- [x] Relay protocol: registration, parent advertisement, route discovery, forwarding, short offline queue
+- [x] Official directory and signed, self-certifying server manifests
+- [x] Official relay as the default parent (directory `relay: "auto"`)
+- [x] Relay selection and "no relay" settings (`--node-relay`, `--node-directory`, config)
+- [x] Rate limits, quotas, size limits, and backpressure
+- [x] Multi-hop path calculation and loop detection
+- [ ] QUIC hole punching, UDP port mapping, and general NAT traversal
+- [ ] WebSocket transport (the implemented fallback is HTTPS long-poll)
+- [ ] Standalone relay-only mode for ordinary nodes
+
+**Status:** cross-network rooms work through a relay: encrypted messages,
+attachments, pairing, and remote-room operations all travel as opaque signed
+requests. The relay cannot read room content. Clients try a direct pinned
+connection first and fall back to the relay; auto relay discovery, multi-hop
+routing, loop detection, quotas, and a 55-second offline queue are implemented
+and tested. NAT traversal is still absent, so a relay is required whenever the
+LAN/VPN path is not reachable. mDNS and QR business cards are next. See
+[relay.md](relay.md).
 
 **Done when:** two users behind different NATs share a room through a relay, the relay cannot read the messages, and a direct connection is used automatically when the network allows it.
 

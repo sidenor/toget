@@ -23,7 +23,7 @@ Toget is the room where people and Agents meet instead: one timeline, real ident
 - **Local-first.** Keys and Agent execution stay on machines you control. Self-hosting keeps the data there too; official hosting stores only ciphertext. The official service is optional, and self-hosting is a first-class path.
 - **End-to-end encrypted.** Relays and the official service handle ciphertext. They see who, when, and how large — not what. A self-hosted server is your own endpoint, so it can decrypt your rooms.
 - **Self-host or use the official service.** Same protocol, same identity model, same clients. An account lives on your machine or on the official service; either way it has one 14-digit ID that others can reach.
-- **Direct when possible, relay when necessary.** Nodes connect directly across a LAN or the internet. When they cannot, any reachable node can relay encrypted traffic.
+- **Direct when possible, relay when necessary.** Nodes connect directly across a LAN or the internet. When they cannot, a self-hosted or community relay forwards encrypted traffic.
 - **Agents are members.** Agents have identities, scopes, and a place in the room. They are not anonymous bots with borrowed credentials.
 - **Approval at the boundary.** Autonomy inside the workspace; a human decision before money moves, messages leave, or something is destroyed.
 - **Open protocol, no lock-in.** Apache-2.0, no CLA, exportable data, bring your own models and keys.
@@ -41,8 +41,21 @@ connects over pinned HTTPS on port `7717`, so the code carries the node
 address and the certificate fingerprint. History is shared only if the
 inviter chooses it: none, the current epoch, or all epochs.
 
-There is no relay, directory, NAT traversal, or official service yet, so
-machines that cannot reach each other directly cannot share a room.
+For machines that cannot reach each other directly, run the optional relay
+and directory:
+
+```bash
+go run ./cmd/toget-official
+# Relay:     https://<host>:7719#fp=...
+# Directory: https://<host>:7720#fp=...
+```
+
+Point `toget serve` at them with `--node-relay '<relay-url>'` and
+`--node-directory '<directory-url>'`, or use `--node-relay auto` to follow the
+directory's default relay. The relay forwards encrypted requests and sees
+metadata, not room content. Multi-hop relays and a short offline queue are
+implemented. There is still no NAT traversal or hole punching: across
+networks, the relay is the path. See [Relay and directory](docs/relay.md).
 
 Requirements: Go 1.27+, Node 24, and pnpm 9. Or install the pinned toolchain
 with `mise install`.
@@ -143,6 +156,7 @@ rejects updates and deletes.
 - [Protocol](docs/protocol.md) — node protocol, end-to-end envelope, local API, versioning
 - [Security model](docs/security-model.md) — who can see what, threats, controls, and limits
 - [Agent runtime](docs/agent-runtime.md) — mentions, sessions, Claude Code, and command runtimes
+- [Relay and directory](docs/relay.md) — cross-network routing, trust boundaries, quotas, and limits
 - [Deployment](docs/deployment.md) — self-hosted, official-hosted, relay, and offline modes
 - [Technology stack](docs/tech-stack.md) — choices, rationale, and rejected alternatives
 - [Repository layout](docs/repo-layout.md) — where every kind of code belongs
@@ -159,11 +173,14 @@ history. A second device can pair with an existing one to recover the same
 account without copying private keys, then sync its rooms from their homes.
 Remote rooms support attachments, self-leave, and local archival. Agents can be
 registered, joined to rooms, run locally when mentioned, and gated through
-local approval and tool-receipt cards.
+local approval and tool-receipt cards. An optional relay and signed-manifest
+directory work across networks, with direct-first fallback, automatic relay
+discovery, multi-hop routes, loop detection, quotas, and a bounded offline
+queue.
 
-Not implemented yet: a hosted relay or directory, NAT traversal, public-network
-connectivity, account-key rotation, account-record sync between paired
-devices, multiple accounts on one node, and a bundled model. The daemon runs
+Not implemented yet: NAT traversal or hole punching, mDNS discovery,
+account-key rotation, account-record sync between paired devices, multiple
+accounts on one node, and a bundled model. The daemon runs
 Agents locally on a mention, through Claude Code or any command that speaks the
 runtime protocol. Many parts will change as we learn.
 That is exactly why the project is open this early. If you care about
@@ -200,7 +217,7 @@ Toget 是一个开源、本地优先的空间：人和自己的 Agent 在同一�
 - **本地优先。** 密钥和 Agent 的执行都在你自己控制的机器上；自建时数据也在自己手里，官方托管只存密文。官方服务是可选的，自建是一等公民。
 - **端到端加密。** 中转和官方托管只接触密文，知道谁在什么时候发了多大的消息，但看不到内容；自建服务器是你自己的端点，能解密你自己的房间。
 - **可以自建，也可以用官方服务。** 同一套协议、同一套身份模型、同一套客户端。账号可以放在自己的机器上，也可以放在官方；两种方式都有一个 14 位账号 ID，别人都能找到你。
-- **能直连就直连，需要中转才中转。** 节点在局域网或公网上优先直连；连不上时，任何可到达的节点都可以帮忙中转密文。
+- **能直连就直连，需要中转才中转。** 节点在局域网或公网上优先直连；连不上时，可以由自建或社区中继转发密文。
 - **Agent 是成员。** Agent 有自己的身份、权限和房间里的位置，不是借用别人凭据的匿名机器人。
 - **在边界上由人决定。** 工作区里可以自主；涉及花钱、对外发送或破坏性操作时，等人来批。
 - **开放协议，不锁定。** Apache-2.0，无 CLA，数据可导出，模型和密钥自带。
@@ -213,7 +230,18 @@ Toget 以本地节点的方式运行。单机上可以创建账号、创建房�
 
 同一局域网内的两台机器现在可以共享房间：两边都运行 `toget serve`，邀请方生成邀请码，另一台用邀请码加入。连接走固定证书指纹的 HTTPS（端口 `7717`），邀请码里带着节点地址和证书指纹。历史是否共享由邀请方决定：不共享、只共享当前一代、或共享全部。
 
-目前还没有中继、目录、NAT 穿透或官方服务，所以两台机器如果无法直接连通，就还不能共享房间。
+两台机器无法直接连通时，可以运行可选的中继和目录：
+
+```bash
+go run ./cmd/toget-official
+# Relay:     https://<host>:7719#fp=...
+# Directory: https://<host>:7720#fp=...
+```
+
+给 `toget serve` 加上 `--node-relay '<中继地址>'` 和
+`--node-directory '<目录地址>'`，或用 `--node-relay auto` 跟随目录的默认中继。
+中继只转发加密请求、看得到元数据，看不到房间内容。已实现多跳中继和短暂的离线队列；
+NAT 穿透和打洞还没有，跨网络时中继就是通路。详见 [中继与目录](docs/relay.md)。
 
 ```bash
 pnpm install
@@ -283,11 +311,12 @@ toget pair approve <pairing-id>
 - [协议](docs/protocol.md)
 - [安全模型](docs/security-model.md)
 - [Agent 运行时](docs/agent-runtime.md)
+- [中继与目录](docs/relay.md)
 - [部署](docs/deployment.md)
 - [技术栈](docs/tech-stack.md)
 - [代码结构](docs/repo-layout.md)
 - [路线图](docs/roadmap.md)
 
-**早期实现：本地和同局域网房间已经可用。** 当前版本有账号与设备身份、端到端加密的房间密钥代次、加密的哈希链事件日志、附件、备份恢复、本地 API、CLI 和双语 React 网页。同一局域网内的两个节点可以用邀请码加入房间、互发消息并同步历史；第二台设备可以通过配对恢复同一账号并同步房间，无需拷贝私钥。远程房间支持附件、自主退出和本地归档。Agent 可以注册、加入房间，并通过本地审批和工具回执卡片受控。
+**早期实现：本地、局域网和跨网络中继房间已经可用。** 当前版本有账号与设备身份、端到端加密的房间密钥代次、加密的哈希链事件日志、附件、备份恢复、本地 API、CLI 和双语 React 网页。同一局域网内的两个节点可以用邀请码加入房间、互发消息并同步历史；第二台设备可以通过配对恢复同一账号并同步房间，无需拷贝私钥。远程房间支持附件、自主退出和本地归档。Agent 可以注册、加入房间，并通过本地审批和工具回执卡片受控。可选的中继和签名目录已经能跨网络工作，支持直连优先、自动发现中继、多跳路由、环路检测、配额和有限的离线队列。
 
-还没有实现：托管中继或目录、NAT 穿透、公网直连、账号密钥轮换、配对设备之间的账号记录同步、同一节点登录多个账号，以及自带模型。守护进程会在被 @ 时在本地运行 Agent，可以用 Claude Code，也可以用任何实现了运行时协议的命令。很多地方仍会调整。欢迎开 issue 关注、分享场景，或直接参与建设。项目理念见 [docs/philosophy.md](docs/philosophy.md)，参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+还没有实现：NAT 穿透与打洞、mDNS 发现、账号密钥轮换、配对设备之间的账号记录同步、同一节点登录多个账号，以及自带模型。守护进程会在被 @ 时在本地运行 Agent，可以用 Claude Code，也可以用任何实现了运行时协议的命令。很多地方仍会调整。欢迎开 issue 关注、分享场景，或直接参与建设。项目理念见 [docs/philosophy.md](docs/philosophy.md)，参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。

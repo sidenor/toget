@@ -471,6 +471,55 @@ paths:
         "503":
           $ref: "#/components/responses/Unavailable"
 
+  /api/v1/node/lookup:
+    get:
+      tags: [node]
+      operationId: lookupServer
+      summary: Resolve a server code through the configured directory
+      description: |
+        Verifies the directory's signed server manifest and signed node
+        manifest locally. A compromised directory cannot substitute an
+        endpoint without failing the pinned-manifest checks.
+      parameters:
+        - name: code
+          in: query
+          required: true
+          description: Eight-digit server code.
+          schema:
+            type: string
+            pattern: "^[0-9]{8}$"
+      responses:
+        "200":
+          description: Verified server record.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DirectoryRecord"
+        "400":
+          description: Invalid server code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The directory does not know this server code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "502":
+          description: The directory could not be reached or returned an invalid record.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
   /api/v1/node/sync:
     post:
       tags: [node]
@@ -3014,14 +3063,53 @@ components:
           examples: ["192.168.1.20:7717"]
         url:
           type: string
-          description: HTTPS base URL peers use.
-          examples: ["https://192.168.1.20:7717"]
+          description: Composite HTTPS base URL peers use, with an optional relay fallback in the fragment.
+          examples: ["https://192.168.1.20:7717#fp=<hex>&relay=https%3A%2F%2Frelay.example%3A7719%2Frelay%2Fv1%2Fnode%2F<server-id>%23fp%3D<hex>"]
+        direct_url:
+          type: string
+          description: Pinned LAN URL without a relay fallback.
+        relay_url:
+          type: string
+          description: Pinned relay route for this node, when configured.
+        relay_connected:
+          type: boolean
+          description: Whether the node currently has an active relay session.
+        directory_url:
+          type: string
+          description: Pinned public directory URL used by this node.
         tls_fingerprint:
           type: string
           description: Hex SHA-256 fingerprint of the node's self-signed certificate.
           pattern: "^[0-9a-f]{64}$"
         protocol:
           type: integer
+
+    DirectoryRecord:
+      type: object
+      additionalProperties: false
+      required: [server_id, server_code, account_id, endpoint, url, direct_url, tls_fingerprint]
+      properties:
+        server_id:
+          type: string
+        server_code:
+          type: string
+        account_id:
+          type: string
+        endpoint:
+          type: string
+        url:
+          type: string
+          description: Composite pinned URL with an optional relay fallback.
+        direct_url:
+          type: string
+        relay_url:
+          type: string
+        tls_fingerprint:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        updated_at:
+          type: string
+          format: date-time
 
     NodeInfoResponse:
       type: object

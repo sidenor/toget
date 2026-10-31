@@ -28,6 +28,10 @@ type testNode struct {
 }
 
 func newNode(t *testing.T, name string) *testNode {
+	return newNodeWithOptions(t, name, nil)
+}
+
+func newNodeWithOptions(t *testing.T, name string, configure func(*node.Options)) *testNode {
 	t.Helper()
 	home := t.TempDir()
 	paths, err := config.Resolve(home)
@@ -63,10 +67,14 @@ func newNode(t *testing.T, name string) *testNode {
 			return nil
 		},
 	))
-	service, err := node.New(node.Options{
+	options := node.Options{
 		Accounts: accounts, Rooms: rooms, Paths: paths,
 		Listen: "127.0.0.1:0", SyncInterval: time.Hour,
-	})
+	}
+	if configure != nil {
+		configure(&options)
+	}
+	service, err := node.New(options)
 	if err != nil {
 		t.Fatal(err)
 	}

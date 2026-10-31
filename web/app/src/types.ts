@@ -66,6 +66,10 @@ export type NodeInfo = {
   device_id: string;
   endpoint: string;
   url: string;
+  direct_url?: string;
+  relay_url?: string;
+  relay_connected: boolean;
+  directory_url?: string;
   tls_fingerprint: string;
   protocol: number;
 };

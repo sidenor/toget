@@ -15,11 +15,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sidenor/toget/internal/account"
 	"github.com/sidenor/toget/internal/config"
 	"github.com/sidenor/toget/internal/identity"
+	"github.com/sidenor/toget/internal/relayproto"
 	"github.com/sidenor/toget/internal/room"
 )
 
@@ -39,7 +41,13 @@ type Options struct {
 	Listen       string
 	Advertise    string
 	SyncInterval time.Duration
-	Logger       *slog.Logger
+	// Relay is a pinned relay URL, "auto" to discover one from the directory,
+	// or empty/"off" to disable relay fallback.
+	Relay string
+	// Directory is a pinned directory URL. It is used to publish this node
+	// and to resolve a default relay when Relay is "auto".
+	Directory string
+	Logger    *slog.Logger
 }
 
 // Info is the local node's public transport identity.
@@ -50,6 +58,10 @@ type Info struct {
 	DeviceID       string `json:"device_id"`
 	Endpoint       string `json:"endpoint"`
 	URL            string `json:"url"`
+	DirectURL      string `json:"direct_url,omitempty"`
+	RelayURL       string `json:"relay_url,omitempty"`
+	RelayConnected bool   `json:"relay_connected"`
+	DirectoryURL   string `json:"directory_url,omitempty"`
 	TLSFingerprint string `json:"tls_fingerprint"`
 	Protocol       int    `json:"protocol"`
 }
@@ -76,6 +88,16 @@ type Service struct {
 
 	nonces *NonceCache
 	syncMu sync.Mutex
+
+	relaySetting     string
+	relayMu          sync.RWMutex
+	relayBase        string
+	relayFP          string
+	directorySetting string
+	directoryBase    string
+	directoryFP      string
+	directoryHTTP    *http.Client
+	relayConnected   atomic.Bool
 
 	pairMu    sync.Mutex
 	pairings  map[string]*pairSession
@@ -104,11 +126,47 @@ func New(opts Options) (*Service, error) {
 	if interval <= 0 {
 		interval = defaultSync
 	}
+	relaySetting := strings.TrimSpace(opts.Relay)
+	if relaySetting == "off" {
+		relaySetting = ""
+	}
+	var relayBase, relayFP string
+	if relaySetting != "" && relaySetting != "auto" {
+		base, fingerprint, err := ParsePinnedURL(relaySetting)
+		if err != nil {
+			return nil, fmt.Errorf("node relay: %w", err)
+		}
+		relayBase, relayFP = base, fingerprint
+	}
+	directorySetting := strings.TrimSpace(opts.Directory)
+	if directorySetting == "off" {
+		directorySetting = ""
+	}
+	var directoryBase, directoryFP string
+	var directoryHTTP *http.Client
+	if directorySetting != "" {
+		base, fingerprint, err := ParsePinnedURL(directorySetting)
+		if err != nil {
+			return nil, fmt.Errorf("node directory: %w", err)
+		}
+		directoryBase, directoryFP = base, fingerprint
+		config, err := PinnedTLSConfig(fingerprint)
+		if err != nil {
+			return nil, err
+		}
+		directoryHTTP = pinnedHTTPClient(config, 30*time.Second, 30*time.Second)
+	}
+	if relaySetting == "auto" && directoryBase == "" {
+		return nil, errors.New("node relay: auto discovery needs a directory")
+	}
 	return &Service{
 		accounts: opts.Accounts, rooms: opts.Rooms, paths: opts.Paths,
 		listen: listen, advertise: strings.TrimSpace(opts.Advertise),
 		logger: logger, syncEvery: interval,
-		nonces: NewNonceCache(),
+		nonces:       NewNonceCache(),
+		relaySetting: relaySetting, relayBase: relayBase, relayFP: relayFP,
+		directorySetting: directorySetting, directoryBase: directoryBase,
+		directoryFP: directoryFP, directoryHTTP: directoryHTTP,
 	}, nil
 }
 
@@ -181,6 +239,12 @@ func (s *Service) Start(ctx context.Context) error {
 		}
 	}()
 	go s.syncLoop(runCtx)
+	if s.relaySetting != "" {
+		go s.relayLoop(runCtx)
+	}
+	if s.directorySetting != "" {
+		go s.directoryLoop(runCtx)
+	}
 	go func() {
 		<-runCtx.Done()
 		shutdownCtx, done := context.WithTimeout(context.Background(), 5*time.Second)
@@ -264,13 +328,68 @@ func (s *Service) Info(ctx context.Context) (*Info, error) {
 		return nil, err
 	}
 	s.mu.RLock()
-	endpoint, url, fingerprint := s.endpoint, s.url, s.fingerprint
+	endpoint, direct, fingerprint := s.endpoint, s.url, s.fingerprint
 	s.mu.RUnlock()
+	relayRoute, _ := s.RelayRoute(ctx)
+	address := direct
+	if relayRoute != "" {
+		address = relayproto.JoinAddress(direct, relayRoute)
+	}
 	return &Info{
 		ServerID: snapshot.Server.ID, ServerCode: snapshot.Server.Code,
 		AccountID: snapshot.Account.ID, DeviceID: snapshot.Device.ID,
-		Endpoint: endpoint, URL: url, TLSFingerprint: fingerprint, Protocol: Protocol,
+		Endpoint: endpoint, URL: address, DirectURL: direct, RelayURL: relayRoute,
+		RelayConnected: s.RelayConnected(), DirectoryURL: s.directorySetting,
+		TLSFingerprint: fingerprint, Protocol: Protocol,
 	}, nil
+}
+
+// Address returns the direct node URL with an optional relay fallback encoded
+// in the fragment. Invitation, pairing, and room home addresses use it.
+func (s *Service) Address(ctx context.Context) string {
+	direct := s.URL()
+	route, err := s.RelayRoute(ctx)
+	if err != nil || route == "" {
+		return direct
+	}
+	return relayproto.JoinAddress(direct, route)
+}
+
+// RelayRoute returns the pinned relay route for this node, if one is
+// configured and the account identity is available.
+func (s *Service) RelayRoute(ctx context.Context) (string, error) {
+	if s == nil {
+		return "", nil
+	}
+	base, fingerprint := s.relayConfig()
+	if base == "" {
+		return "", nil
+	}
+	serverID, err := s.ServerID(ctx)
+	if err != nil {
+		return "", err
+	}
+	return relayproto.NodeRouteURL(base, fingerprint, serverID)
+}
+
+// RelayConnected reports whether the node has polled its relay recently.
+func (s *Service) RelayConnected() bool {
+	if s == nil {
+		return false
+	}
+	return s.relayConnected.Load()
+}
+
+func (s *Service) relayConfig() (string, string) {
+	s.relayMu.RLock()
+	defer s.relayMu.RUnlock()
+	return s.relayBase, s.relayFP
+}
+
+func (s *Service) setRelayConfig(base, fingerprint string) {
+	s.relayMu.Lock()
+	s.relayBase, s.relayFP = base, fingerprint
+	s.relayMu.Unlock()
 }
 
 func (s *Service) manifest(ctx context.Context) (*Manifest, error) {
@@ -288,11 +407,12 @@ func (s *Service) manifest(ctx context.Context) (*Manifest, error) {
 	s.mu.RLock()
 	endpoint, fingerprint := s.endpoint, s.fingerprint
 	s.mu.RUnlock()
+	relayRoute, _ := s.RelayRoute(ctx)
 	now := time.Now().UTC().Truncate(time.Second)
 	manifest := &Manifest{
 		ServerID: snapshot.Server.ID, ServerCode: snapshot.Server.Code,
 		AccountID: snapshot.Account.ID, Endpoint: endpoint, TLSFingerprint: fingerprint,
-		IssuedAt: now, ExpiresAt: now.Add(24 * time.Hour),
+		RelayURL: relayRoute, IssuedAt: now, ExpiresAt: now.Add(24 * time.Hour),
 	}
 	if err := signManifest(manifest, serverKey); err != nil {
 		return nil, err
@@ -715,7 +835,7 @@ func (s *Service) InviteCode(ctx context.Context, roomID, secret, roomName strin
 		return "", err
 	}
 	return EncodeInvite(InviteCode{
-		Protocol: Protocol, Secret: secret, URL: s.URL(),
+		Protocol: Protocol, Secret: secret, URL: s.Address(ctx),
 		ServerID: serverID, RoomID: roomID, RoomName: roomName,
 	})
 }
@@ -755,10 +875,11 @@ func (s *Service) EnsureRoomHome(ctx context.Context, roomID string) (*room.Room
 	if record.HomeNode != snapshot.Device.ID && record.HomeServerID == "" {
 		return record, nil
 	}
-	if record.HomeServerID == snapshot.Account.ServerID && record.HomeAddress == s.URL() {
+	address := s.Address(ctx)
+	if record.HomeServerID == snapshot.Account.ServerID && record.HomeAddress == address {
 		return record, nil
 	}
-	return s.rooms.SetHomeInfo(ctx, roomID, snapshot.Account.ServerID, s.URL())
+	return s.rooms.SetHomeInfo(ctx, roomID, snapshot.Account.ServerID, address)
 }
 
 // EnsureAllRooms backfills home addresses for locally created rooms.

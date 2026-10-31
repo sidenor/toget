@@ -823,6 +823,31 @@ export function SettingsView({
                   <dt>{t("settings.lanURL")}</dt>
                   <dd className="mono">{node.info.url}</dd>
                 </div>
+                {node.info.direct_url && (
+                  <div>
+                    <dt>{t("settings.directURL")}</dt>
+                    <dd className="mono">{node.info.direct_url}</dd>
+                  </div>
+                )}
+                {node.info.relay_url && (
+                  <div>
+                    <dt>{t("settings.relay")}</dt>
+                    <dd className="mono">
+                      {node.info.relay_url}{" "}
+                      <span className="muted">
+                        ({node.info.relay_connected
+                          ? t("settings.relayConnected")
+                          : t("settings.relayDisconnected")})
+                      </span>
+                    </dd>
+                  </div>
+                )}
+                {node.info.directory_url && (
+                  <div>
+                    <dt>{t("settings.directory")}</dt>
+                    <dd className="mono">{node.info.directory_url}</dd>
+                  </div>
+                )}
                 <div>
                   <dt>{t("settings.lanFingerprint")}</dt>
                   <dd className="mono fingerprint">{node.info.tls_fingerprint}</dd>

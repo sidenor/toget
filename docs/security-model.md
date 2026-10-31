@@ -20,12 +20,13 @@ Toget's security model follows one rule: **the endpoint is the trust boundary**.
 | --- | --- | --- | --- | --- |
 | User's own endpoint (self-hosted server or own device) | Yes | Yes | Yes | The trust boundary |
 | Other room members | Only what is shared in the room | Their epoch keys | Room events | Leaving rotates the epoch |
-| Official relay | No | No | Target, time, size, sender device | Sees the outer envelope only |
+| Official relay | No | No | Target server, account/device IDs, path, time, size | Sees the relay envelope and signed inner headers |
 | Official account host (official-hosted account) | No | No | Account record, device list, room membership, ciphertext sizes | Blind store |
 | Official room home node | No | No | Room event ordering, member list | Ciphertext only |
 | Official Agent, explicitly authorized | Scoped only | Scoped only | Scoped only | Visible and revocable authorization |
 | Self-hosted account host | Yes | Yes | Yes | It is the user's endpoint |
 | Relay run by a third party | No | No | Same as official relay | Same envelope rules |
+| Official directory | No | No | Server/account IDs, advertised endpoint, relay route, publish/lookup timing | Verifies manifests; cannot forge or redirect a pinned endpoint |
 
 The official service has no universal key and no backdoor. There is no "compliance access" path to plaintext.
 
@@ -90,9 +91,55 @@ compared. A device that holds the account private key can mint certificates
 for new devices, so compromising one device compromises the account key until
 account-key rotation exists. Revocation only reaches rooms the revoking node
 knows about. The certificate is pinned
-but not publicly audited. There is no relay or multi-hop privacy yet, and
-remote administration beyond attachments, self-leave, and local archival is
-unsupported rather than securely implemented.
+but not publicly audited. Remote administration beyond attachments,
+self-leave, and local archival is unsupported rather than securely
+implemented.
+
+### Implemented relay and directory boundary
+
+A node behind NAT can register with a relay over outbound pinned HTTPS. The
+relay never opens a connection to the node; it long-polls for work and returns
+the node's signed results.
+
+- The relay receives an envelope containing the target server ID, the inner
+  HTTP method and path, allowlisted signed headers (account ID, device ID,
+  timestamp, nonce, signature), and a base64 ciphertext body. It does not
+  receive room epoch keys or plaintext.
+- The node verifies the original device signature and nonce before executing a
+  relayed request, using the same handler as a direct LAN connection. A relay
+  cannot forge a request without a device key.
+- The relay cannot substitute its own TLS certificate for the node: clients
+  pin the node certificate for the direct path and still verify the signed
+  node manifest for relayed operations.
+- Direct connections are probed first. A relay is used only when the pinned
+  direct endpoint does not answer within 2.5 seconds.
+- The relay attached to a node can queue a bounded request for up to 55
+  seconds and keep the result for 10 minutes. This is at-most-once delivery
+  after the node accepts a frame; a client retry can duplicate a
+  non-idempotent side effect. Queued tickets are bearer secrets carrying only
+  the response the client already had permission to receive.
+- Multi-hop routes carry relay IDs in a hop list. A repeated ID or more than
+  eight hops is rejected. The relay operator sees the whole path for traffic
+  it forwards.
+- Rate limits, queue capacity, in-flight byte accounting, and body limits
+  bound resource use. They do not make the relay trusted for availability.
+
+The directory verifies and stores the account identity manifest and the
+signed node manifest. On lookup, the client re-verifies both, checks the
+eight-digit code against the identity, checks the node manifest signature and
+expiry, requires an HTTPS endpoint, and uses only the relay route signed
+inside the node manifest. A compromised directory therefore cannot substitute
+an endpoint or a relay route for a server lookup; it can deny lookups, serve a
+valid stale record until expiry, or choose which valid relay an `auto` node
+uses. The eight-digit code is a routing hint with about 27 bits, not an
+authentication factor.
+
+Residual risk: the relay and directory see who connects to whom, when, how
+often, and how large requests are. Publishing to the directory exposes the
+advertised node endpoint (often a LAN address), server/account IDs, and relay
+route. A relay can drop, delay, or replay envelopes, and an offline queue
+ticket can be read by anyone who obtains it. None of this reveals room content
+or epoch keys.
 
 ## Adversaries and threats
 
@@ -104,8 +151,8 @@ Controls:
 
 - The inner message is encrypted end to end; the relay never receives epoch keys.
 - AAD binds the ciphertext to `room_id`, `epoch`, and `message_id`, so a relay cannot move, replay, or relabel messages.
-- Outer headers are signed by the sender device; recipients verify the signature.
-- Relays are replaceable: users can choose a different parent or self-host one.
+- The inner request is signed by the sender device; the node verifies it before executing anything the relay forwards.
+- Relays are replaceable in configuration: users can choose a different relay or self-host `toget-official`, though existing rooms do not yet switch addresses automatically.
 - Rate limits, quotas, and size limits bound abuse.
 
 Residual risk: traffic analysis. A relay can see who sends to whom, when, and how large messages are. v1 does not hide metadata.
@@ -267,7 +314,8 @@ A malicious or compromised directory returns the wrong manifest for a server cod
 Controls:
 
 - Manifests are self-certifying: the client checks `server_code == hash(root_pubkey || nonce)`.
-- A manifest that does not match is rejected, even if it is signed by the directory.
+- A manifest that does not match is rejected, even if it is signed by the directory. The client checks the signed node manifest and pinned endpoint itself.
+- Only the relay route inside the signed node manifest is used; an unsigned directory hint cannot redirect traffic.
 - Cached cards and QR codes bypass the directory entirely.
 - The 8-digit code is only about 27 bits. An attacker can grind a key pair until the short code matches a target. The code is a routing hint, not an authentication factor; clients compare the full `server_id` with a pinned or QR-provided value when the threat model requires it, and always verify the manifest signature.
 

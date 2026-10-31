@@ -3,9 +3,10 @@
 > Status: design draft. Installation commands and file paths are the intended shape, not final.
 >
 > **Implemented today:** `toget serve` provides the local account, vault,
-> SQLite log, loopback API/UI, and a same-LAN HTTPS node. The official
-> service, relay, public account hosting, NAT traversal, and packaged
-> installers described below are not implemented yet.
+> SQLite log, loopback API/UI, and a same-LAN HTTPS node. `toget-official`
+> provides an optional relay and signed-manifest directory. Public account
+> hosting, official-hosted accounts, NAT traversal, and packaged installers
+> described below are not implemented yet.
 
 Toget is deployed as a **node**: one `toget` binary that can act as a daemon, a self-hosted account host, a relay, or the local CLI. Most users run it on one machine and never think about the rest.
 
@@ -34,8 +35,10 @@ The account host is chosen at registration and cannot be moved silently. Moving 
 
 | Port | Purpose | Exposure |
 | --- | --- | --- |
-| `7717` | LAN node protocol (HTTPS with a pinned Ed25519 certificate) | Reachable by peers on the same LAN; `--no-node` or `--node-listen off` disables it |
+| `7717` | Node protocol (HTTPS with a pinned Ed25519 certificate) | Reachable by peers; `--no-node` or `--node-listen off` disables it. Outbound relay use needs no inbound port |
 | `7718` | Local API and web UI | `127.0.0.1` only |
+| `7719` | Relay (HTTPS, pinned certificate) | Public only for `toget-official` or a self-hosted relay |
+| `7720` | Directory (HTTPS, pinned certificate) | Public only for `toget-official` or a self-hosted directory |
 
 Do not expose `7718` to the network. The local UI is not designed to be a public web app. `7717` is self-authenticated by the certificate pin carried in invite codes; do not put it behind a TLS-terminating proxy, because that changes the certificate the peer pins.
 
@@ -127,24 +130,44 @@ Device roles:
 
 ### Direct
 
-The node advertises its endpoints in its signed manifest. Clients try IPv6, then port mapping (UPnP/NAT-PMP/PCP), then QUIC hole punching. Direct connections are preferred because they are faster and keep relays out of the path.
+The node advertises its endpoint in its signed manifest. Clients probe that
+pinned HTTPS endpoint first and use it when reachable. IPv6 preference, port
+mapping (UPnP/NAT-PMP/PCP), and QUIC hole punching are design-only; today a
+direct connection works on a LAN, a VPN, or a genuinely reachable public
+address. Direct connections are preferred because they are faster and keep
+relays out of the path.
 
 ### Relay
 
-If direct fails, the node uses its parent relay:
+If direct fails, the node uses its configured relay. Run the optional relay and
+directory on a public host:
 
 ```bash
-toget relay status
-toget relay set-parent 48392018
-toget relay disable
+toget-official --home /var/lib/toget-official \
+  --relay-advertise relay.example.com:7719 \
+  --directory-advertise directory.example.com:7720
 ```
 
-- The default parent is the official service.
-- A node can use a friend's node, a community relay, or its own public node.
-- A relay sees only the outer envelope; it cannot decrypt.
-- Relays can hold messages for offline recipients for a bounded TTL.
+Point a node at them, or let it discover the directory's default relay:
 
-A node that should never relay for others can turn relaying off while still using a parent for its own traffic. The exact semantics of "no relay" are still being decided.
+```bash
+toget serve \
+  --node-directory 'https://directory.example.com:7720#fp=<hex>' \
+  --node-relay 'https://relay.example.com:7719#fp=<hex>'
+
+toget serve --node-directory '...' --node-relay auto
+toget serve --no-relay            # direct only
+toget node info                   # shows direct URL, relay state, directory
+```
+
+- The directory's advertised relay is the default for `auto`; a node can also use a friend's relay, a community relay, or its own `toget-official`.
+- A relay sees the target server, signed account/device headers, path, timing, size, and ciphertext. It cannot decrypt room content.
+- Relays can queue requests for an offline node for 55 seconds and can chain to a parent relay.
+- `--no-relay` disables outbound fallback only. Ordinary nodes do not accept relay traffic for others; a separate `toget-official` process is the supported relay.
+- Existing rooms keep the home address they were given, so changing a relay may require a fresh invite or lookup.
+
+See [relay.md](relay.md) for quotas, the offline queue, trust boundaries, and
+current limitations.
 
 ### Public node checklist
 

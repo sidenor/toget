@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"github.com/sidenor/toget/internal/relayproto"
 )
 
 // Manifest announces a node's identity and pinned endpoint. It is signed by
@@ -18,6 +20,7 @@ type Manifest struct {
 	ServerCode     string    `json:"server_code"`
 	AccountID      string    `json:"account_id"`
 	Endpoint       string    `json:"endpoint"`
+	RelayURL       string    `json:"relay_url,omitempty"`
 	TLSFingerprint string    `json:"tls_fingerprint"`
 	Protocol       int       `json:"protocol"`
 	IssuedAt       time.Time `json:"issued_at"`
@@ -60,6 +63,15 @@ func VerifyManifest(manifest *Manifest, publicKey ed25519.PublicKey) error {
 	}
 	if _, err := ParseFingerprint(manifest.TLSFingerprint); err != nil {
 		return err
+	}
+	if manifest.RelayURL != "" {
+		_, _, target, err := relayproto.ParseNodeRoute(manifest.RelayURL)
+		if err != nil {
+			return err
+		}
+		if target != manifest.ServerID {
+			return errors.New("node manifest relay target does not match its server ID")
+		}
 	}
 	if manifest.ExpiresAt.IsZero() || time.Now().UTC().After(manifest.ExpiresAt) {
 		return errors.New("node manifest has expired")

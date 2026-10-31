@@ -47,6 +47,12 @@ type Config struct {
 	// NodeAdvertise overrides the host:port placed in invitation codes and
 	// room home addresses when the bind address is not reachable by peers.
 	NodeAdvertise string `json:"node_advertise,omitempty"`
+	// NodeRelay is a pinned relay URL, "auto" to follow the configured
+	// directory's default relay, or empty/"off" to disable relay fallback.
+	NodeRelay string `json:"node_relay,omitempty"`
+	// NodeDirectory is a pinned public directory URL. It publishes this
+	// node's signed manifest and resolves "auto" relay discovery.
+	NodeDirectory string `json:"node_directory,omitempty"`
 	// AgentRuntimes maps an Agent's runtime name to a local command. The
 	// built-in echo and claude-code runtimes do not need an entry unless they
 	// should be overridden.

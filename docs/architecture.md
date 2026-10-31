@@ -67,9 +67,13 @@ incrementally. A second device can join the same account through a pairing
 code: it generates fresh device keys, the existing device approves after
 showing a fingerprint, and the account key arrives sealed to the new device.
 Rooms are copied as membership and key snapshots, then synced from their
-homes. The official service, relays, directory, phone client, and account-key
-rotation shown above are still design-only. A LAN node can only be reached at
-an address both machines can route to; there is no relay fallback yet.
+homes. A node can also register with an optional relay over a pinned,
+outbound HTTPS long-poll and fall back to it when the direct LAN path is not
+reachable. Relays can chain to a parent and announce signed routes, with loop
+detection and quotas. An optional directory maps an eight-digit server code to
+a self-certifying signed manifest and can advertise a default relay. The phone
+client, official account hosting, and account-key rotation shown above are
+still design-only; mDNS and NAT traversal are not implemented.
 
 ## Account and device model
 
@@ -180,16 +184,18 @@ The daemon is the local runtime on a persistent device. It:
 ### Relay
 
 - Forwards encrypted envelopes when two nodes cannot connect directly.
-- Any node with a reachable address can relay; the official service is the default.
-- Sees the outer envelope only: target, time, size, sender signature.
-- Can store offline messages for a bounded TTL and capacity.
+- `toget-official` is the supported relay process today; ordinary `toget serve` nodes are not relays.
+- Sees the outer envelope and inner request metadata: target server, account and device IDs, path, time, size, and ciphertext.
+- Can store offline requests for a bounded TTL and capacity.
 - Is a service, not an ownership relationship: a device owned by A can relay B's encrypted traffic.
 
 ### Official directory
 
-- Maps a server code to a signed server manifest (`server_id`, endpoints, public keys, protocol version).
+- Maps a server code to a signed identity manifest and node manifest (`server_id`, endpoint, TLS pin, relay route, protocol version).
 - Optional: clients can use cached cards, QR codes, peer exchange, or a manual address.
-- Cannot forge a server's manifest: it is signed by the server root key, and `server_id` must match the fingerprint of `root_pubkey`. It can still serve a different manifest with the same 8-digit code, because the code is short enough to grind; clients that need stronger assurance pin the full `server_id` from a QR code or cached card.
+- Cannot forge a server's manifest: both manifests are verified by the directory before storage and by the client on lookup. The client pins the endpoint from the signed node manifest, not from the directory's word.
+- Code collisions are rejected with `code_taken`; deterministic collision resolution is not implemented. The 8-digit code is a routing hint and can be ground, so first-contact assurance should pin the full `server_id` from a QR code or cached card.
+- Implemented details and limits: [relay.md](relay.md).
 
 ### Official identity and update service
 
@@ -257,16 +263,17 @@ If a member is offline, the home node or a relay holds the envelope for a bounde
 
 ## Relay tree
 
-Every node has a **parent relay**: the node it uses to reach the rest of the network when direct connections fail. The default parent is the official service; users can choose a friend's node, a community relay, or their own public node.
+A node chooses a **relay** to reach the rest of the network when direct connections fail. The default can come from the directory (`--node-relay auto`); users can point at a friend's relay, a community relay, or their own `toget-official` instance.
 
-- **Direct first:** try a direct connection (IPv6, port mapping, QUIC hole punching).
-- **Relay fallback:** if direct fails, send through the parent chain.
-- **Path calculation:** the sender and receiver find the lowest common ancestor in the relay tree; only the necessary hops are used.
+- **Direct first (implemented):** probe the pinned LAN endpoint with a 2.5-second health check; use it when reachable. IPv6 preference, UPnP/NAT-PMP/PCP, and QUIC hole punching are not implemented.
+- **Relay fallback (implemented):** register over outbound pinned HTTPS, long-poll for opaque signed requests, and return results. No inbound port is needed.
+- **Chaining (implemented):** a relay can register with a parent and announce routes upward. Forwarding follows the announced path; the lowest-common-ancestor optimization is not computed.
+- **Loop detection (implemented):** each hop appends its relay ID; an envelope is rejected on a repeated ID or after eight hops.
 - **No ownership:** a relay is a service. A device owned by A can relay B's encrypted traffic.
-- **Bounded:** relays have rate limits, quotas, and a maximum message size. Large files prefer direct connections or encrypted object storage.
-- **Offline queue:** a relay can hold encrypted messages for a TTL; it does not become a permanent history store.
+- **Bounded (implemented defaults):** 128 queued requests / 16 MiB, 512 in-flight / 128 MiB, 52 MiB inner body, 48 MiB relayed response, per-IP rate limits. Large files still prefer direct connections.
+- **Offline queue (implemented):** the relay attached to a node can hold requests for 55 seconds (the client envelope expiry), return a ticket, and keep the final response for 10 minutes. It is not a permanent history store. Multi-hop offline queueing is not implemented.
 
-Open details: parent-table merge rules, maximum hop count, and the exact meaning of "no relay" (no outbound via parent vs. no inbound relay at all) are still being decided.
+Open details: deterministic relay switching for existing rooms, multi-hop offline queueing, byte-based per-sender quotas, and the exact meaning of "no relay" for inbound traffic are still being decided. Today `--no-relay` disables outbound fallback only; ordinary nodes do not accept relay traffic for others.
 
 ## Identity and cryptography
 
@@ -309,9 +316,10 @@ Open details: parent-table merge rules, maximum hop count, and the exact meaning
 
 ## Open questions
 
-- Exact relay parent-table merge rules, maximum hop count, and "no relay" semantics.
+- Deterministic relay switching and address refresh for existing rooms.
+- Multi-hop offline queueing and byte-based per-sender quotas.
 - Room home-node failover: read-only, queue, or elect a new home.
-- Offline queue TTL and capacity for relays.
+- Directory replication, signed directory responses, and collision resolution.
 - The smallest useful policy language for Agent permissions.
 - How much of the official service can be stateless.
 - The first mobile client: responsive web, PWA, or native shell.

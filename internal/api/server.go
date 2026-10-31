@@ -131,6 +131,7 @@ func (s *Server) Handler() http.Handler {
 
 	// Rooms, membership, messages, search, and audit.
 	mux.HandleFunc("GET /api/v1/node", s.data(s.handleNodeInfo))
+	mux.HandleFunc("GET /api/v1/node/lookup", s.data(s.handleNodeLookup))
 	mux.HandleFunc("POST /api/v1/node/sync", s.data(s.handleNodeSync))
 	mux.HandleFunc("POST /api/v1/rooms/{id}/sync", s.data(s.handleRoomSync))
 	mux.HandleFunc("GET /api/v1/rooms", s.data(s.handleListRooms))

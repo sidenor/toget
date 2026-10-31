@@ -150,3 +150,21 @@ func TestNodeInfoAndPortableInvite(t *testing.T) {
 		t.Fatalf("decoded invite = %#v", code)
 	}
 }
+
+func TestNodeLookupRequiresDirectory(t *testing.T) {
+	server := newTestNodeWithLAN(t)
+
+	resp, body := server.request(t, http.MethodPost, "/api/v1/account", testToken,
+		`{"name":"Host","password":"testpass123","device_name":"host"}`, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create account = %d %s", resp.StatusCode, body)
+	}
+	resp, body = server.request(t, http.MethodGet, "/api/v1/node/lookup?code=1234567", testToken, "", nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("short code lookup = %d %s", resp.StatusCode, body)
+	}
+	resp, body = server.request(t, http.MethodGet, "/api/v1/node/lookup?code=12345678", testToken, "", nil)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("lookup without directory = %d %s", resp.StatusCode, body)
+	}
+}

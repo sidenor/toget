@@ -305,7 +305,7 @@ func (s *Service) CreatePairing(ctx context.Context) (*PairingView, error) {
 	code := PairCode{
 		Protocol: Protocol, PairingID: identity.NewID(),
 		Secret: base64.RawURLEncoding.EncodeToString(secretRaw),
-		URL:    s.URL(), ServerID: snapshot.Account.ServerID,
+		URL:    s.Address(ctx), ServerID: snapshot.Account.ServerID,
 		AccountID: snapshot.Account.ID, AccountName: snapshot.Account.Name,
 		DeviceName: snapshot.Device.Name, ExpiresAt: now.Add(PairTTL),
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,8 +14,10 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/sidenor/toget/internal/relayproto"
 	"github.com/sidenor/toget/internal/room"
 )
 
@@ -23,6 +26,17 @@ const (
 	// expansion by the room ciphertext format.
 	maxNodeResponse = 48 << 20
 	requestTimeout  = 20 * time.Second
+	relayTimeout    = 75 * time.Second
+	// maxRelayResponse leaves room for a relayed 48 MiB node response after
+	// the relay's base64 envelope framing.
+	maxRelayResponse = relayproto.MaxResultWire
+	probeTimeout     = 2500 * time.Millisecond
+	// relayQueueLifetime is how long a relay may keep a request for an
+	// offline node. It stays well below the client's 75-second relay
+	// timeout, so a request is either answered or discarded before the
+	// caller gives up; this avoids applying a write after the client already
+	// saw a failure.
+	relayQueueLifetime = 55 * time.Second
 )
 
 // ErrUnreachable means the home node could not be reached over the network.
@@ -42,13 +56,19 @@ func (e *RemoteError) Error() string {
 	return e.Message
 }
 
-// Client talks to one pinned home node.
+// Client talks to one pinned home node. When the node address includes a
+// relay fallback, the client probes the direct LAN path first and relays only
+// when it is unreachable.
 type Client struct {
 	endpoint  string
 	accountID string
 	deviceID  string
 	key       ed25519.PrivateKey
 	http      *http.Client
+
+	relayBase   string
+	relayTarget string
+	relayHTTP   *http.Client
 }
 
 // NewClient creates a pinned node client. endpoint must be an HTTPS origin
@@ -62,38 +82,63 @@ func NewClient(endpoint, fingerprint, accountID, deviceID string, key ed25519.Pr
 	if err != nil {
 		return nil, err
 	}
+	return &Client{
+		endpoint:  strings.TrimSuffix(endpoint, "/"),
+		accountID: accountID,
+		deviceID:  deviceID,
+		key:       key,
+		http:      pinnedHTTPClient(config, requestTimeout, requestTimeout),
+	}, nil
+}
+
+func pinnedHTTPClient(config *tls.Config, timeout, headerTimeout time.Duration) *http.Client {
 	transport := &http.Transport{
 		Proxy:                 nil,
 		ForceAttemptHTTP2:     true,
 		TLSClientConfig:       config,
 		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: requestTimeout,
+		ResponseHeaderTimeout: headerTimeout,
 		MaxIdleConnsPerHost:   4,
 		IdleConnTimeout:       90 * time.Second,
 	}
-	return &Client{
-		endpoint:  strings.TrimSuffix(endpoint, "/"),
-		accountID: accountID,
-		deviceID:  deviceID,
-		key:       key,
-		http:      &http.Client{Transport: transport, Timeout: requestTimeout},
-	}, nil
+	return &http.Client{Transport: transport, Timeout: timeout}
 }
 
 // NewClientForURL builds a client from a URL containing #fp=<fingerprint>.
+// The URL may also carry a relay route in its fragment.
 func NewClientForURL(raw, accountID, deviceID string, key ed25519.PrivateKey) (*Client, error) {
-	endpoint, fingerprint, err := ParsePinnedURL(raw)
+	direct, relay := relayproto.SplitAddress(raw)
+	endpoint, fingerprint, err := ParsePinnedURL(direct)
 	if err != nil {
 		return nil, err
 	}
-	return NewClient(endpoint, fingerprint, accountID, deviceID, key)
+	client, err := NewClient(endpoint, fingerprint, accountID, deviceID, key)
+	if err != nil {
+		return nil, err
+	}
+	if relay != "" {
+		base, relayFP, target, err := relayproto.ParseNodeRoute(relay)
+		if err != nil {
+			return nil, err
+		}
+		config, err := PinnedTLSConfig(relayFP)
+		if err != nil {
+			return nil, err
+		}
+		client.relayBase, client.relayTarget = base, target
+		client.relayHTTP = pinnedHTTPClient(config, relayTimeout, relayTimeout)
+	}
+	return client, nil
 }
 
 // Close releases idle connections.
 func (c *Client) Close() {
 	if c != nil && c.http != nil {
 		c.http.CloseIdleConnections()
+	}
+	if c != nil && c.relayHTTP != nil {
+		c.relayHTTP.CloseIdleConnections()
 	}
 }
 
@@ -155,47 +200,29 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 			return fmt.Errorf("encode node request: %w", err)
 		}
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.endpoint+path, bytes.NewReader(payload))
+	status, _, data, err := c.exchange(ctx, method, path, payload, contentTypeFor(body))
 	if err != nil {
-		return fmt.Errorf("build node request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if c.accountID != "" {
-		req.Header.Set(HeaderAccount, c.accountID)
-	}
-	if c.deviceID != "" {
-		req.Header.Set(HeaderDevice, c.deviceID)
-	}
-	if err := SignRequest(req, payload, c.key, time.Now()); err != nil {
 		return err
 	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrUnreachable, err)
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxNodeResponse+1))
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrUnreachable, err)
-	}
-	if len(data) > maxNodeResponse {
-		return fmt.Errorf("node response is too large")
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return decodeRemoteError(resp.StatusCode, data)
+	if status < 200 || status >= 300 {
+		return decodeRemoteError(status, data)
 	}
 	if out != nil {
 		if len(data) == 0 {
-			return fmt.Errorf("node returned an empty response (status %d)", resp.StatusCode)
+			return fmt.Errorf("node returned an empty response (status %d)", status)
 		}
 		if err := json.Unmarshal(data, out); err != nil {
 			return fmt.Errorf("decode node response: %w", err)
 		}
 	}
 	return nil
+}
+
+func contentTypeFor(body any) string {
+	if body == nil {
+		return ""
+	}
+	return "application/json"
 }
 
 func decodeRemoteError(status int, data []byte) error {
@@ -214,6 +241,36 @@ func decodeRemoteError(status int, data []byte) error {
 		message = message[:500]
 	}
 	return &RemoteError{Status: status, Code: envelope.Error.Code, Message: message}
+}
+
+func (c *Client) doRaw(ctx context.Context, method, path string, payload []byte, contentType string, out any) error {
+	status, _, data, err := c.exchange(ctx, method, path, payload, contentType)
+	if err != nil {
+		return err
+	}
+	if status < 200 || status >= 300 {
+		return decodeRemoteError(status, data)
+	}
+	if out != nil {
+		if len(data) == 0 {
+			return fmt.Errorf("node returned an empty response (status %d)", status)
+		}
+		if err := json.Unmarshal(data, out); err != nil {
+			return fmt.Errorf("decode node response: %w", err)
+		}
+	}
+	return nil
+}
+
+func (c *Client) getRaw(ctx context.Context, path string) ([]byte, error) {
+	status, _, data, err := c.exchange(ctx, http.MethodGet, path, nil, "")
+	if err != nil {
+		return nil, err
+	}
+	if status < 200 || status >= 300 {
+		return nil, decodeRemoteError(status, data)
+	}
+	return data, nil
 }
 
 // UploadAttachment posts sealed attachment ciphertext to a remote room's home
@@ -243,10 +300,23 @@ func (c *Client) FetchAttachment(ctx context.Context, roomID, attachmentID strin
 	return c.getRaw(ctx, path)
 }
 
-func (c *Client) doRaw(ctx context.Context, method, path string, payload []byte, contentType string, out any) error {
+// exchange sends one signed request directly or through the relay fallback.
+func (c *Client) exchange(ctx context.Context, method, path string, payload []byte, contentType string) (int, http.Header, []byte, error) {
+	if c.relayBase != "" && !c.useDirect(ctx) {
+		return c.relayExchange(ctx, method, path, payload, contentType)
+	}
+	status, headers, data, err := c.directExchange(ctx, method, path, payload, contentType)
+	if err != nil && c.relayBase != "" && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		// The probe succeeded but the connection failed before a response.
+		rememberDirect(c.endpoint, false, 30*time.Second)
+	}
+	return status, headers, data, err
+}
+
+func (c *Client) directExchange(ctx context.Context, method, path string, payload []byte, contentType string) (int, http.Header, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, method, c.endpoint+path, bytes.NewReader(payload))
 	if err != nil {
-		return fmt.Errorf("build node request: %w", err)
+		return 0, nil, nil, fmt.Errorf("build node request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
 	if contentType != "" {
@@ -259,64 +329,167 @@ func (c *Client) doRaw(ctx context.Context, method, path string, payload []byte,
 		req.Header.Set(HeaderDevice, c.deviceID)
 	}
 	if err := SignRequest(req, payload, c.key, time.Now()); err != nil {
-		return err
+		return 0, nil, nil, err
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrUnreachable, err)
+		return 0, nil, nil, fmt.Errorf("%w: %v", ErrUnreachable, err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxNodeResponse+1))
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrUnreachable, err)
+		return 0, nil, nil, fmt.Errorf("%w: %v", ErrUnreachable, err)
 	}
 	if len(data) > maxNodeResponse {
-		return fmt.Errorf("node response is too large")
+		return 0, nil, nil, fmt.Errorf("node response is too large")
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return decodeRemoteError(resp.StatusCode, data)
-	}
-	if out != nil {
-		if len(data) == 0 {
-			return fmt.Errorf("node returned an empty response (status %d)", resp.StatusCode)
-		}
-		if err := json.Unmarshal(data, out); err != nil {
-			return fmt.Errorf("decode node response: %w", err)
-		}
-	}
-	return nil
+	return resp.StatusCode, resp.Header, data, nil
 }
 
-func (c *Client) getRaw(ctx context.Context, path string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint+path, nil)
+func (c *Client) relayExchange(ctx context.Context, method, path string, payload []byte, contentType string) (int, http.Header, []byte, error) {
+	now := time.Now().UTC()
+	inner, err := http.NewRequestWithContext(ctx, method, c.endpoint+path, bytes.NewReader(payload))
 	if err != nil {
-		return nil, fmt.Errorf("build node request: %w", err)
+		return 0, nil, nil, fmt.Errorf("build relayed request: %w", err)
 	}
+	inner.Header.Set("Accept", "application/json")
+	if contentType != "" {
+		inner.Header.Set("Content-Type", contentType)
+	}
+	if c.accountID != "" {
+		inner.Header.Set(HeaderAccount, c.accountID)
+	}
+	if c.deviceID != "" {
+		inner.Header.Set(HeaderDevice, c.deviceID)
+	}
+	if err := SignRequest(inner, payload, c.key, now); err != nil {
+		return 0, nil, nil, err
+	}
+	envelope := relayproto.Envelope{
+		Protocol: relayproto.Protocol, Target: c.relayTarget,
+		Method: method, Path: inner.URL.RequestURI(),
+		Headers:   relayproto.CopyInnerHeaders(inner.Header),
+		Body:      relayproto.EncodeBody(payload),
+		AccountID: c.accountID, DeviceID: c.deviceID,
+		CreatedAt: now, ExpiresAt: now.Add(relayQueueLifetime),
+	}
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("encode relay envelope: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.relayBase+relayproto.ForwardPrefix+url.PathEscape(c.relayTarget), bytes.NewReader(encoded))
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("build relay request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
 	if c.accountID != "" {
 		req.Header.Set(HeaderAccount, c.accountID)
 	}
 	if c.deviceID != "" {
 		req.Header.Set(HeaderDevice, c.deviceID)
 	}
-	if err := SignRequest(req, nil, c.key, time.Now()); err != nil {
-		return nil, err
+	if err := SignRequest(req, encoded, c.key, now); err != nil {
+		return 0, nil, nil, err
+	}
+	resp, err := c.relayHTTP.Do(req)
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("%w: relay: %v", ErrUnreachable, err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxRelayResponse+1))
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("%w: relay: %v", ErrUnreachable, err)
+	}
+	if len(data) > maxRelayResponse {
+		return 0, nil, nil, errors.New("relay response is too large")
+	}
+	if resp.StatusCode == http.StatusAccepted && resp.Header.Get(relayproto.HeaderRelayQueued) == "true" {
+		var queued relayproto.Queued
+		if err := json.Unmarshal(data, &queued); err != nil || queued.Ticket == "" {
+			return 0, nil, nil, errors.New("relay returned an invalid queue ticket")
+		}
+		return c.pollRelayTicket(ctx, queued)
+	}
+	return resp.StatusCode, resp.Header, data, nil
+}
+
+func (c *Client) pollRelayTicket(ctx context.Context, queued relayproto.Queued) (int, http.Header, []byte, error) {
+	deadline := time.Now().Add(2 * time.Minute)
+	if !queued.ExpiresAt.IsZero() && queued.ExpiresAt.Before(deadline) {
+		deadline = queued.ExpiresAt
+	}
+	path := "/relay/v1/responses/" + url.PathEscape(queued.Ticket)
+	for {
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return 0, nil, nil, fmt.Errorf("%w: relayed request is still queued", ErrUnreachable)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.relayBase+path, nil)
+		if err != nil {
+			return 0, nil, nil, err
+		}
+		resp, err := c.relayHTTP.Do(req)
+		if err != nil {
+			return 0, nil, nil, fmt.Errorf("%w: relay: %v", ErrUnreachable, err)
+		}
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxRelayResponse+1))
+		resp.Body.Close()
+		if readErr != nil {
+			return 0, nil, nil, fmt.Errorf("%w: relay: %v", ErrUnreachable, readErr)
+		}
+		if len(data) > maxRelayResponse {
+			return 0, nil, nil, errors.New("relay response is too large")
+		}
+		if resp.StatusCode == http.StatusAccepted && resp.Header.Get(relayproto.HeaderRelayQueued) == "true" {
+			select {
+			case <-ctx.Done():
+				return 0, nil, nil, ctx.Err()
+			case <-time.After(750 * time.Millisecond):
+			}
+			continue
+		}
+		return resp.StatusCode, resp.Header, data, nil
+	}
+}
+
+type reachEntry struct {
+	ok    bool
+	until time.Time
+}
+
+var directReach sync.Map
+
+func (c *Client) useDirect(ctx context.Context) bool {
+	if c.relayBase == "" {
+		return true
+	}
+	if value, ok := directReach.Load(c.endpoint); ok {
+		entry := value.(reachEntry)
+		if time.Now().Before(entry.until) {
+			return entry.ok
+		}
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, c.endpoint+"/toget/v1/health", nil)
+	if err != nil {
+		rememberDirect(c.endpoint, false, 30*time.Second)
+		return false
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrUnreachable, err)
+		rememberDirect(c.endpoint, false, 60*time.Second)
+		return false
 	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxNodeResponse+1))
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrUnreachable, err)
-	}
-	if len(data) > maxNodeResponse {
-		return nil, fmt.Errorf("node response is too large")
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, decodeRemoteError(resp.StatusCode, data)
-	}
-	return data, nil
+	resp.Body.Close()
+	ok := resp.StatusCode == http.StatusOK
+	rememberDirect(c.endpoint, ok, 60*time.Second)
+	return ok
+}
+
+func rememberDirect(endpoint string, ok bool, ttl time.Duration) {
+	directReach.Store(endpoint, reachEntry{ok: ok, until: time.Now().Add(ttl)})
 }
 
 // LeaveRoom submits an already prepared and signed self-leave event.

@@ -54,10 +54,12 @@ The LAN path is real and covered by tests in `internal/node` and
    Room snapshots carry membership and epoch keys (not events), and the new
    device syncs event history from each room's home.
 
-Still design-only: QUIC, Protobuf framing, relays, the directory, NAT
-traversal, and public-network connectivity. The rest of this document
-describes the target design; sections marked “implemented today” use HTTPS +
-JSON rather than the future framing.
+Still design-only: QUIC, Protobuf framing, NAT traversal or hole punching,
+mDNS, and WebSocket transport. Relays and the directory are implemented with
+HTTPS + JSON rather than the future Protobuf framing; see
+[relay.md](relay.md) for their wire format, trust boundaries, and limits. The
+rest of this document describes the target design; sections marked
+“implemented today” use HTTPS + JSON rather than the future framing.
 
 ## Identifiers
 
@@ -72,14 +74,18 @@ JSON rather than the future framing.
 
 Clients parse the account ID by its total length, so more digits can be added later without a new format.
 
-**Collision rule.** The server code is a truncated hash, not an allocation. If two manifests claim the same code, the server with the lexicographically smaller `server_id` keeps it; the other increments `server_nonce`, recomputes the code, and re-signs its manifest. A server that already issued IDs signs redirects from the old prefix for a transition period. Directories and clients can verify the rule; no central arbiter is required.
+**Collision rule (design).** The server code is a truncated hash, not an allocation. If two manifests claim the same code, the server with the lexicographically smaller `server_id` keeps it; the other increments `server_nonce`, recomputes the code, and re-signs its manifest. A server that already issued IDs signs redirects from the old prefix for a transition period. Directories and clients can verify the rule; no central arbiter is required.
+
+**Collision rule (implemented).** The directory rejects a second server claiming an existing code with `code_taken`; deterministic nonce migration and redirects are not implemented yet. The full `server_id` in an invite or pinned card remains authoritative.
 
 ## Discovery
 
 1. The client extracts the server code from the account ID.
-2. It asks the directory for the signed manifest of that server code, or uses a cached card, a QR code, peer exchange, mDNS on a LAN, or a manually entered address.
+2. It asks the directory for the signed manifest of that server code, or uses a cached card, a QR code, peer exchange, mDNS on a LAN (design-only), or a manually entered address.
 3. It verifies the manifest signature with the server root key and checks that `server_code == hash(root_pubkey || nonce)`.
 4. It connects to one of the advertised endpoints, directly or through a relay.
+
+Implemented today: `toget node lookup <code>` asks the configured directory, then re-verifies both the identity manifest and the signed node manifest locally. A directory result includes the node's HTTPS endpoint, TLS pin, and signed relay route; the endpoint is not trusted from the directory alone.
 
 The directory is a convenience, not a root of trust. It cannot forge a server's manifest, but the 8-digit code is short enough to grind; pin the full `server_id` from a QR code or cached card when first-contact impersonation matters.
 
@@ -140,11 +146,16 @@ nonce
 hex(sha256(body))
 ```
 
-**Target transport:** QUIC with TLS 1.3, ALPN `toget/1`. One control stream
-for session messages, one stream per request, and datagrams reserved for
-presence and typing. WSS over TCP `443` is the fallback for networks that
-block UDP. IPv6, UPnP/NAT-PMP/PCP, and QUIC hole punching are attempted
-before a relay is used.
+**Target transport (design):** QUIC with TLS 1.3, ALPN `toget/1`. One control
+stream for session messages, one stream per request, and datagrams reserved for
+presence and typing. WSS over TCP `443` is the fallback for networks that block
+UDP. IPv6, UPnP/NAT-PMP/PCP, and QUIC hole punching would be attempted before a
+relay is used.
+
+**Implemented transport:** pinned HTTPS + JSON on TCP `7717`, HTTP/2 where
+available. If the direct health probe fails, the node client uses an outbound
+HTTPS long-poll tunnel to a relay. No UDP, port mapping, or hole punching is
+implemented.
 
 Target handshake:
 
@@ -416,14 +427,17 @@ The inviter can only attach history they can see. Inviting is not a way to forwa
 
 ## Relay protocol
 
-- Every node advertises a parent relay. The default parent is the official service.
-- To reach a target, a node asks its parent for a route. The parent either answers with a path through the relay tree or forwards the request upward.
-- The sender and receiver find the lowest common ancestor; only the hops on that path carry the envelope.
-- Relays forward opaque envelopes and see only the outer header.
-- Offline messages are queued for a bounded TTL and capacity; the sender is told whether an envelope was delivered or queued.
-- Relays enforce per-device quotas and return `relay.quota_exceeded` rather than silently dropping messages.
+Implemented today over HTTPS + JSON:
 
-Parent-table merge rules, maximum hop count, and the exact meaning of "no relay" are still open.
+- A node registers with a relay using its server key and both signed manifests, then long-polls for opaque envelopes. The relay never connects to the node.
+- A relay may register with a parent and announce routes upward. Announcements carry a `Via` path; the first hop must be the authenticated announcing relay, a direct registration always wins, and a path with a repeated relay or more than eight hops is rejected.
+- Forwarding follows the announced route. The lowest-common-ancestor optimization is not computed; a relay with no local route sends the envelope upward.
+- Each forwarded envelope appends the relay's ID to `Hops`. A relay that sees its own ID, or eight existing hops, returns `508`.
+- The relay attached to an offline node can queue up to 128 requests / 16 MiB for 55 seconds and return a ticket. Results are retained for 10 minutes. This is at-most-once after the node accepts a frame.
+- Relays enforce per-IP rates, per-node queue limits, in-flight request and byte limits, and body size limits, returning `queue_full`, `relay_busy`, `relay_full`, or `rate_limited` with `Retry-After`.
+- The relay sees the target server ID, inner path, signed account/device headers, timing, and ciphertext. It cannot read room content.
+
+See [relay.md](relay.md) for the exact wire format and numbers. Open: deterministic relay switching for existing rooms, multi-hop offline queueing, signed forwarding between relays, byte-based per-sender quotas, and the exact meaning of "no relay". Today `--no-relay` disables outbound fallback; ordinary nodes do not relay for others.
 
 ## Local API
 
@@ -503,7 +517,9 @@ Errors are structured (`code`, `message`, `details`) and stable across minor ver
 
 - Exact Protobuf package layout and stream multiplexing details.
 - Room ordering when the outer envelope hides the room ID: per-room routing token vs. global order.
-- Relay parent-table merge rules, maximum hops, and "no relay" semantics.
+- Deterministic relay switching, multi-hop offline queueing, and byte-based per-sender quotas.
+- "No relay" semantics for inbound traffic.
+- Directory replication, signed directory responses, and collision migration.
 - Home-node failover behavior.
 - Whether new-member history uses re-encryption, old-epoch grants, or both.
 - Push notification delivery for offline mobile clients.
