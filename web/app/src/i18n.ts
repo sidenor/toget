@@ -532,6 +532,17 @@ const strings: Record<string, [string, string]> = {
   "common.actions": ["Actions", "操作"],
   "common.you": ["You", "你"],
   "common.none": ["None", "无"],
+  "pwa.install": ["Install app", "安装应用"],
+  "pwa.installed": ["Toget is installed. You can open it from your home screen.", "Toget 已安装，可以从桌面打开。"],
+  "pwa.dismissed": ["You can install Toget later from Settings.", "之后可以在设置里安装 Toget。"],
+  "pwa.bannerTitle": ["Install Toget", "安装 Toget"],
+  "pwa.bannerText": ["Open approvals and messages faster, even when the browser is closed.", "更快打开审批和消息，浏览器关闭时也能收到提醒。"],
+  "settings.installTitle": ["Install on this device", "安装到这台设备"],
+  "settings.installText": ["Install Toget as an app for a full-screen window and a home-screen icon. The node still runs on your machine.", "把 Toget 安装成应用，获得全屏窗口和桌面图标；节点仍然运行在你自己的机器上。"],
+  "settings.installDone": ["Toget is installed on this device.", "Toget 已安装在这台设备上。"],
+  "settings.installReady": ["Your browser is ready. Click Install app to continue.", "浏览器已准备好，点「安装应用」即可。"],
+  "settings.installIOS": ["On iPhone or iPad: open Share, then choose Add to Home Screen.", "iPhone/iPad：打开「分享」，选择「添加到主屏幕」。"],
+  "settings.installHint": ["Use your browser menu and choose Install app or Add to Home Screen. HTTPS or localhost is required.", "在浏览器菜单里选择「安装应用」或「添加到主屏幕」；需要 HTTPS 或 localhost。"],
 };
 
 export type Translate = (key: string, vars?: Record<string, string | number>) => string;

@@ -3167,3 +3167,84 @@ select {
   color: var(--danger);
   border-color: transparent;
 }
+
+/* PWA install guidance */
+.install-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin: 14px clamp(22px, 4vw, 52px) 0;
+  padding: 13px 18px;
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--line));
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  box-shadow: 0 8px 26px rgba(30, 40, 36, 0.04);
+}
+
+.install-banner > div:first-child {
+  flex: 1 1 320px;
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.install-banner strong {
+  font-size: 13.5px;
+  letter-spacing: -0.01em;
+}
+
+.install-banner span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.install-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.form-success {
+  color: var(--accent);
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+@media (max-width: 760px) {
+  .install-banner {
+    margin: 10px 15px 0;
+    padding: 12px 14px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .install-banner-actions {
+    justify-content: flex-end;
+  }
+
+  .approval-card {
+    padding: 16px 15px;
+  }
+
+  .approval-actions {
+    flex-direction: column-reverse;
+    gap: 9px;
+  }
+
+  .approval-actions .button {
+    width: 100%;
+    min-height: 48px;
+    font-size: 14px;
+  }
+
+  .approval-card details .json-block {
+    max-height: 38dvh;
+  }
+
+  .view {
+    padding-bottom: calc(40px + env(safe-area-inset-bottom));
+  }
+}

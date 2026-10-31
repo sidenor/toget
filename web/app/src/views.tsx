@@ -1504,12 +1504,18 @@ export function SettingsView({
   onRestartUpdate,
   onRollbackUpdate,
   onClearUpdateDismissal,
+  installed,
+  canInstall,
+  onInstallApp,
 }: CommonProps & UpdateControls & {
   account: { id: string; name: string; server_id: string };
   status: { listen: string; version: { app: string; protocol: number; schema: number } } | null;
   lang: Lang;
   setLang: (lang: Lang) => void;
   lock: () => Promise<void>;
+  installed: boolean;
+  canInstall: boolean;
+  onInstallApp: () => void;
 }) {
   const [node, setNode] = useState<{ enabled: boolean; info?: NodeInfo } | null>(null);
   const [discovery, setDiscovery] = useState<{ enabled: boolean; peers: DiscoveredPeer[] } | null>(null);
@@ -1530,6 +1536,10 @@ export function SettingsView({
   const [passwordBusy, setPasswordBusy] = useState(false);
   const [passwordError, setPasswordError] = useState("");
   const [localReset, setLocalReset] = useState(false);
+
+  function iosHint() {
+    return /iphone|ipad|ipod/i.test(navigator.userAgent);
+  }
 
   useEffect(() => {
     api.node().then(setNode).catch(() => setNode({ enabled: false }));
@@ -2008,6 +2018,24 @@ export function SettingsView({
               中文
             </button>
           </div>
+        </article>
+        <article className="panel">
+          <h2>{t("settings.installTitle")}</h2>
+          {installed ? (
+            <p className="form-success">{t("settings.installDone")}</p>
+          ) : (
+            <>
+              <p className="muted">{t("settings.installText")}</p>
+              {canInstall && (
+                <button className="button primary" onClick={onInstallApp}>
+                  {t("pwa.install")}
+                </button>
+              )}
+              <p className="fine-print">
+                {iosHint() ? t("settings.installIOS") : canInstall ? t("settings.installReady") : t("settings.installHint")}
+              </p>
+            </>
+          )}
         </article>
         <article className="panel wide">
           <h2>{t("settings.backupTitle")}</h2>

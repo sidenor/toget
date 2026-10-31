@@ -33,6 +33,17 @@ import {
 
 type View = "chat" | "approvals" | "agents" | "policies" | "devices" | "audit" | "search" | "settings";
 
+const views: View[] = ["chat", "approvals", "agents", "policies", "devices", "audit", "search", "settings"];
+
+function initialView(): View {
+  const requested = new URLSearchParams(window.location.search).get("view");
+  return requested && views.includes(requested as View) ? (requested as View) : "chat";
+}
+
+function isStandalone(): boolean {
+  return window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+}
+
 function mergeEvents(previous: RoomEvent[], incoming: RoomEvent[]): RoomEvent[] {
   const seen = new Set(previous.map((event) => event.id));
   const merged = [...previous];
@@ -53,8 +64,11 @@ export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [activeRoomID, setActiveRoomID] = useState<string | null>(null);
-  const [view, setView] = useState<View>("chat");
+  const [view, setView] = useState<View>(initialView);
   const [booting, setBooting] = useState(true);
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [installed, setInstalled] = useState(isStandalone);
+  const [installDismissed, setInstallDismissed] = useState(() => localStorage.getItem("toget.installDismissed") === "1");
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
   const [navOpen, setNavOpen] = useState(false);
@@ -120,7 +134,9 @@ export default function App() {
             const result = await api.rooms();
             if (cancelled) return;
             setRooms(result.rooms);
-            setActiveRoomID(result.rooms[0]?.id ?? null);
+            const requestedRoom = new URLSearchParams(window.location.search).get("room");
+            const room = result.rooms.find((item) => item.id === requestedRoom);
+            setActiveRoomID(room?.id ?? result.rooms[0]?.id ?? null);
           }
         }
       } catch (err) {
@@ -158,6 +174,40 @@ export default function App() {
   }, [toast]);
 
   const notify = useCallback((message: string) => setToast(message), []);
+
+  useEffect(() => {
+    function onPrompt(event: Event) {
+      event.preventDefault();
+      setInstallPrompt(event as BeforeInstallPromptEvent);
+    }
+    function onInstalled() {
+      setInstalled(true);
+      setInstallPrompt(null);
+      notify(t("pwa.installed"));
+    }
+    window.addEventListener("beforeinstallprompt", onPrompt);
+    window.addEventListener("appinstalled", onInstalled);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", onPrompt);
+      window.removeEventListener("appinstalled", onInstalled);
+    };
+  }, [notify, t]);
+
+  const installApp = useCallback(async () => {
+    if (!installPrompt) return;
+    await installPrompt.prompt();
+    const choice = await installPrompt.userChoice;
+    if (choice.outcome === "accepted") {
+      setInstallPrompt(null);
+    } else {
+      notify(t("pwa.dismissed"));
+    }
+  }, [installPrompt, notify, t]);
+
+  const dismissInstall = useCallback(() => {
+    localStorage.setItem("toget.installDismissed", "1");
+    setInstallDismissed(true);
+  }, []);
 
   const selectRoom = useCallback((roomID: string) => {
     setActiveRoomID(roomID);
@@ -427,6 +477,22 @@ export default function App() {
             </button>
           </div>
         )}
+        {installPrompt && !installed && !installDismissed && view !== "settings" && (
+          <div className="install-banner">
+            <div>
+              <strong>{t("pwa.bannerTitle")}</strong>
+              <span>{t("pwa.bannerText")}</span>
+            </div>
+            <div className="install-banner-actions">
+              <button className="button primary" onClick={() => void installApp()}>
+                {t("pwa.install")}
+              </button>
+              <button className="icon-button" onClick={dismissInstall} aria-label={t("common.close")}>
+                ×
+              </button>
+            </div>
+          </div>
+        )}
         {view !== "settings" && (
           <UpdateBanner
             t={t}
@@ -485,6 +551,9 @@ export default function App() {
             onRestartUpdate={() => void restartUpdate()}
             onRollbackUpdate={() => void rollbackUpdate()}
             onClearUpdateDismissal={() => void clearUpdateDismissal()}
+            installed={installed}
+            canInstall={installPrompt !== null}
+            onInstallApp={() => void installApp()}
           />
         )}
       </main>
