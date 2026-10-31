@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -349,9 +347,34 @@ func updateCurrentAndRollout(paths config.Paths, cfg config.Config, opts *update
 }
 
 func fallbackRolloutID(home string) string {
-	host, _ := os.Hostname()
-	sum := sha256.Sum256([]byte("toget-update-rollout-id:v1\n" + host + "\n" + home))
-	return hex.EncodeToString(sum[:])
+	return update.LocalRolloutID(home)
+}
+
+// newUpdateMonitor builds the in-daemon monitor. A misconfiguration disables
+// background checks without preventing Toget from serving local data.
+func newUpdateMonitor(paths config.Paths, cfg config.Config, logger *slog.Logger) (*update.Monitor, error) {
+	mode, err := cfg.Update.NormalizedMode()
+	if err != nil {
+		return nil, err
+	}
+	interval, err := cfg.Update.CheckEvery()
+	if err != nil {
+		return nil, err
+	}
+	return update.NewMonitor(update.MonitorOptions{
+		Home:          paths.Home,
+		StatePath:     paths.UpdateState,
+		Root:          cfg.Update.Root,
+		Channel:       cfg.Update.Channel,
+		ChannelURL:    cfg.Update.ChannelURL,
+		RootKey:       firstNonEmpty(cfg.Update.RootKey, version.ReleaseRootKey),
+		Restart:       cfg.Update.Restart,
+		HealthCommand: cfg.Update.HealthCommand,
+		HealthURL:     cfg.Update.HealthURL,
+		Mode:          mode,
+		CheckInterval: interval,
+		Logger:        logger,
+	})
 }
 
 func printUpdateCheck(result *update.CheckResult) {

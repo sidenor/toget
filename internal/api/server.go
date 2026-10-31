@@ -25,6 +25,7 @@ import (
 	"github.com/sidenor/toget/internal/room"
 	"github.com/sidenor/toget/internal/session"
 	"github.com/sidenor/toget/internal/tool"
+	"github.com/sidenor/toget/internal/update"
 	"github.com/sidenor/toget/internal/vault"
 	"github.com/sidenor/toget/internal/version"
 )
@@ -53,6 +54,7 @@ type Options struct {
 	Approvals    *approval.Service
 	Tools        *tool.Service
 	Node         *node.Service
+	Updates      *update.Monitor
 	Session      *session.Manager
 	AgentRuns    AgentRunController
 	AgentStreams AgentStreamProvider
@@ -71,6 +73,7 @@ type Server struct {
 	approvals    *approval.Service
 	tools        *tool.Service
 	node         *node.Service
+	updates      *update.Monitor
 	session      *session.Manager
 	agentRuns    AgentRunController
 	agentStreams AgentStreamProvider
@@ -99,6 +102,7 @@ func New(opts Options) *Server {
 		approvals:    opts.Approvals,
 		tools:        opts.Tools,
 		node:         opts.Node,
+		updates:      opts.Updates,
 		session:      sessions,
 		agentRuns:    opts.AgentRuns,
 		agentStreams: opts.AgentStreams,
@@ -124,6 +128,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/status", s.protected(s.handleStatus))
 	mux.HandleFunc("GET /api/v1/account", s.protected(s.handleGetAccount))
 	mux.HandleFunc("POST /api/v1/account", s.protected(s.handleCreateAccount))
+
+	// Update checks are local system operations, so they stay available while
+	// the account is locked. They still require the loopback API token.
+	mux.HandleFunc("GET /api/v1/update", s.protected(s.handleGetUpdate))
+	mux.HandleFunc("POST /api/v1/update/check", s.protected(s.handleCheckUpdate))
+	mux.HandleFunc("POST /api/v1/update/apply", s.protected(s.handleApplyUpdate))
+	mux.HandleFunc("POST /api/v1/update/dismiss", s.protected(s.handleDismissUpdate))
+	mux.HandleFunc("DELETE /api/v1/update/dismiss", s.protected(s.handleClearDismissUpdate))
+	mux.HandleFunc("POST /api/v1/update/rollback", s.protected(s.handleRollbackUpdate))
+	mux.HandleFunc("POST /api/v1/update/restart", s.protected(s.handleRestartUpdate))
 
 	// Account and device management.
 	mux.HandleFunc("GET /api/v1/devices", s.data(s.handleListDevices))

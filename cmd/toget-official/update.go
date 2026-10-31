@@ -35,6 +35,12 @@ func newReleaseCommand() *cobra.Command {
 	cmd.AddCommand(newReleaseManifestCommand())
 	cmd.AddCommand(newReleaseChannelCommand())
 	cmd.AddCommand(newReleaseVerifyCommand())
+	cmd.AddCommand(newReleaseVerifyTreeCommand())
+	cmd.AddCommand(newReleaseIndexCommand())
+	cmd.AddCommand(newReleaseLatestCommand())
+	cmd.AddCommand(newReleaseYankCommand())
+	cmd.AddCommand(newReleaseSBOMCommand())
+	cmd.AddCommand(newReleaseBuildCommand())
 	return cmd
 }
 
@@ -170,8 +176,8 @@ func newReleaseManifestCommand() *cobra.Command {
 		protocol, schema, minProtocol     int
 		minApp, level, changelog, sbom    string
 		out, keyPath, certPath, rootKey   string
-		publishedAt                       string
-		force                             bool
+		publishedAt, moduleDir            string
+		force, noSBOM, noSig              bool
 	)
 	cmd := &cobra.Command{
 		Use:   "manifest",
@@ -187,6 +193,9 @@ func newReleaseManifestCommand() *cobra.Command {
 			if keyPath == "" || certPath == "" || rootKey == "" {
 				return errors.New("--key, --cert, and --root-key are required")
 			}
+			if sbom != "" && noSBOM {
+				return errors.New("--sbom and --no-sbom are mutually exclusive")
+			}
 			key, err := update.LoadSigningKey(keyPath)
 			if err != nil {
 				return err
@@ -201,6 +210,31 @@ func newReleaseManifestCommand() *cobra.Command {
 			if err := verifyCertificate(cert, rootKey); err != nil {
 				return err
 			}
+			published := time.Now().UTC()
+			if publishedAt != "" {
+				parsed, err := time.Parse(time.RFC3339, publishedAt)
+				if err != nil {
+					return fmt.Errorf("--published-at: %w", err)
+				}
+				published = parsed.UTC()
+			}
+			if out == "" {
+				out = filepath.Join(dir, "manifests", "v"+release+".json")
+			}
+			if !force {
+				if _, err := os.Stat(out); err == nil {
+					return fmt.Errorf("%s already exists; published release manifests are immutable (use --force only for an unpublished release)", out)
+				} else if !errors.Is(err, os.ErrNotExist) {
+					return err
+				}
+			}
+			if sbom == "" && !noSBOM {
+				sbom, err = ensureReleaseSBOM(cmd.Context(), dir, release, moduleDir, published, force)
+				if err != nil {
+					return err
+				}
+				fmt.Printf("SBOM:     %s\n", sbom)
+			}
 			options := update.BuildManifestOptions{
 				Dir:         dir,
 				Release:     release,
@@ -212,25 +246,16 @@ func newReleaseManifestCommand() *cobra.Command {
 				MinProtocol: minProtocol,
 				Level:       level,
 				Changelog:   changelog,
+				PublishedAt: published,
 				SBOMPath:    sbom,
 				Key:         key,
 				Cert:        cert,
-			}
-			if publishedAt != "" {
-				parsed, err := time.Parse(time.RFC3339, publishedAt)
-				if err != nil {
-					return fmt.Errorf("--published-at: %w", err)
-				}
-				options.PublishedAt = parsed
 			}
 			manifest, err := update.BuildManifest(options)
 			if err != nil {
 				return err
 			}
-			if out == "" {
-				out = filepath.Join(dir, "manifests", "v"+manifest.Release+".json")
-			}
-			if err := writeReleaseDocument(out, manifest, force); err != nil {
+			if err := writeSignedReleaseDocument(dir, out, manifest, key, force, noSig); err != nil {
 				return err
 			}
 			fmt.Printf("Release:  %s\n", manifest.Release)
@@ -249,7 +274,10 @@ func newReleaseManifestCommand() *cobra.Command {
 	cmd.Flags().StringVar(&minApp, "min-app", "", "minimum app version allowed to update")
 	cmd.Flags().StringVar(&level, "level", update.LevelRecommended, "release level: recommended, security, or forced")
 	cmd.Flags().StringVar(&changelog, "changelog", "", "release notes")
-	cmd.Flags().StringVar(&sbom, "sbom", "", "optional SPDX SBOM file")
+	cmd.Flags().StringVar(&sbom, "sbom", "", "SPDX SBOM file (default: generate <dir>/sbom/toget-<release>.spdx.json)")
+	cmd.Flags().BoolVar(&noSBOM, "no-sbom", false, "publish without an SBOM")
+	cmd.Flags().StringVar(&moduleDir, "module-dir", ".", "Go module directory for automatic SBOM generation")
+	cmd.Flags().BoolVar(&noSig, "no-sig", false, "do not write a .sig sidecar")
 	cmd.Flags().StringVar(&out, "out", "", "manifest output path (default <dir>/manifests/v<release>.json)")
 	cmd.Flags().StringVar(&keyPath, "key", "", "release private key file")
 	cmd.Flags().StringVar(&certPath, "cert", "", "release key certificate")
@@ -265,7 +293,7 @@ func newReleaseChannelCommand() *cobra.Command {
 		out, keyPath, certPath, rootKey             string
 		publishedAt                                 string
 		rollout                                     int
-		force                                       bool
+		force, noSig                                bool
 	)
 	cmd := &cobra.Command{
 		Use:   "channel",
@@ -327,7 +355,7 @@ func newReleaseChannelCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := writeReleaseDocument(out, pointer, force); err != nil {
+			if err := writeSignedReleaseDocument(dir, out, pointer, key, force, noSig); err != nil {
 				return err
 			}
 			fmt.Printf("Channel: %s\n", pointer.Channel)
@@ -349,6 +377,7 @@ func newReleaseChannelCommand() *cobra.Command {
 	cmd.Flags().StringVar(&publishedAt, "published-at", "", "RFC3339 publication time (default now)")
 	cmd.Flags().IntVar(&rollout, "rollout", 100, "rollout percentage (1-100)")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing channel pointer")
+	cmd.Flags().BoolVar(&noSig, "no-sig", false, "do not write a .sig sidecar")
 	return cmd
 }
 
@@ -498,6 +527,129 @@ func writeReleaseDocument(path string, value any, force bool) error {
 	if err := os.Chmod(path, 0o644); err != nil {
 		return err
 	}
+	return nil
+}
+
+// writeSignedReleaseDocument writes a signed document and, unless noSig is
+// set, a .sig sidecar over the exact bytes. The pair is preflighted so an
+// existing immutable document is never partially replaced.
+func writeSignedReleaseDocument(dir, path string, value any, key *update.SigningKey, force, noSig bool) error {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if path == "-" {
+		if noSig {
+			_, err := os.Stdout.Write(data)
+			return err
+		}
+		ref := filepath.Base(path)
+		signature, err := update.BuildDetachedSignature(ref, data, key)
+		if err != nil {
+			return err
+		}
+		_, err = os.Stdout.Write(data)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(signature)
+	}
+	var sidecar []byte
+	if !noSig {
+		ref, err := releaseDocumentRef(dir, path)
+		if err != nil {
+			return err
+		}
+		signature, err := update.BuildDetachedSignature(ref, data, key)
+		if err != nil {
+			return err
+		}
+		sidecar, err = json.MarshalIndent(signature, "", "  ")
+		if err != nil {
+			return err
+		}
+		sidecar = append(sidecar, '\n')
+	}
+	sidecarPath := path + ".sig"
+	if !force {
+		for _, candidate := range []string{path, sidecarPath} {
+			if _, err := os.Stat(candidate); err == nil {
+				return fmt.Errorf("%s already exists (use --force to overwrite)", candidate)
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+	} else if noSig {
+		if err := os.Remove(sidecarPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	if err := writeReleaseBytesAtomic(path, data); err != nil {
+		return err
+	}
+	if sidecar != nil {
+		if err := writeReleaseBytesAtomic(sidecarPath, sidecar); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func releaseDocumentRef(dir, path string) (string, error) {
+	if strings.TrimSpace(dir) == "" {
+		return filepath.Base(path), nil
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(absDir, absPath)
+	if err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".." {
+		return filepath.ToSlash(rel), nil
+	}
+	return filepath.Base(path), nil
+}
+
+func writeReleaseBytesAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	tmp, err := os.CreateTemp(dir, ".toget-release-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			tmp.Close()
+			os.Remove(tmpName)
+		}
+	}()
+	if err := tmp.Chmod(0o644); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	cleanup = false
 	return nil
 }
 

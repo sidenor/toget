@@ -16,9 +16,19 @@ import type {
   Room,
   RoomEvent,
   Status,
+  UpdateStatusView,
 } from "./types";
 import { Badge, CopyButton, Modal, Spinner } from "./ui";
-import { AgentsView, ApprovalsView, AuditView, CommonProps, DevicesView, SearchView, SettingsView } from "./views";
+import {
+  AgentsView,
+  ApprovalsView,
+  AuditView,
+  CommonProps,
+  DevicesView,
+  SearchView,
+  SettingsView,
+  UpdateBanner,
+} from "./views";
 
 type View = "chat" | "approvals" | "agents" | "devices" | "audit" | "search" | "settings";
 
@@ -47,6 +57,8 @@ export default function App() {
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
   const [navOpen, setNavOpen] = useState(false);
+  const [update, setUpdate] = useState<UpdateStatusView | null>(null);
+  const [updateBusy, setUpdateBusy] = useState("");
 
   const setLang = useCallback((next: Lang) => {
     localStorage.setItem("toget.lang", next);
@@ -75,6 +87,15 @@ export default function App() {
     return result.rooms;
   }, []);
 
+  const refreshUpdate = useCallback(async () => {
+    try {
+      setUpdate(await api.updateStatus());
+    } catch {
+      // A node without update configuration still has a healthy local API;
+      // leave the last known state instead of showing a persistent error.
+    }
+  }, []);
+
   const refreshStatus = useCallback(async () => {
     const next = await api.status();
     setStatus(next);
@@ -91,6 +112,7 @@ export default function App() {
         if (cancelled) return;
         setStatus(next);
         if (next.account) {
+          void refreshUpdate();
           const session = await api.session();
           if (cancelled) return;
           if (!session.locked) {
@@ -122,6 +144,13 @@ export default function App() {
   }, [status?.account?.id, status?.locked, refreshStatus, handleError]);
 
   useEffect(() => {
+    if (!status?.account) return;
+    void refreshUpdate();
+    const timer = window.setInterval(() => void refreshUpdate(), 60_000);
+    return () => window.clearInterval(timer);
+  }, [status?.account?.id, refreshUpdate]);
+
+  useEffect(() => {
     if (!toast) return;
     const timer = window.setTimeout(() => setToast(""), 2600);
     return () => window.clearTimeout(timer);
@@ -142,6 +171,115 @@ export default function App() {
       setNavOpen(false);
     } catch (err) {
       handleError(err);
+    }
+  }
+
+  async function checkForUpdate() {
+    setUpdateBusy("check");
+    try {
+      const result = await api.checkUpdate(true);
+      setUpdate(result.update);
+      if (result.result.available && result.result.manifest) {
+        notify(t("update.checkFound", { release: result.result.manifest.release }));
+      } else {
+        notify(t("update.upToDate"));
+      }
+    } catch (err) {
+      handleError(err);
+    } finally {
+      setUpdateBusy("");
+    }
+  }
+
+  async function installUpdate() {
+    const offered = update?.result;
+    if (!update || !offered?.available || !offered.manifest) return;
+    const release = offered.manifest.release;
+    if (!window.confirm(t("update.installConfirm", { release }))) return;
+    setUpdateBusy("install");
+    try {
+      const applied = await api.applyUpdate(release);
+      setUpdate(applied.update);
+      if (!applied.result.needs_restart) {
+        notify(t("update.staged", { release }));
+        await refreshUpdate();
+        return;
+      }
+      if (!applied.update.restart_configured || !applied.update.restart_supported) {
+        notify(t("update.stagedManual", { release }));
+        return;
+      }
+      if (window.confirm(t("update.restartConfirm"))) {
+        await api.restartUpdate();
+        notify(t("update.restarting"));
+      } else {
+        notify(t("update.staged", { release }));
+      }
+    } catch (err) {
+      handleError(err);
+    } finally {
+      setUpdateBusy("");
+    }
+  }
+
+  async function dismissUpdate() {
+    const release = update?.result?.manifest?.release ?? update?.staged?.release;
+    if (!release) return;
+    setUpdateBusy("dismiss");
+    try {
+      setUpdate(await api.dismissUpdate(release, 24));
+      notify(t("update.later"));
+    } catch (err) {
+      handleError(err);
+    } finally {
+      setUpdateBusy("");
+    }
+  }
+
+  async function clearUpdateDismissal() {
+    setUpdateBusy("clear");
+    try {
+      setUpdate(await api.clearUpdateDismissal());
+    } catch (err) {
+      handleError(err);
+    } finally {
+      setUpdateBusy("");
+    }
+  }
+
+  async function restartUpdate() {
+    if (!window.confirm(t("update.restartConfirm"))) return;
+    await performRestart();
+  }
+
+  async function performRestart() {
+    setUpdateBusy("restart");
+    try {
+      await api.restartUpdate();
+      notify(t("update.restarting"));
+    } catch (err) {
+      handleError(err);
+      setUpdateBusy("");
+    }
+  }
+
+  async function rollbackUpdate() {
+    if (!window.confirm(t("update.rollbackConfirm"))) return;
+    setUpdateBusy("rollback");
+    try {
+      const result = await api.rollbackUpdate();
+      setUpdate(result.update);
+      notify(t("update.rolledBack", { release: result.result.release || "—" }));
+      if (result.result.needs_restart && result.update.restart_configured && result.update.restart_supported) {
+        if (window.confirm(t("update.restartConfirm"))) {
+          await performRestart();
+          return;
+        }
+      }
+    } catch (err) {
+      handleError(err);
+    } finally {
+      setUpdateBusy("");
     }
   }
 
@@ -287,6 +425,17 @@ export default function App() {
             </button>
           </div>
         )}
+        {view !== "settings" && (
+          <UpdateBanner
+            t={t}
+            update={update}
+            busy={updateBusy !== ""}
+            onInstall={() => void installUpdate()}
+            onDismiss={() => void dismissUpdate()}
+            onRestart={() => void restartUpdate()}
+            onDetails={() => setView("settings")}
+          />
+        )}
         {view === "chat" &&
           (activeRoomID ? (
             <Conversation
@@ -325,6 +474,14 @@ export default function App() {
             lang={lang}
             setLang={setLang}
             lock={lock}
+            update={update}
+            updateBusy={updateBusy}
+            onCheckUpdate={() => void checkForUpdate()}
+            onInstallUpdate={() => void installUpdate()}
+            onDismissUpdate={() => void dismissUpdate()}
+            onRestartUpdate={() => void restartUpdate()}
+            onRollbackUpdate={() => void rollbackUpdate()}
+            onClearUpdateDismissal={() => void clearUpdateDismissal()}
           />
         )}
       </main>

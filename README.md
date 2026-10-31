@@ -254,9 +254,12 @@ business cards can be copied as text or shown as a QR code, and a saved card
 pins the full server ID for its short code. Room invites and device-pairing
 codes can also be shown as QR codes and scanned from a still image.
 
-Not implemented yet: NAT traversal or hole punching, multiple accounts on one
-node, a bundled model, and periodic automatic update checks (the update
-commands and rollback are implemented). The daemon runs
+Releases are signed and reproducible, ship with SPDX SBOMs, and can be
+verified as a complete tree before publication. Nodes check for updates on a
+schedule, show an in-app banner, stage a release without restarting, and roll
+back on failure. Not implemented yet: NAT traversal or hole punching, multiple
+accounts on one node, a bundled model, and server-enforced forced updates for
+official-hosted accounts. The daemon runs
 Agents locally on a mention, through Claude Code or any command that speaks the
 runtime protocol. Many parts will change as we learn.
 That is exactly why the project is open this early. If you care about

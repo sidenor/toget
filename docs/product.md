@@ -162,7 +162,7 @@ The first usable version should prove one loop end to end. Delivery is staged in
 - sync a second device of the same account;
 - run entirely on a LAN, with the official service optional.
 
-Stages after the MVP add relay and the official directory (M4); official hosting and recovery credentials, with signed updates and the static update service already implemented (M5); and daily-use features such as PWA install, policy templates, and audit export (M6). Automatic update checks and forced-update policy are not implemented.
+Stages after the MVP add relay and the official directory (M4); official hosting and recovery credentials, with signed reproducible releases, periodic update checks, an in-app update prompt, and rollback already implemented (M5); and daily-use features such as PWA install, policy templates, and audit export (M6). Server-enforced forced updates for official-hosted accounts are not implemented, because official-hosted accounts do not exist yet.
 
 ## Explicit non-goals for the MVP
 

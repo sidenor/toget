@@ -421,19 +421,23 @@ Controls:
 
 Implemented controls:
 
-- Signed release manifests: an offline root key certifies release keys; release keys sign channels and version manifests; manifests list artifact SHA-256 hashes.
+- Signed release manifests: an offline root key certifies release keys; release keys sign channels, version manifests, and the release index; manifests list artifact SHA-256 hashes.
 - Clients embed the root public key and reject anything that does not chain to it. HTTPS is not trusted as the source of truth.
+- Each signed document has an optional detached `.sig` sidecar bound to the document path and SHA-256, so a signature cannot be moved to another document.
 - Atomic updates: download, verify signature and hash, extract into a staged directory with path/symlink/device/duplicate checks and size limits, reject incompatible app/protocol/schema versions, switch symlinks, optionally restart, run a health check, and roll back on failure.
 - The previous version is kept for rollback. Pending state is reconciled at the next daemon start if the process dies mid-update.
-- The update service is static and only exposes `channels/`, `manifests/`, `daemon/`, and `sbom/`; it has no directory listing or dotfile access.
+- Periodic checks and the in-app banner default to notify-only. Automatic staging never restarts the daemon; an explicit restart is required. Forced releases can be postponed for at most 24 hours.
+- The update service is static and only exposes `channels/`, `manifests/`, `daemon/`, and `sbom/`; it has no directory listing or dotfile access. Mutable channel/index objects get a short cache lifetime; artifacts are immutable.
+- `release verify-tree` rejects symlinks, unreferenced files, extra manifests, tampered artifacts or SBOMs, and channels pointing at yanked releases before an operator publishes a tree.
+- `release build` produces reproducible archives with fixed source date, trimpath, no CGO, and stable archive metadata, and generates a deterministic SPDX 2.3 SBOM. `--verify` builds twice and compares hashes.
 - Release private keys are mode `0600` and never served. The root key is intended to stay offline.
 - Dependencies are pinned, scanned, and reviewed; the daemon and protocol are open source and auditable.
 
 Not yet provided:
 
-- Reproducible builds and automated SBOM generation. The manifest can reference and serve an SBOM, but the release process must produce it.
 - A transparency log, threshold signing, or enforced HSM use.
-- Periodic update checks, in-app prompts, and enforced forced-update policy.
+- Compromise detection or an automatic rollout pause; the update service is static and does not collect telemetry.
+- Server-side enforcement of a forced-update policy for official-hosted accounts. The browser UI honors the forced level, but a user who controls the binary can postpone or bypass it.
 
 See [updates.md](updates.md) for the operational workflow.
 

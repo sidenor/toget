@@ -2,6 +2,7 @@ package update
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -139,6 +140,56 @@ func TestVerifyManifestRequiresCertifiedKey(t *testing.T) {
 	}
 	if _, err := NewVerifier(otherRoot.Public).VerifyManifest(signManifestRaw(t, key, baseManifest(cert)), "1.2.3"); err == nil {
 		t.Fatal("manifest verified under an unrelated root")
+	}
+}
+
+func TestArchivedManifestUsesPublicationTimeCertificateWindow(t *testing.T) {
+	root, err := GenerateSigningKey(KindRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := GenerateSigningKey(KindRelease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	cert, err := CertifyRelease(root, release.Public, now.Add(-72*time.Hour), now.Add(-48*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	writeTarGz(t, filepath.Join(dir, "daemon", "linux-amd64", "v1.0.0", "toget.tar.gz"), []testArchiveEntry{
+		{Name: "toget", Body: []byte("binary"), Mode: 0o755},
+	})
+	published := now.Add(-60 * time.Hour)
+	manifest, err := BuildManifest(BuildManifestOptions{
+		Dir: dir, Release: "1.0.0", Executable: "toget",
+		Protocol: 1, Schema: 9, Level: LevelRecommended,
+		PublishedAt: published, Key: release, Cert: cert,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier := NewVerifier(root.Public)
+	if _, err := verifier.VerifyManifest(mustJSON(t, manifest), "1.0.0"); err != nil {
+		t.Fatalf("archived manifest with an expired certificate was rejected: %v", err)
+	}
+	channel, err := BuildChannel(BuildChannelOptions{
+		Channel: "stable", Release: "1.0.0", ManifestRef: "v1.0.0.json",
+		Rollout: 100, PublishedAt: published, Key: release, Cert: cert,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifier.VerifyChannel(mustJSON(t, channel), "stable"); err == nil {
+		t.Fatal("channel signed by an expired certificate was accepted")
+	}
+	if _, err := BuildManifest(BuildManifestOptions{
+		Dir: dir, Release: "1.0.0", Executable: "toget",
+		Protocol: 1, Schema: 9, Level: LevelRecommended,
+		PublishedAt: now, Key: release, Cert: cert,
+	}); err == nil {
+		t.Fatal("manifest was signed outside the certificate window")
 	}
 }
 

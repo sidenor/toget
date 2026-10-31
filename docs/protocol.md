@@ -618,7 +618,7 @@ Errors are structured (`code`, `message`, `details`) and stable across minor ver
 - **Additive changes:** new message types, new fields, and new event types are allowed within a protocol version.
 - **Breaking changes:** require a new protocol version and an overlap period of at least six months.
 - **Unknown data:** unknown fields and event types are preserved when forwarding and ignored when reading.
-- **Forced updates:** only for protocol-incompatible or security-critical releases, and only for devices that can reach the official service. The `forced` release level exists, but enforcement for official-hosted accounts is not implemented yet.
+- **Forced updates:** only for protocol-incompatible or security-critical releases, and only for devices that can reach the official service. Clients show a required-update banner that can be postponed for at most 24 hours. Server-side enforcement for official-hosted accounts is not implemented yet.
 
 ## Security requirements
 

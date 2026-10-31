@@ -1,14 +1,20 @@
-# Deployment (Draft)
+# Deployment
 
-> Status: design draft. Installation commands and file paths are the intended shape, not final.
+> Status: the self-hosted node path is implemented. Packaged installers,
+> official-hosted accounts, and the container image described below are still
+> planned; the binary, service installation, and update workflow are usable
+> today.
 >
 > **Implemented today:** `toget serve` provides the local account, vault,
-> SQLite log, loopback API/UI, and a same-LAN HTTPS node. `toget-official`
-> provides an optional relay, signed-manifest directory, and static signed
-> update service; `toget update` checks, installs, finishes, and rolls back
-> managed releases. Public account hosting, official-hosted accounts, NAT
-> traversal, automatic update checks, and packaged installers described below
-> are not implemented yet.
+> SQLite log, loopback API/UI, and a same-LAN HTTPS node. `toget service`
+> writes and activates a systemd, launchd, or Windows service definition.
+> `toget-official` provides an optional relay, signed-manifest directory, and
+> static signed update service, plus key, manifest, index, yank, SBOM,
+> reproducible-build, and release-tree verification commands. The daemon checks
+> for updates on a schedule, the web UI shows an update banner and settings,
+> and `toget update` checks, stages, finishes, and rolls back managed releases.
+> Public account hosting, official-hosted accounts, NAT traversal, and
+> packaged installers are not implemented yet.
 
 Toget is deployed as a **node**: one `toget` binary that can act as a daemon, a self-hosted account host, a relay, or the local CLI. Most users run it on one machine and never think about the rest.
 
@@ -50,44 +56,71 @@ Do not expose `7718` to the network. The local UI is not designed to be a public
 
 ### Linux
 
-- Binary in `/opt/toget/versions/<version>/`, with `/opt/toget/current` as a symlink.
-- `toget` on `PATH` through `/usr/local/bin/toget`.
-- State in `/var/lib/toget/{config,identity,data,keys,relay,logs,backups,update}`.
-- Service unit in `/etc/systemd/system/toget.service`; runs as a dedicated `toget` user.
-- `toget doctor` checks ports, permissions, disk space, clock skew, and connectivity.
+The reference layout keeps the binary under `/opt/toget` and state under
+`/var/lib/toget`:
+
+```bash
+sudo install -d -m 0755 /opt/toget/versions/v1.1.0
+sudo install -m 0755 toget /opt/toget/versions/v1.1.0/toget
+sudo ln -sfn versions/v1.1.0 /opt/toget/current
+sudo install -d -m 0700 /var/lib/toget
+
+# Write and start a system-wide unit. The unit runs `toget serve` and sets
+# TOGET_HOME=/var/lib/toget.
+sudo /opt/toget/current/toget --home /var/lib/toget service install \
+  --scope system --executable /opt/toget/current/toget
+
+# Or install a per-user unit and keep it running after logout.
+/opt/toget/current/toget service install
+sudo loginctl enable-linger "$USER"
+```
+
+`toget service install --dry-run` prints the generated unit and activation
+commands without touching the system. The system unit has no `User=` line, so
+it runs as root; use a custom unit if you need a dedicated service user.
+`toget service status` and `toget service uninstall` manage the same unit.
 
 ### macOS
 
-- Binary and app bundle in `/Applications/Toget.app` or a Homebrew cask.
-- State under `~/Library/Application Support/Toget`.
-- `launchd` agent for login-time start; secrets in Keychain.
-- Signed and notarized for distribution.
+`toget service install` writes a LaunchAgent to
+`~/Library/LaunchAgents/dev.toget.node.plist` (or a LaunchDaemon under
+`/Library/LaunchDaemons` with `--scope system`), loads it at login or boot, and
+restarts it if it exits unsuccessfully. State defaults to the per-user data
+directory; use `--home` consistently when installing and invoking the CLI.
+A signed, notarized `.app` or Homebrew cask is still planned.
 
 ### Windows
 
-- Installer under `%ProgramFiles%\Toget`, state under `%ProgramData%\Toget`.
-- Windows service registered by the installer; secrets in Credential Manager.
-- Signed installer and binaries.
+`toget service install` registers a Windows service named `Toget`, starts it
+automatically with delayed start, and configures restart-on-failure recovery.
+The binary must remain at the path passed to `--executable`. The service runs
+`toget serve --name <name> --home <home>`; `--scope user` is not supported.
+Automatic update restart is unavailable on Windows, so a staged update needs a
+manual `Restart-Service Toget`. A signed MSI is still planned.
 
 ### Container
 
-A container image is published for self-hosted account hosts and relays. Mount a persistent volume for `/var/lib/toget` and publish `7717` only if the node should accept direct connections.
+A container image is planned; none is published yet. When it exists, mount a
+persistent volume for the Toget home and publish `7717` only if the node
+should accept direct connections.
 
 ```yaml
+# Planned compose shape; the image does not exist yet.
 services:
   toget:
     image: ghcr.io/sidenor/toget:latest
     restart: unless-stopped
     ports:
       - "7717:7717/tcp"
-      - "7717:7717/tcp"
+      - "7717:7717/udp"
     volumes:
       - toget-data:/var/lib/toget
 volumes:
   toget-data:
 ```
 
-The container is a convenience. A static binary on the host is the reference deployment, because it can use the host's keychain, service manager, and update path.
+A static binary on the host is the reference deployment, because it can use
+the host's keychain, service manager, and update path.
 
 ## Create an account
 
@@ -237,9 +270,10 @@ current limitations.
 
 ## Updates
 
-Signed releases, a static update service, atomic installation, rollback, and
-stable/beta channels are implemented. The full workflow is in
-[updates.md](updates.md); the short version:
+Signed releases, a static update service, atomic installation, rollback,
+stable/beta channels, periodic checks, and an in-app update prompt are
+implemented. The full workflow is in [updates.md](updates.md); the short
+version:
 
 ```bash
 toget update check
@@ -249,20 +283,29 @@ toget update rollback
 ```
 
 Configure `update.root`, `update.channel_url`, and `update.root_key` (or the
-matching flags). `update.restart` is a local command such as
+matching flags). `update.mode` defaults to `notify`, which checks every six
+hours and shows a banner in the local web UI without downloading anything.
+`auto` checks and stages an eligible release in the background but still
+waits for an explicit restart; `off` disables scheduled checks. Set
+`update.check_interval` to a Go duration of at least `5m`.
+
+`update.restart` is a local command such as
 `["systemctl", "restart", "toget"]`; without it, an update is staged and waits
 for an operator restart. The daemon reconciles a pending update at startup.
 
 Updates download to a temporary directory, verify the release signature and
 artifact hash, extract a staged version directory, run a health check, switch
 `current`, optionally restart, and roll back automatically on failure. The
-previous version is retained for `update rollback`.
+previous version is retained for `update rollback`. The UI shows the available
+release, level, changelog, staging state, and rollback controls. Forced
+releases can be postponed for at most 24 hours in the UI, but enforcement for
+official-hosted accounts is still planned.
 
-Automatic periodic checks and an in-app update prompt are not implemented yet.
-Run `toget update check` from a timer if the deployment should check regularly
-(and gate `apply` on the operator's policy). Forced-update policy for
-official-hosted accounts depends on the account hosting work that is still
-planned.
+Release operators can generate reproducible archives and SBOMs with
+`toget-official release build`, sign manifests/channels/indexes, yank a bad
+release, verify the complete tree with `release verify-tree`, and publish it
+append-only with `scripts/publish-release.sh`. See
+[updates.md](updates.md#build-a-release) for the release workflow.
 
 ## Backups
 

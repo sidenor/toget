@@ -15,7 +15,7 @@ Start here:
 | [LAN discovery](discovery.md) | mDNS advertisement, verified lookup, privacy, limits |
 | [Business cards](cards.md) | Portable signed cards, QR codes for cards, invites, and pairing, saved-card pinning, limits |
 | [Deployment](deployment.md) | Self-hosted, official-hosted, relay, and offline modes |
-| [Signed updates](updates.md) | Release keys, manifests, channels, static update service, atomic install, rollback |
+| [Signed updates](updates.md) | Release keys, manifests, channels, index/yank, reproducible builds, SBOMs, publish script, automatic checks, atomic install, rollback |
 | [Technology stack](tech-stack.md) | Chosen stack, rationale, rejected alternatives, version policy |
 | [Repository layout](repo-layout.md) | Directory structure and rules for where code belongs |
 | [Roadmap](roadmap.md) | Milestones, definitions of done, near-term tasks |

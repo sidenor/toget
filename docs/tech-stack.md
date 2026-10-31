@@ -153,10 +153,10 @@ Rules:
 - **Crypto:** known-answer tests for HPKE, AEAD, HKDF, and signatures; property tests for envelope binding.
 - **Web:** Vitest and React Testing Library; Playwright for end-to-end flows.
 - **Multi-node:** integration tests spin up two or three nodes, a relay, and a fake Agent on localhost.
-- **Cross-platform CI:** build and test on Linux, macOS, and Windows, `amd64` and `arm64` where practical.
-- **Static analysis:** `go vet`, `staticcheck`, `govulncheck`, ESLint, TypeScript strict mode, `pnpm audit`.
-- **Generated-code check:** CI fails if regeneration produces a diff.
-- **Release checks:** signature and checksum verification, archive-safety and state-validation tests, and an end-to-end smoke test that installs the previous version, stages and finishes an update, rolls back, and exercises automatic rollback after a failed restart.
+- **Cross-platform CI:** tests run on Linux; macOS and Windows jobs build every package. `amd64` and `arm64` release archives are cross-built where practical.
+- **Static analysis:** `gofmt`, `go vet`, race-detector tests, ESLint, TypeScript strict mode, and the web build diff check.
+- **Generated-code check:** CI fails if Protobuf/OpenAPI regeneration produces a diff.
+- **Release checks:** signature and checksum verification, archive-safety and state-validation tests, release-tree verification tests, and an end-to-end smoke test that installs the previous version, stages and finishes an update, rolls back, and exercises automatic rollback after a failed restart. CI also builds every release archive twice and compares hashes.
 
 ## Release and signing
 
@@ -165,9 +165,13 @@ Rules:
 - `manifests/v<version>.json` lists artifacts, hashes, protocol and schema versions, minimum supported versions, and the release level.
 - The manifest is signed by a release key; the release key is certified by the offline root key.
 - Clients embed the root public key and refuse anything that does not chain to it.
-- `toget-official release` generates keys, certificates, manifests, and channels, and can verify a channel exactly as a client would. The static update service serves the release tree.
-- Deterministic client-side canary buckets support 1% → 10% → 50% → 100%; automatic rollout pause needs external monitoring, because the service is static.
-- The manifest can reference an SBOM. Automated SBOM generation and reproducible builds are still goals.
+- `toget-official release` generates keys, certificates, manifests, channels, and a signed release index with `latest` and yank metadata. It can verify a channel exactly as a client would, and `release verify-tree` checks a complete tree before publication.
+- Single documents also get a detached `.sig` sidecar bound to the document path and hash, for mirrors and offline verification.
+- The static update service serves the release tree with immutable caching for artifacts and short-lived caching for channels and the index.
+- `release build` produces reproducible archives and a deterministic SPDX 2.3 SBOM; `--verify` builds twice and compares hashes.
+- Deterministic client-side canary buckets support 1% → 10% → 50% → 100%. Automatic rollout pause needs external monitoring, because the service is static; operators repoint or yank a release.
+- The daemon checks for updates on a schedule (`notify`, `auto`, or `off`), and the local UI shows the release, level, changelog, staging state, and rollback controls.
+- `scripts/publish-release.sh` uploads append-only: artifacts first, then manifests, channels, and the index last, so clients never see a pointer before its target.
 
 ## Deployment and operations
 

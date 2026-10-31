@@ -313,3 +313,105 @@ export type PairJoinView = {
   started_at: string;
   updated_at: string;
 };
+
+export type UpdateCurrent = {
+  app: string;
+  protocol: number;
+  schema: number;
+  release?: string;
+  manifest_sha256?: string;
+};
+
+export type UpdateChannelSummary = {
+  channel: string;
+  release: string;
+  rollout: number;
+  published_at?: string;
+};
+
+export type UpdateManifestSummary = {
+  release: string;
+  protocol: number;
+  schema: number;
+  level: "recommended" | "security" | "forced" | string;
+  changelog?: string;
+  published_at?: string;
+  min_app?: string;
+  min_protocol?: number;
+};
+
+export type UpdateCheckResult = {
+  channel_url: string;
+  manifest_url: string;
+  channel?: UpdateChannelSummary;
+  manifest?: UpdateManifestSummary;
+  manifest_sha256: string;
+  current: UpdateCurrent;
+  available: boolean;
+  reason: string;
+  rollout_percent?: number;
+  rollout_bucket?: number;
+  downgrade?: boolean;
+  warning?: string;
+};
+
+export type UpdateApplyResult = {
+  release: string;
+  previous?: string;
+  executable?: string;
+  up_to_date?: boolean;
+  restarted?: boolean;
+  needs_restart?: boolean;
+  warning?: string;
+};
+
+export type UpdatePending = {
+  release: string;
+  started_at: string;
+};
+
+export type UpdateManagerState = {
+  current?: string;
+  previous?: string;
+  pending?: UpdatePending | null;
+  rollout_id?: string;
+  [key: string]: unknown;
+};
+
+export type UpdateManagerStatus = {
+  root: string;
+  initialized: boolean;
+  state: UpdateManagerState;
+  current_link?: string;
+  previous_link?: string;
+  versions?: { release: string; path: string; executable: string }[];
+  issues?: string[];
+};
+
+export type UpdateStatusView = {
+  enabled: boolean;
+  mode: "notify" | "auto" | "off" | string;
+  channel: string;
+  check_interval: string;
+  last_check?: string;
+  last_error?: string;
+  current: UpdateCurrent;
+  result?: UpdateCheckResult;
+  dismissed?: boolean;
+  dismissed_until?: string;
+  staged?: UpdateApplyResult;
+  status?: UpdateManagerStatus;
+  restart_configured: boolean;
+  restart_supported: boolean;
+  config_error?: string;
+};
+
+export type UpdateCheckView = {
+  result: UpdateCheckResult;
+  update: UpdateStatusView;
+};
+
+export type UpdateApplyView = {
+  result: UpdateApplyResult;
+  update: UpdateStatusView;
+};

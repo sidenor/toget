@@ -27,6 +27,9 @@ import type {
   SessionInfo,
   Status,
   ToolReceipt,
+  UpdateApplyView,
+  UpdateCheckView,
+  UpdateStatusView,
 } from "./types";
 
 export class APIError extends Error {
@@ -68,6 +71,14 @@ function json(body: unknown): RequestInit {
 export const api = {
   status: () => request<Status>("/api/v1/status"),
   session: () => request<SessionInfo>("/api/v1/session"),
+  updateStatus: () => request<UpdateStatusView>("/api/v1/update"),
+  checkUpdate: (force = false) => request<UpdateCheckView>("/api/v1/update/check", json({ force })),
+  applyUpdate: (release: string) => request<UpdateApplyView>("/api/v1/update/apply", json({ release })),
+  dismissUpdate: (release: string, hours = 24) =>
+    request<UpdateStatusView>("/api/v1/update/dismiss", json({ release, hours })),
+  clearUpdateDismissal: () => request<UpdateStatusView>("/api/v1/update/dismiss", { method: "DELETE" }),
+  rollbackUpdate: () => request<UpdateApplyView>("/api/v1/update/rollback", json({})),
+  restartUpdate: () => request<{ restarting: boolean }>("/api/v1/update/restart", json({})),
   unlock: (password: string) => request<SessionInfo>("/api/v1/session", json({ password })),
   lock: () => request<void>("/api/v1/session", { method: "DELETE" }),
 

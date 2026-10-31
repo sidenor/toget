@@ -3,15 +3,17 @@
 Toget is one repository containing the node, the official service, the local web UI, the reset page, shared packages, deployment assets, and documentation.
 
 > **Current implementation:** the working tree contains `cmd/toget`,
-> `cmd/toget-official`, `internal/{account,agent,api,approval,backup,card,config,directory,directoryproto,identity,mdns,node,protocol,relay,relayproto,room,sealbox,session,storage,tool,ui,update,vault,version}`,
-> `sdk/connector`, `examples/connector-echo`, `web/app`, `api/`, `proto/`, and
-> `docs/`. The tree below is the target layout; directories such as `device`,
-> `crypto`, `message`, `transport`, `sync`, `discovery`, `official`,
-> `platform`, `deploy`, `tests`, and the remaining `examples/*` entries are
-> planned, not present yet. The LAN node lives in `internal/node`, the portable
-> card format and QR renderer in `internal/card`, remote-room sync/lifecycle
-> code in `internal/room/remote.go`, signed release verification and managed
-> installation in `internal/update`, and the public connector contract plus Go
+> `cmd/toget-official`, `internal/{account,agent,api,approval,backup,card,config,directory,directoryproto,identity,mdns,node,protocol,relay,relayproto,releasebuild,room,sbom,sealbox,session,storage,tool,ui,update,vault,version}`,
+> `sdk/connector`, `examples/connector-echo`, `web/app`, `api/`, `proto/`,
+> `scripts/`, and `docs/`. The tree below is the target layout; directories
+> such as `device`, `crypto`, `message`, `transport`, `sync`, `discovery`,
+> `official`, `platform`, `deploy`, `tests`, and the remaining `examples/*`
+> entries are planned, not present yet. The LAN node lives in `internal/node`,
+> the portable card format and QR renderer in `internal/card`, remote-room
+> sync/lifecycle code in `internal/room/remote.go`, signed release
+> verification, the update monitor, and managed installation in
+> `internal/update`, deterministic archive building in `internal/releasebuild`,
+> SBOM generation in `internal/sbom`, and the public connector contract plus Go
 > SDK in `docs/connectors.md` and `sdk/connector`.
 
 ## Top-level tree
@@ -20,9 +22,9 @@ Toget is one repository containing the node, the official service, the local web
 toget/
 ├── .github/
 │   ├── workflows/
-│   │   ├── ci.yml                 # lint, test, cross-platform build
-│   │   ├── release.yml            # artifacts, manifests, signatures
-│   │   └── security.yml           # dependency and vulnerability scanning
+│   │   ├── ci.yml                 # format, vet, test, race, web, proto, cross-build, reproducible release
+│   │   ├── release.yml            # planned: signed artifacts and manifests
+│   │   └── security.yml           # planned: dependency and vulnerability scanning
 │   ├── ISSUE_TEMPLATE/
 │   └── pull_request_template.md
 ├── .editorconfig
@@ -47,10 +49,15 @@ toget/
 │   ├── toget/
 │   │   ├── main.go                # node, daemon, CLI, relay, self-hosted account host
 │   │   ├── connector.go           # connector protocol dry-run command
+│   │   ├── service*.go            # systemd/launchd/Windows service install/status/uninstall
 │   │   └── update.go              # update check/status/apply/finish/rollback CLI
 │   └── toget-official/
 │       ├── main.go                # directory, relay, static update service
-│       └── update.go              # release keygen/certify/manifest/channel/verify commands
+│       ├── update.go              # release keygen/certify/manifest/channel/verify commands
+│       ├── release_index.go       # signed index, latest, yank
+│       ├── build.go               # reproducible archives and double-build verification
+│       ├── sbom.go                # SPDX 2.3 SBOM generation
+│       └── verify_tree.go         # complete release-tree verification
 │
 ├── sdk/
 │   └── connector/                 # public Go SDK for connector protocol v1
@@ -76,7 +83,9 @@ toget/
 │   ├── sealbox/                   # room key wrapping and sealed payload helpers
 │   ├── discovery/                 # planned manifest cache and manual-address book (cards live in internal/card)
 │   ├── official/                  # planned official account host (update service lives in cmd/toget-official + internal/update)
-│   ├── update/                    # implemented signed manifests, static service, atomic install, rollback
+│   ├── update/                    # implemented signed documents, index, static service, monitor, atomic install, rollback
+│   ├── releasebuild/              # deterministic cross-platform release archives
+│   ├── sbom/                      # deterministic SPDX 2.3 document builder
 │   ├── ui/                        # local web UI serving, token, origin checks
 │   ├── api/                       # local HTTP API handlers (OpenAPI)
 │   ├── config/                    # config loading, defaults, validation
@@ -157,10 +166,11 @@ toget/
 │       └── 0009-versioning.md
 │
 ├── scripts/
-│   ├── build.sh                   # build node, official service, web assets
-│   ├── release.sh                 # local release smoke test
-│   ├── sign.sh                    # sign manifests and artifacts
-│   └── generate.sh                # regenerate Protobuf and OpenAPI clients
+│   ├── publish-release.sh         # implemented append-only CDN/object-store publish
+│   ├── build.sh                   # planned: build node, official service, web assets
+│   ├── release.sh                 # planned: local release smoke test
+│   ├── sign.sh                    # planned: wrapper around toget-official release
+│   └── generate.sh                # planned: regenerate Protobuf and OpenAPI clients
 │
 ├── tests/
 │   ├── integration/               # multi-node, relay, storage, sync

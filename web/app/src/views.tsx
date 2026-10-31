@@ -17,6 +17,7 @@ import type {
   RecoveryStatus,
   Room,
   SearchHit,
+  UpdateStatusView,
 } from "./types";
 import { Badge, CopyButton, Modal, Spinner } from "./ui";
 
@@ -807,6 +808,277 @@ export function AuditView({ t, rooms, onError }: CommonProps) {
   );
 }
 
+
+export type UpdateControls = {
+  update: UpdateStatusView | null;
+  updateBusy: string;
+  onCheckUpdate: () => void;
+  onInstallUpdate: () => void;
+  onDismissUpdate: () => void;
+  onRestartUpdate: () => void;
+  onRollbackUpdate: () => void;
+  onClearUpdateDismissal: () => void;
+};
+
+function updateLevelLabel(t: Translate, level: string | undefined): string {
+  switch (level) {
+    case "security":
+      return t("update.level.security");
+    case "forced":
+      return t("update.level.forced");
+    default:
+      return t("update.level.recommended");
+  }
+}
+
+function updateReasonLabel(t: Translate, reason: string): string {
+  const key = `update.reason.${reason}`;
+  const label = t(key);
+  return label === key ? reason : label;
+}
+
+function updateModeLabel(t: Translate, mode: string): string {
+  const key = `update.mode.${mode}`;
+  const label = t(key);
+  return label === key ? mode : label;
+}
+
+function updateChangelog(changelog: string | undefined): string {
+  const text = (changelog ?? "").trim();
+  if (text.length <= 320) return text;
+  return `${text.slice(0, 317).trimEnd()}…`;
+}
+
+export function UpdateBanner({
+  t,
+  update,
+  busy,
+  onInstall,
+  onDismiss,
+  onRestart,
+  onDetails,
+}: {
+  t: Translate;
+  update: UpdateStatusView | null;
+  busy: boolean;
+  onInstall: () => void;
+  onDismiss: () => void;
+  onRestart: () => void;
+  onDetails: () => void;
+}) {
+  if (!update || !update.enabled) return null;
+  const result = update.result?.available ? update.result : null;
+  const level = result?.manifest?.level ?? "recommended";
+
+  if (update.staged?.needs_restart) {
+    const release = update.staged.release;
+    return (
+      <aside className="update-banner ready" role="status">
+        <div className="update-banner-copy">
+          <span className="update-kicker">{t("update.restartNeeded")}</span>
+          <strong>{t("update.readyText", { release })}</strong>
+          {update.restart_configured && update.restart_supported ? (
+            <p className="update-changelog">{t("update.staged", { release })}</p>
+          ) : (
+            <p className="update-changelog">{t("update.manualRestart")}</p>
+          )}
+        </div>
+        <div className="update-banner-actions">
+          {update.restart_configured && update.restart_supported && (
+            <button className="button primary" onClick={onRestart} disabled={busy}>
+              {t("update.restartNow")}
+            </button>
+          )}
+          <button className="button ghost" onClick={onDetails} disabled={busy}>
+            {t("update.details")}
+          </button>
+        </div>
+      </aside>
+    );
+  }
+
+  if (!result || !result.manifest) return null;
+  const forced = level === "forced";
+  if (update.dismissed && !forced) return null;
+
+  const release = result.manifest.release;
+  const title = forced
+    ? update.dismissed
+      ? t("update.forcedPostponed", { release })
+      : t("update.forcedTitle", { release })
+    : level === "security"
+      ? t("update.securityTitle", { release })
+      : t("update.availableTitle", { release });
+  const changelog = updateChangelog(result.manifest.changelog);
+  const tone = forced ? "forced" : level === "security" ? "security" : "recommended";
+
+  return (
+    <aside className={`update-banner ${tone}`} role="status">
+      <div className="update-banner-copy">
+        <span className="update-kicker">
+          {updateLevelLabel(t, level)} · {t("update.current")} {update.current.release || update.current.app}
+        </span>
+        <strong>{title}</strong>
+        {changelog && <p className="update-changelog">{changelog}</p>}
+        {result.warning && <p className="update-warning">{result.warning}</p>}
+        {update.dismissed && update.dismissed_until && (
+          <p className="update-changelog">
+            {t("update.dismissed", { date: new Date(update.dismissed_until).toLocaleString() })}
+          </p>
+        )}
+      </div>
+      <div className="update-banner-actions">
+        <button className="button primary" onClick={onInstall} disabled={busy}>
+          {forced ? t("update.forcedNow") : t("update.now")}
+        </button>
+        {!forced && (
+          <button className="button ghost" onClick={onDismiss} disabled={busy}>
+            {t("update.later")}
+          </button>
+        )}
+        {forced && !update.dismissed && (
+          <button className="button ghost" onClick={onDismiss} disabled={busy}>
+            {t("update.forcedLater")}
+          </button>
+        )}
+        <button className="button ghost" onClick={onDetails} disabled={busy}>
+          {t("update.details")}
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+export function UpdateSettingsPanel({
+  t,
+  update,
+  updateBusy,
+  onCheckUpdate,
+  onInstallUpdate,
+  onDismissUpdate,
+  onRestartUpdate,
+  onRollbackUpdate,
+  onClearUpdateDismissal,
+}: UpdateControls & { t: Translate }) {
+  const busy = updateBusy !== "";
+  const result = update?.result;
+  const staged = update?.staged;
+  const pending = update?.status?.state.pending;
+  const previous = update?.status?.state.previous;
+  const canRollback = Boolean(previous || pending);
+
+  return (
+    <article className="panel wide">
+      <h2>{t("update.settingsTitle")}</h2>
+      <p className="muted">{t("update.settingsText")}</p>
+      {!update ? (
+        <p className="muted">{t("update.unavailable")}</p>
+      ) : !update.enabled ? (
+        <>
+          <p className="form-error">{update.config_error || t("update.notConfigured")}</p>
+          <p className="fine-print">{t("update.configHint")}</p>
+        </>
+      ) : (
+        <>
+          <dl className="facts vertical">
+            <div>
+              <dt>{t("update.current")}</dt>
+              <dd>
+                {update.current.release || update.current.app}
+                <span className="muted"> · protocol {update.current.protocol} · schema {update.current.schema}</span>
+              </dd>
+            </div>
+            <div>
+              <dt>{t("update.latest")}</dt>
+              <dd>
+                {result?.manifest ? `${result.manifest.release} (${updateLevelLabel(t, result.manifest.level)})` : "—"}
+                {result && !result.available && (
+                  <span className="muted"> · {updateReasonLabel(t, result.reason)}</span>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>{t("update.channel")}</dt>
+              <dd>
+                {update.channel} · {t("update.mode")}: {updateModeLabel(t, update.mode)} · {update.check_interval}
+              </dd>
+            </div>
+            <div>
+              <dt>{t("update.lastCheck")}</dt>
+              <dd>{update.last_check ? new Date(update.last_check).toLocaleString() : t("update.never")}</dd>
+            </div>
+            <div>
+              <dt>{t("update.restart")}</dt>
+              <dd>
+                {update.restart_configured ? t("update.configured") : t("update.notConfiguredRestart")}
+                {update.restart_configured && !update.restart_supported && (
+                  <span className="muted"> · {t("update.manualRestart")}</span>
+                )}
+              </dd>
+            </div>
+          </dl>
+
+          {update.last_error && <div className="form-error">{update.last_error}</div>}
+          {result?.warning && <p className="fine-print">{result.warning}</p>}
+
+          {staged?.needs_restart && (
+            <div className="update-ready-box">
+              <strong>{t("update.readyText", { release: staged.release })}</strong>
+              {update.restart_configured && update.restart_supported ? (
+                <button className="button primary" onClick={onRestartUpdate} disabled={busy}>
+                  {updateBusy === "restart" ? t("update.restarting") : t("update.restartNow")}
+                </button>
+              ) : (
+                <p className="fine-print">{t("update.manualRestart")}</p>
+              )}
+            </div>
+          )}
+
+          {!staged?.needs_restart && result?.available && result.manifest && (
+            <>
+              <p className="muted">
+                {result.manifest.changelog?.trim() || t("update.reason.available")}
+              </p>
+              <div className="button-row">
+                <button className="button primary" onClick={onInstallUpdate} disabled={busy}>
+                  {updateBusy === "install" ? t("update.checking") : t("update.now")}
+                </button>
+                <button className="button ghost" onClick={onDismissUpdate} disabled={busy}>
+                  {t("update.later")}
+                </button>
+              </div>
+            </>
+          )}
+
+          {update.dismissed && (
+            <div className="button-row">
+              <p className="muted">
+                {update.dismissed_until
+                  ? t("update.dismissed", { date: new Date(update.dismissed_until).toLocaleString() })
+                  : t("update.later")}
+              </p>
+              <button className="button ghost" onClick={onClearUpdateDismissal} disabled={busy}>
+                {t("update.showAgain")}
+              </button>
+            </div>
+          )}
+
+          <div className="button-row">
+            <button className="button ghost" onClick={onCheckUpdate} disabled={busy}>
+              {updateBusy === "check" ? t("update.checking") : t("update.checkNow")}
+            </button>
+            {canRollback && (
+              <button className="button ghost danger" onClick={onRollbackUpdate} disabled={busy}>
+                {pending ? t("update.discardPending") : t("update.rollback")}
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </article>
+  );
+}
+
 export function SettingsView({
   t,
   lang,
@@ -816,7 +1088,15 @@ export function SettingsView({
   status,
   notify,
   onError,
-}: CommonProps & {
+  update,
+  updateBusy,
+  onCheckUpdate,
+  onInstallUpdate,
+  onDismissUpdate,
+  onRestartUpdate,
+  onRollbackUpdate,
+  onClearUpdateDismissal,
+}: CommonProps & UpdateControls & {
   account: { id: string; name: string; server_id: string };
   status: { listen: string; version: { app: string; protocol: number; schema: number } } | null;
   lang: Lang;
@@ -1111,6 +1391,17 @@ export function SettingsView({
             </div>
           </dl>
         </article>
+        <UpdateSettingsPanel
+          t={t}
+          update={update}
+          updateBusy={updateBusy}
+          onCheckUpdate={onCheckUpdate}
+          onInstallUpdate={onInstallUpdate}
+          onDismissUpdate={onDismissUpdate}
+          onRestartUpdate={onRestartUpdate}
+          onRollbackUpdate={onRollbackUpdate}
+          onClearUpdateDismissal={onClearUpdateDismissal}
+        />
         <article className="panel wide">
           <h2>{t("settings.lanTitle")}</h2>
           {node === null ? (

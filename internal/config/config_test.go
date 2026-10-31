@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/sidenor/toget/internal/config"
 )
@@ -102,6 +103,8 @@ func TestUpdateConfigRoundTrip(t *testing.T) {
 		Restart:       []string{"systemctl", "restart", "toget"},
 		HealthURL:     "http://127.0.0.1:7718/healthz",
 		HealthCommand: []string{"--json", "version"},
+		Mode:          config.UpdateModeAuto,
+		CheckInterval: "90m",
 	}
 	if err := config.Save(paths, cfg); err != nil {
 		t.Fatal(err)
@@ -121,6 +124,9 @@ func TestUpdateConfigRoundTrip(t *testing.T) {
 	if len(loaded.Update.HealthCommand) != 2 || loaded.Update.HealthCommand[0] != "--json" {
 		t.Fatalf("health command = %v", loaded.Update.HealthCommand)
 	}
+	if loaded.Update.Mode != config.UpdateModeAuto || loaded.Update.CheckInterval != "90m" {
+		t.Fatalf("update mode/interval = %q/%q", loaded.Update.Mode, loaded.Update.CheckInterval)
+	}
 
 	cfg.Update.Channel = ""
 	if err := config.Save(paths, cfg); err != nil {
@@ -132,6 +138,57 @@ func TestUpdateConfigRoundTrip(t *testing.T) {
 	}
 	if loaded.Update.Channel != "stable" {
 		t.Fatalf("default channel = %q", loaded.Update.Channel)
+	}
+}
+
+func TestUpdateModesAndIntervals(t *testing.T) {
+	for _, mode := range []string{"", config.UpdateModeNotify, config.UpdateModeAuto, config.UpdateModeOff} {
+		got, err := (config.UpdateConfig{Mode: mode}).NormalizedMode()
+		if err != nil {
+			t.Fatalf("mode %q: %v", mode, err)
+		}
+		if mode == "" {
+			mode = config.UpdateModeNotify
+		}
+		if got != mode {
+			t.Fatalf("mode %q normalized to %q", mode, got)
+		}
+	}
+	if _, err := (config.UpdateConfig{Mode: "sometimes"}).NormalizedMode(); err == nil {
+		t.Fatal("invalid mode was accepted")
+	}
+
+	for _, test := range []struct {
+		raw  string
+		want time.Duration
+		err  bool
+	}{
+		{"", config.DefaultUpdateCheckInterval, false},
+		{"15m", 15 * time.Minute, false},
+		{"4m", 0, true},
+		{"soon", 0, true},
+	} {
+		got, err := (config.UpdateConfig{CheckInterval: test.raw}).CheckEvery()
+		if test.err {
+			if err == nil {
+				t.Fatalf("interval %q was accepted", test.raw)
+			}
+			continue
+		}
+		if err != nil || got != test.want {
+			t.Fatalf("interval %q = %s, %v; want %s", test.raw, got, err, test.want)
+		}
+	}
+}
+
+func TestUpdateStatePath(t *testing.T) {
+	dir := t.TempDir()
+	paths, err := config.Resolve(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(dir, "update-check.json"); paths.UpdateState != want {
+		t.Fatalf("update state path = %q, want %q", paths.UpdateState, want)
 	}
 }
 

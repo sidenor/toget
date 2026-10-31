@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 const (
@@ -57,6 +58,57 @@ type UpdateConfig struct {
 	HealthURL string `json:"health_url,omitempty"`
 	// HealthCommand overrides the default "<binary> --json version" probe.
 	HealthCommand []string `json:"health_command,omitempty"`
+	// Mode controls automatic update checks: "notify" (default) checks and
+	// prompts, "auto" also stages a verified release, and "off" disables the
+	// background check. Manual checks remain available in every mode.
+	Mode string `json:"mode,omitempty"`
+	// CheckInterval is how often the daemon checks for updates, as a Go
+	// duration such as "6h". Empty uses the default; the minimum is 5m.
+	CheckInterval string `json:"check_interval,omitempty"`
+}
+
+// Update modes accepted by UpdateConfig.Mode.
+const (
+	UpdateModeNotify = "notify"
+	UpdateModeAuto   = "auto"
+	UpdateModeOff    = "off"
+)
+
+// DefaultUpdateCheckInterval is used when update.check_interval is empty.
+const DefaultUpdateCheckInterval = 6 * time.Hour
+
+// MinUpdateCheckInterval bounds automatic checks so a misconfiguration cannot
+// hammer the release service.
+const MinUpdateCheckInterval = 5 * time.Minute
+
+// CheckEvery parses update.check_interval, applying the default.
+func (u UpdateConfig) CheckEvery() (time.Duration, error) {
+	raw := strings.TrimSpace(u.CheckInterval)
+	if raw == "" {
+		return DefaultUpdateCheckInterval, nil
+	}
+	interval, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("update.check_interval: %w", err)
+	}
+	if interval < MinUpdateCheckInterval {
+		return 0, fmt.Errorf("update.check_interval must be at least %s", MinUpdateCheckInterval)
+	}
+	return interval, nil
+}
+
+// NormalizedMode returns the configured update mode, defaulting to notify.
+func (u UpdateConfig) NormalizedMode() (string, error) {
+	switch strings.TrimSpace(u.Mode) {
+	case "", UpdateModeNotify:
+		return UpdateModeNotify, nil
+	case UpdateModeAuto:
+		return UpdateModeAuto, nil
+	case UpdateModeOff:
+		return UpdateModeOff, nil
+	default:
+		return "", fmt.Errorf("update.mode must be %q, %q, or %q", UpdateModeNotify, UpdateModeAuto, UpdateModeOff)
+	}
 }
 
 // Config is stored in config.json inside the data directory.
@@ -102,6 +154,7 @@ type Paths struct {
 	WebCache       string
 	DownloadsDir   string
 	AttachmentsDir string
+	UpdateState    string
 }
 
 // DefaultHome returns the per-user data directory.
@@ -158,6 +211,7 @@ func Resolve(home string) (Paths, error) {
 		WebCache:       filepath.Join(abs, "web"),
 		DownloadsDir:   filepath.Join(abs, "downloads"),
 		AttachmentsDir: filepath.Join(abs, "attachments"),
+		UpdateState:    filepath.Join(abs, "update-check.json"),
 	}, nil
 }
 

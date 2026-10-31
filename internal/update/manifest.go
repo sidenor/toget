@@ -130,7 +130,7 @@ func (v *Verifier) VerifyManifest(data []byte, expectedRelease string) (*Manifes
 			return nil, fmt.Errorf("manifest SBOM: %w", err)
 		}
 	}
-	public, err := v.VerifyReleaseKey(manifest.ReleaseKey)
+	public, err := v.VerifyReleaseKeyAt(manifest.ReleaseKey, publishedAt)
 	if err != nil {
 		return nil, err
 	}

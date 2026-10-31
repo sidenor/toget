@@ -126,7 +126,7 @@ func releasePath(requestPath string) (string, bool) {
 
 func contentType(name string) string {
 	switch {
-	case strings.HasSuffix(name, ".json"):
+	case strings.HasSuffix(name, ".json"), strings.HasSuffix(name, ".sig"):
 		return "application/json"
 	case strings.HasSuffix(name, ".tar.gz"):
 		return "application/gzip"
@@ -140,7 +140,8 @@ func contentType(name string) string {
 }
 
 func cacheControl(name string) string {
-	if strings.HasPrefix(name, "channels/") {
+	if strings.HasPrefix(name, "channels/") ||
+		name == "manifests/index.json" || name == "manifests/index.json.sig" {
 		return "public, max-age=60, must-revalidate"
 	}
 	return "public, max-age=31536000, immutable"

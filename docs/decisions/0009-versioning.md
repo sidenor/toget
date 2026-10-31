@@ -1,6 +1,6 @@
 # 0009 — Versioned protocol, signed releases, atomic updates
 
-**Status:** accepted (design)
+**Status:** accepted; signing, release tooling, and client updates implemented
 **Date:** 2026-10-31
 
 ## Context
@@ -22,8 +22,8 @@ The project needs a versioning and release model that a self-hoster can reason a
 6. **Signing chain:** an offline root key certifies online release keys; release keys sign version manifests; manifests list artifact hashes. Clients embed the root public key and refuse anything that does not chain to it.
 7. **Atomic update:** download to a temporary directory, verify signature and hash, extract a new version directory, switch the launcher/symlink, restart with a delay, run a health check, and roll back automatically on failure. Keep the previous version.
 8. **Forced updates** only for protocol-incompatible or security-critical releases, and only for devices that can reach the official service. LAN-only and offline deployments are not forced offline.
-9. **Release checks:** checksums, SBOM, signature verification, and a smoke test that installs the previous version, updates, and rolls back. Reproducible builds are a goal.
-10. **Canary rollout:** 1% → 10% → 50% → 100%, with automatic pause on failure.
+9. **Release checks:** checksums, an automatically generated SPDX 2.3 SBOM, signature verification, reproducible builds with a double-build hash check, whole-tree verification before publication, and a smoke test that installs the previous version, updates, and rolls back.
+10. **Canary rollout:** 1% → 10% → 50% → 100%. The service is static, so a person or external monitoring must pause a rollout by repointing the channel or yanking the release.
 
 ## Consequences
 
@@ -33,6 +33,15 @@ The project needs a versioning and release model that a self-hoster can reason a
 - Maintaining N-2 means protocol work must be additive and tested against older peers.
 - Key management for the root and release keys is operational overhead; the root stays offline or in an HSM.
 - Immutable artifacts and manifests make caching, mirrors, and third-party verification possible.
+
+## Implementation status
+
+Items 1–7 and 9 are implemented, including signed channel/manifest/index
+documents, detached signatures, atomic updates, startup reconciliation, and
+rollback. Item 8 is partly implemented: clients prompt for forced releases and
+limit postponement to 24 hours, but official-hosted account enforcement depends
+on hosting that does not exist yet. Item 10 uses deterministic client-side
+buckets; there is no automatic pause because the update service is static.
 
 ## Alternatives considered
 

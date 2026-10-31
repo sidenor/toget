@@ -335,7 +335,7 @@ Open details: deterministic relay switching for existing rooms, multi-hop offlin
 - **Release channels:** stable and beta.
 - **Support window:** the current and previous two minor versions (N-2) remain able to log in and exchange messages.
 - **Updates:** signed manifests, atomic switch to a new version directory, delayed restart, health check, automatic rollback on failure.
-- **Forced updates:** only for protocol-incompatible or security-critical releases, and only for devices that can reach the official service. LAN-only and offline deployments are not forced offline.
+- **Forced updates:** only for protocol-incompatible or security-critical releases, and only for devices that can reach the official service. LAN-only and offline deployments are not forced offline. Clients honor the forced level with a banner and a 24-hour postponement cap; server-side enforcement for official-hosted accounts is not implemented.
 
 ## Deployment modes
 

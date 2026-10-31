@@ -86,6 +86,9 @@ func BuildManifest(opts BuildManifestOptions) (*Manifest, error) {
 	if opts.PublishedAt.IsZero() {
 		opts.PublishedAt = time.Now().UTC()
 	}
+	if err := certificateCovers(opts.Cert, opts.PublishedAt); err != nil {
+		return nil, err
+	}
 	base := strings.TrimSuffix(strings.TrimSpace(opts.BaseURL), "/")
 	if base != "" {
 		if err := validateReference(base + "/daemon"); err != nil {
@@ -245,6 +248,9 @@ func BuildChannel(opts BuildChannelOptions) (*Channel, error) {
 	}
 	if opts.PublishedAt.IsZero() {
 		opts.PublishedAt = time.Now().UTC()
+	}
+	if err := certificateCovers(opts.Cert, opts.PublishedAt); err != nil {
+		return nil, err
 	}
 	channel := &Channel{
 		Format:      FormatChannel,

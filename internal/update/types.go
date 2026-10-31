@@ -9,6 +9,11 @@ const (
 	FormatChannel = "toget-release-channel"
 	// FormatManifest identifies a signed release manifest.
 	FormatManifest = "toget-release-manifest"
+	// FormatIndex identifies a signed catalog of published releases.
+	FormatIndex = "toget-release-index"
+	// FormatDetachedSignature identifies a .sig sidecar for exact document
+	// bytes.
+	FormatDetachedSignature = "toget-release-signature"
 	// FormatKeyFile identifies a private signing key file.
 	FormatKeyFile = "toget-release-key-file"
 	// FormatState identifies local update state.
@@ -109,6 +114,50 @@ type Manifest struct {
 	ReleaseKey  ReleaseKey `json:"release_key"`
 	Signature   string     `json:"signature,omitempty"`
 }
+
+// IndexEntry describes one release in a signed release index. Manifest is a
+// reference relative to the index document, normally v<release>.json.
+type IndexEntry struct {
+	Release        string `json:"release"`
+	Manifest       string `json:"manifest"`
+	ManifestSHA256 string `json:"manifest_sha256"`
+	Level          string `json:"level"`
+	PublishedAt    string `json:"published_at"`
+	Yanked         bool   `json:"yanked,omitempty"`
+	YankedAt       string `json:"yanked_at,omitempty"`
+	YankReason     string `json:"yank_reason,omitempty"`
+}
+
+// ReleaseIndex is a signed catalog of published releases. Latest is the
+// newest release that has not been yanked; it is empty when every release is
+// yanked.
+type ReleaseIndex struct {
+	Format      string       `json:"format"`
+	Version     int          `json:"version"`
+	Releases    []IndexEntry `json:"releases"`
+	Latest      string       `json:"latest,omitempty"`
+	PublishedAt string       `json:"published_at"`
+	ReleaseKey  ReleaseKey   `json:"release_key"`
+	Signature   string       `json:"signature,omitempty"`
+}
+
+// DetachedSignature is a .sig sidecar signed with the same release key as the
+// document it accompanies. It binds both the document path and its exact
+// bytes, which lets mirrors and CDNs verify files without parsing them.
+type DetachedSignature struct {
+	Format    string `json:"format"`
+	Version   int    `json:"version"`
+	Document  string `json:"document"`
+	SHA256    string `json:"sha256"`
+	KeyID     string `json:"key_id"`
+	Signature string `json:"signature,omitempty"`
+}
+
+// MaxIndexEntries bounds a release index.
+const MaxIndexEntries = 4096
+
+// MaxYankReasonBytes bounds the human-readable reason in a release index.
+const MaxYankReasonBytes = 1024
 
 // KeyFile is the on-disk private signing key format. Private key material is
 // a 32-byte Ed25519 seed in base64url form and must stay offline.

@@ -95,6 +95,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newBackupCommand())
 	root.AddCommand(newRestoreCommand())
 	root.AddCommand(newUpdateCommand())
+	root.AddCommand(newServiceCommand())
 	root.AddCommand(newVersionCommand())
 	return root
 }
@@ -292,6 +293,13 @@ func runServe(ctx context.Context) error {
 	signalCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	reconcileUpdateOnStartup(logger, cfg)
+	updateMonitor, err := newUpdateMonitor(paths, cfg, logger)
+	if err != nil {
+		logger.Warn("update monitor disabled", "error", err)
+		updateMonitor = nil
+	} else {
+		updateMonitor.Start(signalCtx)
+	}
 
 	accounts := account.New(db, v)
 	var rooms *room.Service
@@ -407,6 +415,7 @@ func runServe(ctx context.Context) error {
 		Approvals:    approvals,
 		Tools:        tools,
 		Node:         apiNode,
+		Updates:      updateMonitor,
 		Session:      sessions,
 		AgentRuns:    agentRunner,
 		AgentStreams: agentRunner,

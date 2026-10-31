@@ -129,13 +129,20 @@ NAT. See [relay.md](relay.md), [discovery.md](discovery.md), and
 - [ ] Official room home node (ciphertext only)
 - [x] Signed release manifests, update service, atomic update and rollback
 - [x] Stable and beta channels
+- [x] Periodic update checks, in-app banner, notify/auto/off modes, bounded postponement for forced releases
+- [x] Signed release index with `latest` and yank, detached `.sig` sidecars, release-tree verification
+- [x] Reproducible release builds with double-build verification, automatic SPDX 2.3 SBOMs, and an append-only publish script
+- [x] `toget service install` for systemd, launchd, and Windows services
+- [ ] Forced-update enforcement for official-hosted accounts
 
 **Status:** self-hosted local-vault recovery is implemented; the official hosted
 account flow, forced-download registration, and browser reset page are not.
-Signed release keys, manifests, channel pointers, a static update service,
-atomic install, startup reconciliation, and CLI rollback are implemented. There
-is no periodic update check or in-app update prompt yet. See
-[account-recovery.md](account-recovery.md) and [updates.md](updates.md).
+Signed release keys, manifests, channels, a signed release index, a static
+update service, atomic install, startup reconciliation, CLI rollback, periodic
+checks, and an in-app update prompt are implemented. The forced level is
+honored by the UI but is not server-enforced for official-hosted accounts,
+which do not exist yet. See [account-recovery.md](account-recovery.md) and
+[updates.md](updates.md).
 
 **Done when:** a user can register on the official service, lose their password, reset it with the recovery credential, and still open old history — while the official service never has a key to read it.
 

@@ -312,8 +312,17 @@ func CertifyRelease(root *SigningKey, releasePublic ed25519.PublicKey, notBefore
 }
 
 // VerifyReleaseKey checks a certificate against the root trust anchor and
-// returns its public key.
+// returns its public key. The certificate must be valid now.
 func (v *Verifier) VerifyReleaseKey(cert ReleaseKey) (ed25519.PublicKey, error) {
+	return v.VerifyReleaseKeyAt(cert, v.now())
+}
+
+// VerifyReleaseKeyAt checks a certificate against the root trust anchor and
+// returns its public key. Manifests and release indexes are checked at their
+// publication time so archived artifacts remain verifiable after a release
+// certificate expires. Channel pointers are checked at the current time so an
+// expired key cannot keep a channel alive.
+func (v *Verifier) VerifyReleaseKeyAt(cert ReleaseKey, at time.Time) (ed25519.PublicKey, error) {
 	if v == nil || len(v.Root) != ed25519.PublicKeySize {
 		return nil, errors.New("release root key is not configured")
 	}
@@ -341,11 +350,11 @@ func (v *Verifier) VerifyReleaseKey(cert ReleaseKey) (ed25519.PublicKey, error) 
 	if err != nil {
 		return nil, err
 	}
-	now := v.now()
-	if now.Before(notBefore.Add(-clockSkew)) {
+	at = at.UTC()
+	if at.Before(notBefore.Add(-clockSkew)) {
 		return nil, errors.New("release key is not valid yet")
 	}
-	if !now.Before(notAfter.Add(clockSkew)) {
+	if !at.Before(notAfter.Add(clockSkew)) {
 		return nil, errors.New("release key has expired")
 	}
 	signature, err := decodeBase64(cert.Signature)
@@ -356,6 +365,26 @@ func (v *Verifier) VerifyReleaseKey(cert ReleaseKey) (ed25519.PublicKey, error) 
 		return nil, errors.New("release key signature is invalid")
 	}
 	return ed25519.PublicKey(public), nil
+}
+
+// certificateCovers reports whether a document published at the given time
+// falls inside the certificate window. Signing tools use it to refuse
+// documents that clients would reject.
+func certificateCovers(cert ReleaseKey, at time.Time) error {
+	notBefore, err := parseTime("release key not_before", cert.NotBefore)
+	if err != nil {
+		return err
+	}
+	notAfter, err := parseTime("release key not_after", cert.NotAfter)
+	if err != nil {
+		return err
+	}
+	at = at.UTC()
+	if at.Before(notBefore) || at.After(notAfter) {
+		return fmt.Errorf("release certificate is valid from %s to %s, not at %s",
+			notBefore.Format(time.RFC3339), notAfter.Format(time.RFC3339), at.Format(time.RFC3339))
+	}
+	return nil
 }
 
 // SignChannel signs a channel pointer with a release key.
