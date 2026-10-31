@@ -355,7 +355,11 @@ func TestRunnerWithoutRuntimeGoesOffline(t *testing.T) {
 	h.post(t, room.MessagePostedPayload{Text: "@Ghost anyone there"})
 	waitUntil(t, 3*time.Second, func() bool {
 		session, err := h.agents.Session(context.Background(), h.agent.ID, h.room.ID)
-		return err == nil && session.Status == agent.StatusOffline && strings.Contains(session.LastError, "missing-runtime")
+		if err != nil || session.Status != agent.StatusOffline || !strings.Contains(session.LastError, "missing-runtime") {
+			return false
+		}
+		got, err := h.agents.Get(context.Background(), h.agent.ID)
+		return err == nil && got.Status == agent.StatusOffline
 	})
 	got, err := h.agents.Get(context.Background(), h.agent.ID)
 	if err != nil || got.Status != agent.StatusOffline {
