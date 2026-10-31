@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -549,6 +550,68 @@ func JoinAddress(direct, relay string) string {
 		return direct
 	}
 	return direct + "&relay=" + url.QueryEscape(relay)
+}
+
+// JoinAlternate appends one or more alternate direct host:port addresses. A
+// client probes them after the primary LAN address, which lets a node publish
+// a public port mapping without losing LAN reachability. Old clients ignore
+// the fragment parameter.
+func JoinAlternate(address string, hostPorts ...string) string {
+	for _, hostPort := range hostPorts {
+		if strings.TrimSpace(hostPort) == "" {
+			continue
+		}
+		address += "&alt=" + url.QueryEscape(strings.TrimSpace(hostPort))
+	}
+	return address
+}
+
+// SplitAlternates returns validated alternate host:port addresses from a
+// composite node URL. Invalid or duplicate entries are ignored.
+func SplitAlternates(raw string) []string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return nil
+	}
+	values, err := url.ParseQuery(parsed.Fragment)
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(values["alt"]))
+	seen := map[string]bool{}
+	for _, value := range values["alt"] {
+		hostPort, err := ParseAlternateHostPort(value)
+		if err != nil || seen[hostPort] {
+			continue
+		}
+		seen[hostPort] = true
+		out = append(out, hostPort)
+		if len(out) == 4 {
+			break
+		}
+	}
+	return out
+}
+
+// ParseAlternateHostPort validates a public alternate address. It accepts a
+// host:port pair only, never a URL or path.
+func ParseAlternateHostPort(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.ContainsAny(raw, "/?#") {
+		return "", errors.New("alternate address must be host:port")
+	}
+	host, port, err := net.SplitHostPort(raw)
+	if err != nil {
+		return "", errors.New("alternate address must be host:port")
+	}
+	number, err := strconv.Atoi(port)
+	if err != nil || number < 1 || number > 65535 {
+		return "", errors.New("alternate address has an invalid port")
+	}
+	if strings.TrimSpace(host) == "" {
+		return "", errors.New("alternate address has no host")
+	}
+	return net.JoinHostPort(host, strconv.Itoa(number)), nil
 }
 
 // SplitAddress separates a composite node address into its direct pinned URL

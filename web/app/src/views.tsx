@@ -2601,6 +2601,19 @@ export function SettingsView({
                   <dt>{t("settings.quic")}</dt>
                   <dd>{node.info.quic ? t("settings.quicOn") : t("settings.quicOff")}</dd>
                 </div>
+                {node.info.nat_method && (
+                  <div>
+                    <dt>{t("settings.nat")}</dt>
+                    <dd>
+                      {t("settings.natMethod", { method: node.info.nat_method })}
+                      {node.info.external_endpoint ? (
+                        <span className="muted mono"> · {node.info.external_endpoint}</span>
+                      ) : (
+                        <span className="muted"> · {t("settings.natNoPublic")}</span>
+                      )}
+                    </dd>
+                  </div>
+                )}
                 <div>
                   <dt>{t("settings.lanFingerprint")}</dt>
                   <dd className="mono fingerprint">{node.info.tls_fingerprint}</dd>

@@ -111,7 +111,9 @@ probe succeeds; a failed HTTP/3 request is not retried on HTTPS, so a write
 cannot be applied twice. The next request falls back. `--no-quic` disables the
 UDP listener, and `GET /relay/v1/info` reports `"quic": true/false`. This is a
 transport change only: the signed envelope format, route announcements, and
-WebSocket tunnel are unchanged. HTTP/3 does not provide NAT traversal.
+WebSocket tunnel are unchanged. HTTP/3 does not itself solve NAT
+reachability; a node can separately request gateway port mappings and publish
+the result as a public alternate.
 
 ## Addresses and direct-first fallback
 
@@ -119,19 +121,28 @@ A relayed node address is a normal pinned node URL with a relay route in the
 fragment:
 
 ```text
-https://192.168.1.8:7717#fp=<node-cert-pin>&relay=https%3A%2F%2Frelay.example%3A7719%2Frelay%2Fv1%2Fnode%2F<server-id>%23fp%3D<relay-cert-pin>
+https://192.168.1.8:7717#fp=<node-cert-pin>&relay=https%3A%2F%2Frelay.example%3A7719%2Frelay%2Fv1%2Fnode%2F<server-id>%23fp%3D<relay-cert-pin>&alt=203.0.113.9%3A7717
 ```
 
 Invites, pairing codes, directory results, and room home addresses carry this
 composite address. Before each operation the client probes the direct
-`/toget/v1/health` endpoint with a 2.5-second timeout:
+`/toget/v1/health` endpoint with a 2.5-second timeout; if it fails, it probes
+each validated `alt=host:port` alternate in order. Alternates come from a
+signed manifest and use the same certificate pin. Then:
 
-- direct reachable → use the direct pinned connection;
-- direct unreachable → use the relay route;
-- the result is cached for 60 seconds (30 seconds after a request failure);
+- any direct candidate reachable → use that pinned connection;
+- no candidate reachable → use the relay route;
+- each result is cached for 60 seconds (30 seconds after a request failure);
 - after a direct request fails, the next operation probes again; an operation
   is not retried over the relay after an ambiguous failure, to avoid applying
   a write twice.
+
+A node obtains alternates with `--node-nat auto`: it asks the gateway for PCP,
+NAT-PMP, or UPnP mappings for its TCP and UDP port, renews them, and publishes
+the public address in its signed node manifest (`external_endpoint`). The LAN
+endpoint remains the primary address. A relay is still required when the
+mapping fails, the WAN address is behind CGNAT, or the network blocks the
+gateway protocols; UDP hole punching is not implemented.
 
 The direct URL and its certificate pin are still required and verified even
 when only the relay is reachable. The relay cannot substitute its own TLS
@@ -298,10 +309,10 @@ short code and are visible to the directory operator.
 
 ## What is not implemented
 
-- QUIC hole punching, UDP port mapping (UPnP/NAT-PMP/PCP), and any other NAT
-  traversal. HTTP/3 itself is implemented as an alternative transport on the
-  relay's normal port, but it does not solve reachability: two nodes behind
-  different NATs still work only through a relay.
+- QUIC/UDP hole punching and relay-assisted NAT traversal. Optional gateway
+  port mapping (PCP/NAT-PMP/UPnP) is implemented and can expose a node when
+  the router cooperates, but symmetric NAT and CGNAT still need a relay.
+  HTTP/3 itself is an alternative transport on the relay's normal port.
 - Automatic re-advertisement of a new relay to devices that already stored a
   room address. A running node can switch its own relay, and new invites and
   directory lookups carry the new route, but remote members keep the address

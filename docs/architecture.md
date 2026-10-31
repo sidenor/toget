@@ -84,7 +84,9 @@ The local vault is wrapped by a key derived from the account password; an
 optional per-device recovery file wraps the same vault key so a forgotten
 password can be reset while the node is locked, and an unlocked node can reset
 without the old password. The phone client and official account hosting shown
-above are still design-only; NAT traversal is not implemented. See
+above are still design-only. A node can optionally request PCP, NAT-PMP, or
+UPnP gateway port mappings and publish the public result as an alternate
+direct address; UDP hole punching is not implemented. See
 [account-recovery.md](account-recovery.md).
 
 ## Account and device model
@@ -297,7 +299,7 @@ If a member is offline, the home node or a relay holds the envelope for a bounde
 
 A node chooses a **relay** to reach the rest of the network when direct connections fail. The default can come from the directory (`--node-relay auto`); users can point at a friend's relay, a community relay, or their own `toget-official` instance.
 
-- **Direct first (implemented):** probe the pinned LAN endpoint with a 2.5-second health check; use it when reachable. The probe prefers HTTP/3 over QUIC, with HTTPS as the fallback, and a failed HTTP/3 request is never retried automatically. IPv6 preference, UPnP/NAT-PMP/PCP, and QUIC hole punching are not implemented.
+- **Direct first (implemented):** probe the pinned LAN endpoint with a 2.5-second health check; use it when reachable. The probe prefers HTTP/3 over QUIC, with HTTPS as the fallback, and a failed HTTP/3 request is never retried automatically. A node may also publish public `alt=` candidates from PCP/NAT-PMP/UPnP port mappings; the client probes them after the LAN endpoint. IPv6 preference and QUIC hole punching are not implemented.
 - **Relay fallback (implemented):** register over outbound pinned HTTPS, then prefer a WebSocket tunnel and fall back to long-poll for opaque signed requests. No inbound port is needed.
 - **Runtime switching (implemented):** a node can switch between off, automatic, and pinned relays from Settings or `POST /api/v1/node/relay` without a restart. New invites and directory records use the new route; existing room addresses are not re-advertised automatically.
 - **Relay-only process (implemented):** `toget relay` runs a relay without an account, database, or vault. `toget-official` remains a bundle of relay, directory, and optional services.

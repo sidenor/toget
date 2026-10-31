@@ -5350,8 +5350,11 @@ components:
           examples: ["192.168.1.20:7717"]
         url:
           type: string
-          description: Composite HTTPS base URL peers use, with an optional relay fallback in the fragment.
-          examples: ["https://192.168.1.20:7717#fp=<hex>&relay=https%3A%2F%2Frelay.example%3A7719%2Frelay%2Fv1%2Fnode%2F<server-id>%23fp%3D<hex>"]
+          description: |
+            Composite HTTPS base URL peers use, with an optional relay
+            fallback and public port-mapping alternates in the fragment.
+            Clients try the LAN host first, then each `alt` host:port.
+          examples: ["https://192.168.1.20:7717#fp=<hex>&relay=https%3A%2F%2Frelay.example%3A7719%2Frelay%2Fv1%2Fnode%2F<server-id>%23fp%3D<hex>&alt=203.0.113.9%3A7717"]
         direct_url:
           type: string
           description: Pinned LAN URL without a relay fallback.
@@ -5396,6 +5399,19 @@ components:
             Whether the node is serving HTTP/3 on UDP alongside HTTPS. Clients
             select it only after a successful health probe and fall back to
             HTTPS without retrying an ambiguous request.
+        nat_method:
+          type: string
+          description: |
+            Gateway mapping protocol in use (`pcp`, `natpmp`, or `upnp`).
+            Absent when no mapping is active.
+        external_endpoint:
+          type: string
+          description: |
+            Public host:port learned from the gateway mapping. It is an
+            alternate direct address, not a replacement for `endpoint`.
+        external_url:
+          type: string
+          description: Pinned HTTPS URL for `external_endpoint`.
         tls_fingerprint:
           type: string
           description: Hex SHA-256 fingerprint of the node's self-signed certificate.
@@ -5418,10 +5434,17 @@ components:
           type: string
         url:
           type: string
-          description: Composite pinned URL with an optional relay fallback.
+          description: |
+            Composite pinned URL with an optional relay fallback and public
+            port-mapping alternates.
         direct_url:
           type: string
         relay_url:
+          type: string
+        external_endpoint:
+          type: string
+          description: Public host:port published by the node's gateway mapping.
+        external_url:
           type: string
         tls_fingerprint:
           type: string

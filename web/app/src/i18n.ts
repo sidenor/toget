@@ -348,6 +348,9 @@ const strings: Record<string, [string, string]> = {
   "settings.quic": ["QUIC / HTTP/3", "QUIC / HTTP/3"],
   "settings.quicOn": ["enabled", "已开启"],
   "settings.quicOff": ["off (HTTPS only)", "未开启（仅 HTTPS）"],
+  "settings.nat": ["NAT port mapping", "NAT 端口映射"],
+  "settings.natMethod": ["via {method}", "方式 {method}"],
+  "settings.natNoPublic": ["public address unknown", "公网地址未知"],
   "settings.nearby": ["Nearby nodes", "附近节点"],
   "settings.noNearby": ["No Toget nodes found on this network.", "这个网络上暂时没有发现 Toget 节点。"],
   "settings.nearbyHint": [

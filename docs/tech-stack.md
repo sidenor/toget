@@ -8,16 +8,17 @@
 > over **HTTP/3 on QUIC** (`quic-go`) on the same port over UDP; clients probe
 > the health endpoint and fall back to HTTPS without retrying an ambiguous
 > request. Relay sessions use a WebSocket tunnel with HTTPS long-poll fallback.
-> Protobuf framing and a custom QUIC stream protocol remain design-only, and
-> NAT traversal is not implemented. Go, SQLite, React, TypeScript, and Vite
-> match this document.
+> Protobuf framing and a custom QUIC stream protocol remain design-only.
+> Optional gateway port mapping (PCP, NAT-PMP, UPnP) publishes public
+> alternates; UDP hole punching is not implemented. Go, SQLite, React,
+> TypeScript, and Vite match this document.
 
 ## Decision summary
 
 | Layer | Choice | Why |
 | --- | --- | --- |
 | Node, daemon, account host, relay | **Go** | Static binary, cross-platform services, strong concurrency, predictable memory |
-| Node transport | **HTTP/3 over QUIC** (`quic-go`), HTTPS/TCP fallback | Low-latency multiplexing, HTTPS fallback for hostile networks; NAT traversal remains future work |
+| Node transport | **HTTP/3 over QUIC** (`quic-go`), HTTPS/TCP fallback | Low-latency multiplexing, HTTPS fallback for hostile networks; optional gateway port mapping, relay for hard NAT |
 | Node encoding | **Protobuf** | Compact, versionable, generated types in Go and TypeScript |
 | Local API | **HTTP JSON + OpenAPI 3.1** on `127.0.0.1:7718` | Easy to inspect, script, and generate clients for |
 | Local web UI | **TypeScript + React + Vite** | Largest UI ecosystem; one codebase for web, desktop shell, and PWA |

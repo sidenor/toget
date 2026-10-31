@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/sidenor/toget/internal/relayproto"
@@ -14,18 +15,21 @@ import (
 // the account's server key, which is the same key that signs the account's
 // public server manifest.
 type Manifest struct {
-	Format         string    `json:"format"`
-	Version        int       `json:"version"`
-	ServerID       string    `json:"server_id"`
-	ServerCode     string    `json:"server_code"`
-	AccountID      string    `json:"account_id"`
-	Endpoint       string    `json:"endpoint"`
-	RelayURL       string    `json:"relay_url,omitempty"`
-	TLSFingerprint string    `json:"tls_fingerprint"`
-	Protocol       int       `json:"protocol"`
-	IssuedAt       time.Time `json:"issued_at"`
-	ExpiresAt      time.Time `json:"expires_at"`
-	Signature      string    `json:"signature,omitempty"`
+	Format     string `json:"format"`
+	Version    int    `json:"version"`
+	ServerID   string `json:"server_id"`
+	ServerCode string `json:"server_code"`
+	AccountID  string `json:"account_id"`
+	Endpoint   string `json:"endpoint"`
+	// ExternalEndpoint is a public host:port learned from a gateway mapping.
+	// It is an alternate direct address, not a replacement for Endpoint.
+	ExternalEndpoint string    `json:"external_endpoint,omitempty"`
+	RelayURL         string    `json:"relay_url,omitempty"`
+	TLSFingerprint   string    `json:"tls_fingerprint"`
+	Protocol         int       `json:"protocol"`
+	IssuedAt         time.Time `json:"issued_at"`
+	ExpiresAt        time.Time `json:"expires_at"`
+	Signature        string    `json:"signature,omitempty"`
 }
 
 // ManifestFormat identifies a Toget node manifest.
@@ -103,4 +107,18 @@ func verifyManifest(manifest *Manifest, publicKey ed25519.PublicKey, requireFres
 		return errors.New("node manifest signature is invalid")
 	}
 	return nil
+}
+
+// externalAlternate returns the validated public alternate and its pinned
+// URL. A malformed optional alternate is ignored; the primary endpoint and
+// relay route stay usable.
+func externalAlternate(manifest *Manifest) (endpoint, url string) {
+	if manifest == nil || strings.TrimSpace(manifest.ExternalEndpoint) == "" {
+		return "", ""
+	}
+	hostPort, err := relayproto.ParseAlternateHostPort(manifest.ExternalEndpoint)
+	if err != nil {
+		return "", ""
+	}
+	return hostPort, NodeURL("https://"+hostPort, manifest.TLSFingerprint)
 }

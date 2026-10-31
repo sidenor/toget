@@ -24,6 +24,7 @@ import (
 	"github.com/sidenor/toget/internal/config"
 	"github.com/sidenor/toget/internal/identity"
 	"github.com/sidenor/toget/internal/mdns"
+	"github.com/sidenor/toget/internal/nat"
 	"github.com/sidenor/toget/internal/relayproto"
 	"github.com/sidenor/toget/internal/room"
 )
@@ -59,6 +60,17 @@ type Options struct {
 	// QUIC is "off" to disable the HTTP/3 listener on the same port over UDP.
 	// Empty or "on" enables it; the HTTPS listener always remains available.
 	QUIC string
+	// NAT is "auto" to ask the local gateway for PCP, NAT-PMP, or UPnP port
+	// mappings. Empty or "off" never contacts a gateway.
+	NAT string
+	// STUN is a host:port used to discover the public address when a mapping
+	// does not report one. Empty disables STUN.
+	STUN string
+	// NATGateway overrides NAT-PMP/PCP default-gateway discovery.
+	NATGateway string
+	// NATMethods narrows the mapping methods, mainly for tests. Empty tries
+	// PCP, NAT-PMP, then UPnP.
+	NATMethods []string
 	// SaveRelay persists a runtime relay setting ("off", "auto", or a pinned
 	// URL). It is called before the change is applied; an error leaves the
 	// current relay untouched.
@@ -68,25 +80,28 @@ type Options struct {
 
 // Info is the local node's public transport identity.
 type Info struct {
-	ServerID       string `json:"server_id"`
-	ServerCode     string `json:"server_code"`
-	AccountID      string `json:"account_id"`
-	DeviceID       string `json:"device_id"`
-	Endpoint       string `json:"endpoint"`
-	URL            string `json:"url"`
-	DirectURL      string `json:"direct_url,omitempty"`
-	RelayURL       string `json:"relay_url,omitempty"`
-	RelayBase      string `json:"relay_base,omitempty"`
-	RelayMode      string `json:"relay_mode"`
-	RelaySetting   string `json:"relay_setting"`
-	RelayConnected bool   `json:"relay_connected"`
-	RelayTunnel    bool   `json:"relay_tunnel"`
-	DirectoryURL   string `json:"directory_url,omitempty"`
-	MDNS           bool   `json:"mdns"`
-	MDNSPeers      int    `json:"mdns_peers"`
-	QUIC           bool   `json:"quic"`
-	TLSFingerprint string `json:"tls_fingerprint"`
-	Protocol       int    `json:"protocol"`
+	ServerID         string `json:"server_id"`
+	ServerCode       string `json:"server_code"`
+	AccountID        string `json:"account_id"`
+	DeviceID         string `json:"device_id"`
+	Endpoint         string `json:"endpoint"`
+	URL              string `json:"url"`
+	DirectURL        string `json:"direct_url,omitempty"`
+	RelayURL         string `json:"relay_url,omitempty"`
+	RelayBase        string `json:"relay_base,omitempty"`
+	RelayMode        string `json:"relay_mode"`
+	RelaySetting     string `json:"relay_setting"`
+	RelayConnected   bool   `json:"relay_connected"`
+	RelayTunnel      bool   `json:"relay_tunnel"`
+	DirectoryURL     string `json:"directory_url,omitempty"`
+	MDNS             bool   `json:"mdns"`
+	MDNSPeers        int    `json:"mdns_peers"`
+	QUIC             bool   `json:"quic"`
+	NATMethod        string `json:"nat_method,omitempty"`
+	ExternalEndpoint string `json:"external_endpoint,omitempty"`
+	ExternalURL      string `json:"external_url,omitempty"`
+	TLSFingerprint   string `json:"tls_fingerprint"`
+	Protocol         int    `json:"protocol"`
 }
 
 // Service serves the pinned HTTPS node API and synchronizes remote rooms.
@@ -140,6 +155,12 @@ type Service struct {
 	discovery   *mdns.Service
 
 	quicSetting string
+
+	nat         *nat.Manager
+	natMu       sync.RWMutex
+	natMappings []nat.Mapping
+	natMethod   string
+	natExternal string
 
 	pairMu    sync.Mutex
 	pairings  map[string]*pairSession
@@ -222,6 +243,24 @@ func New(opts Options) (*Service, error) {
 	if quicSetting != "" && quicSetting != "on" {
 		return nil, errors.New(`node quic: expected "on" or "off"`)
 	}
+	natSetting := strings.TrimSpace(opts.NAT)
+	if natSetting == "off" {
+		natSetting = ""
+	}
+	if natSetting != "" && natSetting != "auto" {
+		return nil, errors.New(`node nat: expected "auto" or "off"`)
+	}
+	var natManager *nat.Manager
+	if natSetting != "" {
+		manager, err := nat.New(nat.Options{
+			Gateway: opts.NATGateway, STUNServer: opts.STUN, Methods: opts.NATMethods,
+			Logger: logger,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("node nat: %w", err)
+		}
+		natManager = manager
+	}
 	cards, err := card.Open(opts.Paths.Cards)
 	if err != nil {
 		logger.Warn("saved cards could not be loaded", "error", err)
@@ -237,6 +276,7 @@ func New(opts Options) (*Service, error) {
 		directorySetting: directorySetting, directoryBase: directoryBase,
 		directoryFP: directoryFP, directoryHTTP: directoryHTTP,
 		mdnsSetting: mdnsSetting, quicSetting: quicSetting,
+		nat: natManager,
 	}
 	// Agent, approval, and tool services append through the room service.
 	// Once this node exists, events for rooms hosted elsewhere are forwarded
@@ -315,6 +355,11 @@ func (s *Service) Start(ctx context.Context) error {
 	}()
 	if s.quicSetting != "" {
 		s.startQUIC(rawListener.Addr().String(), material.Certificate)
+	}
+	if s.nat != nil {
+		if address, ok := rawListener.Addr().(*net.TCPAddr); ok && address.Port > 0 {
+			go s.natLoop(runCtx, address.Port)
+		}
 	}
 	go s.syncLoop(runCtx)
 	go s.accountSyncLoop(runCtx)
@@ -467,10 +512,12 @@ func (s *Service) Info(ctx context.Context) (*Info, error) {
 	if relayRoute != "" {
 		address = relayproto.JoinAddress(direct, relayRoute)
 	}
+	address = relayproto.JoinAlternate(address, s.externalEndpoint())
 	peers := 0
 	if discovery := s.discoveryService(); discovery != nil {
 		peers = len(discovery.Peers())
 	}
+	natMethod, externalEndpoint, externalURL := s.natInfo()
 	return &Info{
 		ServerID: snapshot.Server.ID, ServerCode: snapshot.Server.Code,
 		AccountID: snapshot.Account.ID, DeviceID: snapshot.Device.ID,
@@ -478,6 +525,7 @@ func (s *Service) Info(ctx context.Context) (*Info, error) {
 		RelayBase: relayBase, RelayMode: s.relayModeLabel(), RelaySetting: s.relaySettingValue(),
 		RelayConnected: s.RelayConnected(), RelayTunnel: s.RelayTunnelConnected(), DirectoryURL: s.directorySetting,
 		MDNS: s.mdnsSetting != "", MDNSPeers: peers, QUIC: s.QUICEnabled(),
+		NATMethod: natMethod, ExternalEndpoint: externalEndpoint, ExternalURL: externalURL,
 		TLSFingerprint: fingerprint, Protocol: Protocol,
 	}, nil
 }
@@ -485,12 +533,12 @@ func (s *Service) Info(ctx context.Context) (*Info, error) {
 // Address returns the direct node URL with an optional relay fallback encoded
 // in the fragment. Invitation, pairing, and room home addresses use it.
 func (s *Service) Address(ctx context.Context) string {
-	direct := s.URL()
+	address := s.URL()
 	route, err := s.RelayRoute(ctx)
-	if err != nil || route == "" {
-		return direct
+	if err == nil && route != "" {
+		address = relayproto.JoinAddress(address, route)
 	}
-	return relayproto.JoinAddress(direct, route)
+	return relayproto.JoinAlternate(address, s.externalEndpoint())
 }
 
 // RelayRoute returns the pinned relay route for this node, if one is
@@ -665,7 +713,8 @@ func (s *Service) manifest(ctx context.Context) (*Manifest, error) {
 	manifest := &Manifest{
 		ServerID: snapshot.Server.ID, ServerCode: snapshot.Server.Code,
 		AccountID: snapshot.Account.ID, Endpoint: endpoint, TLSFingerprint: fingerprint,
-		RelayURL: relayRoute, IssuedAt: now, ExpiresAt: now.Add(24 * time.Hour),
+		ExternalEndpoint: s.externalEndpoint(),
+		RelayURL:         relayRoute, IssuedAt: now, ExpiresAt: now.Add(24 * time.Hour),
 	}
 	if err := signManifest(manifest, serverKey); err != nil {
 		return nil, err

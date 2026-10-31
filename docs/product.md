@@ -4,9 +4,9 @@
 > cross-network rooms work, including portable invite codes, encrypted history
 > sharing, incremental sync, attachments, backup/restore, and the
 > approval/tool control plane. Agents run through Claude Code or a local
-> connector; Toget does not include its own model runtime. NAT traversal is
-> not implemented yet. Names and scope will change as the first version is
-> built.
+> connector; Toget does not include its own model runtime. Optional gateway
+> port mapping is available, but UDP hole punching is not implemented yet.
+> Names and scope will change as the first version is built.
 
 ## One sentence
 

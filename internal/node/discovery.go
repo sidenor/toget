@@ -294,6 +294,8 @@ func (s *Service) verifyPinnedPeer(ctx context.Context, endpoint, fingerprint, s
 		return nil, errors.New("LAN node endpoint is not HTTPS")
 	}
 	direct := NodeURL(endpoint, fingerprint)
+	externalEndpoint, externalURL := externalAlternate(&manifest)
+	direct = relayproto.JoinAlternate(direct, externalEndpoint)
 	relayURL := ""
 	if manifest.RelayURL != "" {
 		if _, _, target, err := relayproto.ParseNodeRoute(manifest.RelayURL); err != nil || target != manifest.ServerID {
@@ -307,8 +309,9 @@ func (s *Service) verifyPinnedPeer(ctx context.Context, endpoint, fingerprint, s
 	return &DirectoryRecord{
 		ServerID: im.ServerID, ServerCode: im.ServerCode, AccountID: manifest.AccountID,
 		Endpoint: manifest.Endpoint, URL: relayproto.JoinAddress(direct, relayURL),
-		DirectURL: direct, RelayURL: relayURL, TLSFingerprint: fingerprint,
-		UpdatedAt: updated, Source: source,
+		DirectURL: direct, RelayURL: relayURL,
+		ExternalEndpoint: externalEndpoint, ExternalURL: externalURL,
+		TLSFingerprint: fingerprint, UpdatedAt: updated, Source: source,
 	}, nil
 }
 

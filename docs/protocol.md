@@ -65,9 +65,10 @@ decode it from a still image locally. The wire format and security rules do not
 change: a QR code is another way to carry the same single-use invite or
 short-lived pairing secret, not a new credential.
 
-Still design-only: Protobuf framing, a custom QUIC stream protocol, and NAT
-traversal or hole punching. HTTP/3 over QUIC is implemented as an alternative
-transport for the same HTTP/JSON API. Relays and the directory are implemented
+Still design-only: Protobuf framing, a custom QUIC stream protocol, and UDP
+hole punching. HTTP/3 over QUIC is implemented as an alternative transport for
+the same HTTP/JSON API, and optional gateway port mapping (PCP, NAT-PMP, UPnP)
+is implemented for public alternates. Relays and the directory are implemented
 with HTTPS + JSON rather than the future Protobuf framing, and relay sessions
 use an optional WebSocket tunnel with HTTPS long-poll fallback; see
 [relay.md](relay.md) for their wire format, trust boundaries, and limits. LAN discovery is implemented
@@ -175,9 +176,14 @@ probes `/toget/v1/health`; a successful HTTP/3 probe selects QUIC, and any
 failed HTTP/3 request is surfaced without an automatic retry on HTTPS. The next
 request falls back to HTTPS. Relays expose the same split on their own port.
 
-If the direct health probe fails entirely, the node client uses an outbound
-relay session: a WebSocket tunnel when the relay supports it, otherwise HTTPS
-long-poll. No port mapping, IPv6 preference, or UDP hole punching is implemented.
+If the LAN health probe fails, a client tries public alternates carried in the
+pinned URL fragment as `alt=host:port`. A node publishes them when it obtains
+a PCP, NAT-PMP, or UPnP gateway mapping; each alternate is probed like the LAN
+endpoint and still shares the same certificate pin. If no direct candidate
+works, the client uses an outbound relay session: a WebSocket tunnel when the
+relay supports it, otherwise HTTPS long-poll. IPv6 preference and UDP hole
+punching are not implemented, and port mapping fails on CGNAT or a router with
+no supported mapping protocol.
 
 **Target transport (design):** a custom QUIC protocol with ALPN `toget/1`, one
 control stream, one request per stream, and datagrams for presence and typing,

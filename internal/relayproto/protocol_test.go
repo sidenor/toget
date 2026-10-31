@@ -112,3 +112,48 @@ func TestBodyLimits(t *testing.T) {
 		t.Fatalf("round trip = %q %v", got, err)
 	}
 }
+
+func TestAlternateAddresses(t *testing.T) {
+	fingerprint := strings.Repeat("cd", 32)
+	direct := "https://192.168.1.5:7717#fp=" + fingerprint
+	address := JoinAlternate(direct,
+		"203.0.113.9:7717",
+		" 198.51.100.4:7717 ",
+		"",
+		"203.0.113.9:7717",
+		"[2001:db8::9]:7717",
+		"203.0.113.10:7717",
+		"203.0.113.11:7717",
+	)
+	alternates := SplitAlternates(address)
+	want := []string{
+		"203.0.113.9:7717",
+		"198.51.100.4:7717",
+		"[2001:db8::9]:7717",
+		"203.0.113.10:7717",
+	}
+	if len(alternates) != len(want) {
+		t.Fatalf("alternates = %#v", alternates)
+	}
+	for i := range want {
+		if alternates[i] != want[i] {
+			t.Fatalf("alternate %d = %q, want %q", i, alternates[i], want[i])
+		}
+	}
+	for _, bad := range []string{
+		"",
+		"203.0.113.9",
+		"203.0.113.9:0",
+		"203.0.113.9:65536",
+		"https://203.0.113.9:7717",
+		"203.0.113.9:7717/path",
+		":7717",
+	} {
+		if _, err := ParseAlternateHostPort(bad); err == nil {
+			t.Fatalf("%q was accepted as an alternate", bad)
+		}
+	}
+	if got := SplitAlternates(direct); len(got) != 0 {
+		t.Fatalf("plain direct URL produced alternates %#v", got)
+	}
+}

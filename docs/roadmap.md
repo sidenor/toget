@@ -105,7 +105,8 @@ of the event log or visible to remote room members. See
 - [x] Runtime relay switching from Settings and the local API
 - [x] Signed relay-to-relay forwarding and per-sender byte quotas
 - [x] HTTP/3 over QUIC for node and relay transports, with HTTPS fallback and `--no-quic`
-- [ ] QUIC hole punching, UDP port mapping, and general NAT traversal
+- [x] Optional gateway port mapping (PCP, NAT-PMP, UPnP), STUN address fallback, and public `alt=` candidates
+- [ ] UDP hole punching and relay-assisted NAT traversal; IPv6 preference
 
 **Status:** cross-network rooms work through a relay: encrypted messages,
 attachments, pairing, and remote-room operations all travel as opaque signed
@@ -114,8 +115,10 @@ connection first and fall back to the relay; auto relay discovery, multi-hop
 routing, loop detection, quotas, a 55-second offline queue, signed
 relay-to-relay hops, and a WebSocket tunnel with long-poll fallback are
 implemented and tested. A relay can run without an account or database, and a
-node can switch relays at runtime. NAT traversal is still absent, so a relay is
-required whenever the LAN/VPN path is not reachable. Same-LAN mDNS discovery
+node can switch relays at runtime. A node can also ask a cooperating gateway
+for a PCP, NAT-PMP, or UPnP port mapping and publish the public address as an
+alternate; UDP hole punching is still absent, so symmetric NAT, CGNAT, and
+networks without a supported mapping protocol still require a relay. Same-LAN mDNS discovery
 and portable QR business cards are implemented; neither removes the relay
 requirement across NAT. See [relay.md](relay.md), [discovery.md](discovery.md),
 and [cards.md](cards.md).

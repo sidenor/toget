@@ -57,16 +57,24 @@ func (e *RemoteError) Error() string {
 	return e.Message
 }
 
-// Client talks to one pinned home node. When the node address includes a
-// relay fallback, the client probes the direct LAN path first and relays only
-// when it is unreachable.
+// directEndpoint is one reachable HTTPS origin for the node. The first entry
+// is the LAN endpoint; later entries are public alternates learned from a
+// gateway port mapping.
+type directEndpoint struct {
+	base string
+	quic *quicclient.Transport
+}
+
+// Client talks to one pinned home node. When the node address includes
+// alternates or a relay fallback, the client probes the direct paths first
+// and relays only when none is reachable.
 type Client struct {
 	endpoint  string
+	directs   []directEndpoint
 	accountID string
 	deviceID  string
 	key       ed25519.PrivateKey
 	http      *http.Client
-	quic      *quicclient.Transport
 
 	relayBase   string
 	relayTarget string
@@ -88,12 +96,19 @@ func NewClient(endpoint, fingerprint, accountID, deviceID string, key ed25519.Pr
 	httpsClient := pinnedHTTPClient(config, requestTimeout, requestTimeout)
 	return &Client{
 		endpoint:  base,
+		directs:   []directEndpoint{newDirectEndpoint(base, config, httpsClient)},
 		accountID: accountID,
 		deviceID:  deviceID,
 		key:       key,
 		http:      httpsClient,
-		quic:      quicclient.New(base, "/toget/v1/health", config, httpsClient, requestTimeout, probeTimeout),
 	}, nil
+}
+
+func newDirectEndpoint(base string, config *tls.Config, httpsClient *http.Client) directEndpoint {
+	return directEndpoint{
+		base: base,
+		quic: quicclient.New(base, "/toget/v1/health", config, httpsClient, requestTimeout, probeTimeout),
+	}
 }
 
 func pinnedHTTPClient(config *tls.Config, timeout, headerTimeout time.Duration) *http.Client {
@@ -138,6 +153,20 @@ func NewClientForURL(raw, accountID, deviceID string, key ed25519.PrivateKey) (*
 	if err != nil {
 		return nil, err
 	}
+	// Public alternates share the node's certificate, so the same pinned
+	// config validates every candidate. The LAN endpoint stays first.
+	config, err := PinnedTLSConfig(fingerprint)
+	if err != nil {
+		return nil, err
+	}
+	primaryHost := strings.TrimPrefix(client.endpoint, "https://")
+	for _, hostPort := range relayproto.SplitAlternates(direct) {
+		if strings.EqualFold(hostPort, primaryHost) {
+			continue
+		}
+		base := "https://" + hostPort
+		client.directs = append(client.directs, newDirectEndpoint(base, config, client.http))
+	}
 	if relay != "" {
 		base, relayFP, target, err := relayproto.ParseNodeRoute(relay)
 		if err != nil {
@@ -158,8 +187,10 @@ func (c *Client) Close() {
 	if c == nil {
 		return
 	}
-	if c.quic != nil {
-		c.quic.Close()
+	for _, direct := range c.directs {
+		if direct.quic != nil {
+			direct.quic.Close()
+		}
 	}
 	if c.http != nil {
 		c.http.CloseIdleConnections()
@@ -329,19 +360,20 @@ func (c *Client) FetchAttachment(ctx context.Context, roomID, attachmentID strin
 
 // exchange sends one signed request directly or through the relay fallback.
 func (c *Client) exchange(ctx context.Context, method, path string, payload []byte, contentType string) (int, http.Header, []byte, error) {
-	if c.relayBase != "" && !c.useDirect(ctx) {
+	direct := c.directBase(ctx)
+	if direct == nil {
 		return c.relayExchange(ctx, method, path, payload, contentType)
 	}
-	status, headers, data, err := c.directExchange(ctx, method, path, payload, contentType)
+	status, headers, data, err := c.directExchange(ctx, direct, method, path, payload, contentType)
 	if err != nil && c.relayBase != "" && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		// The probe succeeded but the connection failed before a response.
-		rememberDirect(c.endpoint, false, 30*time.Second)
+		rememberDirect(direct.base, false, 30*time.Second)
 	}
 	return status, headers, data, err
 }
 
-func (c *Client) directExchange(ctx context.Context, method, path string, payload []byte, contentType string) (int, http.Header, []byte, error) {
-	req, err := http.NewRequestWithContext(ctx, method, c.endpoint+path, bytes.NewReader(payload))
+func (c *Client) directExchange(ctx context.Context, direct *directEndpoint, method, path string, payload []byte, contentType string) (int, http.Header, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, method, direct.base+path, bytes.NewReader(payload))
 	if err != nil {
 		return 0, nil, nil, fmt.Errorf("build node request: %w", err)
 	}
@@ -358,7 +390,7 @@ func (c *Client) directExchange(ctx context.Context, method, path string, payloa
 	if err := SignRequest(req, payload, c.key, time.Now()); err != nil {
 		return 0, nil, nil, err
 	}
-	resp, err := c.quic.Do(req)
+	resp, err := direct.quic.Do(req)
 	if err != nil {
 		return 0, nil, nil, fmt.Errorf("%w: %v", ErrUnreachable, err)
 	}
@@ -487,21 +519,42 @@ type reachEntry struct {
 
 var directReach sync.Map
 
-func (c *Client) useDirect(ctx context.Context) bool {
-	if c.relayBase == "" {
-		return true
+// directBase picks the first reachable direct candidate. It returns nil only
+// when every candidate failed and a relay fallback exists. With a single
+// endpoint and no relay it returns that endpoint without probing, preserving
+// the plain pinned-direct path.
+func (c *Client) directBase(ctx context.Context) *directEndpoint {
+	if len(c.directs) == 0 {
+		return nil
 	}
-	if value, ok := directReach.Load(c.endpoint); ok {
-		entry := value.(reachEntry)
-		if time.Now().Before(entry.until) {
-			return entry.ok
+	if len(c.directs) == 1 && c.relayBase == "" {
+		return &c.directs[0]
+	}
+	for i := range c.directs {
+		direct := &c.directs[i]
+		if value, ok := directReach.Load(direct.base); ok {
+			entry := value.(reachEntry)
+			if time.Now().Before(entry.until) {
+				if entry.ok {
+					return direct
+				}
+				continue
+			}
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+		ok := direct.quic.Probe(probeCtx)
+		cancel()
+		rememberDirect(direct.base, ok, 60*time.Second)
+		if ok {
+			return direct
 		}
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
-	defer cancel()
-	ok := c.quic.Probe(probeCtx)
-	rememberDirect(c.endpoint, ok, 60*time.Second)
-	return ok
+	if c.relayBase != "" {
+		return nil
+	}
+	// Nothing probed successfully and there is no relay: attempt the primary
+	// anyway so the caller receives the underlying unreachable error.
+	return &c.directs[0]
 }
 
 func rememberDirect(endpoint string, ok bool, ttl time.Duration) {

@@ -69,6 +69,7 @@ toget/
 │   ├── crypto/                    # HPKE, AEAD, KDF, PAKE wrappers; no domain logic
 │   ├── protocol/                  # generated Protobuf types and validation
 │   ├── quicclient/                # HTTP/3 probe and fallback client for pinned node/relay endpoints
+│   ├── nat/                       # STUN, PCP, NAT-PMP, and UPnP gateway port mapping
 │   ├── transport/                 # planned custom QUIC framing; implemented traffic is HTTP/3 or HTTPS + WebSocket/long-poll
 │   ├── room/                      # rooms, membership, epochs, events, ordering
 │   ├── message/                   # envelope construction, inner/outer split, attachments

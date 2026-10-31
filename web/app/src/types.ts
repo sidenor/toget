@@ -103,6 +103,9 @@ export type NodeInfo = {
   mdns: boolean;
   mdns_peers?: number;
   quic: boolean;
+  nat_method?: string;
+  external_endpoint?: string;
+  external_url?: string;
   tls_fingerprint: string;
   protocol: number;
 };

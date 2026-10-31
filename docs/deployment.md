@@ -13,8 +13,9 @@
 > reproducible-build, and release-tree verification commands. The daemon checks
 > for updates on a schedule, the web UI shows an update banner and settings,
 > and `toget update` checks, stages, finishes, and rolls back managed releases.
-> Public account hosting, official-hosted accounts, NAT traversal, and
-> packaged installers are not implemented yet.
+> Optional gateway port mapping (PCP, NAT-PMP, UPnP) is implemented; UDP hole
+> punching, public account hosting, official-hosted accounts, and packaged
+> installers are not implemented yet.
 
 Toget is deployed as a **node**: one `toget` binary that can act as a daemon, a self-hosted account host, a relay, or the local CLI. Most users run it on one machine and never think about the rest.
 
@@ -183,12 +184,35 @@ The node advertises its endpoint in its signed manifest. Clients probe that
 pinned endpoint first and use it when reachable. The node serves HTTPS on TCP
 and HTTP/3 over QUIC on the same port over UDP; clients select HTTP/3 only
 after a successful health probe and fall back to HTTPS without retrying an
-ambiguous request. UDP `7717` must be reachable for HTTP/3. IPv6 preference,
-port mapping (UPnP/NAT-PMP/PCP), and QUIC hole punching are design-only; today
-a direct connection works on a LAN, a VPN, or a genuinely reachable public
-address. Direct connections are preferred because they are faster and keep
-relays out of the path. Set `--no-quic` when UDP is filtered or a middlebox
-breaks HTTP/3.
+ambiguous request. UDP `7717` must be reachable for HTTP/3. Set `--no-quic`
+when UDP is filtered or a middlebox breaks HTTP/3.
+
+A node behind a gateway can request TCP and UDP port mappings:
+
+```bash
+toget serve --node-nat auto
+toget serve --node-nat auto --node-stun stun.example.net:3478
+toget serve --node-nat auto --node-nat-gateway 192.168.1.1
+```
+
+The same settings can live in `config.json` as `node_nat`, `node_stun`, and
+`node_nat_gateway`; `node_quic: "off"` mirrors `--no-quic`. `--node-nat auto`
+tries PCP, then NAT-PMP (UDP only), then UPnP IGD. The node
+renews the mappings before their lifetime expires, removes them on shutdown,
+and publishes the public `host:port` in its signed manifest as
+`external_endpoint`. Clients receive it as an `alt=` fragment parameter: they
+probe the LAN endpoint first and then the public alternate, so LAN traffic
+stays local and the relay remains the last fallback. `--node-stun` supplies a
+public address when the gateway reports a mapping without one (some UPnP
+devices); STUN is never used for the mapping itself. `--node-nat-gateway`
+overrides default-gateway discovery.
+
+Port mapping only works when the router implements one of those protocols and
+the WAN address is directly reachable. Symmetric NAT, CGNAT, and networks that
+block UPnP still need the relay. UDP hole punching is not implemented.
+
+Direct connections are preferred because they are faster and keep relays out
+of the path.
 
 ### Same-LAN discovery
 

@@ -133,6 +133,16 @@ type Config struct {
 	// NodeQUIC controls the HTTP/3 listener on the node's HTTPS port over
 	// UDP. "on" is the default; "off" keeps HTTPS only.
 	NodeQUIC string `json:"node_quic,omitempty"`
+	// NodeNAT asks the local gateway to forward the node's TCP and UDP
+	// ports. "auto" enables PCP, NAT-PMP, and UPnP attempts; empty or "off"
+	// disables gateway requests.
+	NodeNAT string `json:"node_nat,omitempty"`
+	// NodeSTUN is an optional host:port used to discover the public address
+	// when a gateway does not report one. Empty disables STUN.
+	NodeSTUN string `json:"node_stun,omitempty"`
+	// NodeNATGateway overrides NAT-PMP/PCP gateway discovery with an IP or
+	// host:port. It is useful behind a router that is not the default route.
+	NodeNATGateway string `json:"node_nat_gateway,omitempty"`
 	// AgentRuntimes maps an Agent's runtime name to a local command. The
 	// built-in echo and claude-code runtimes do not need an entry unless they
 	// should be overridden.

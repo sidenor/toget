@@ -21,15 +21,19 @@ const directoryPublishEvery = 10 * time.Minute
 
 // DirectoryRecord is a verified directory lookup result.
 type DirectoryRecord struct {
-	ServerID       string    `json:"server_id"`
-	ServerCode     string    `json:"server_code"`
-	AccountID      string    `json:"account_id"`
-	Endpoint       string    `json:"endpoint"`
-	URL            string    `json:"url"`
-	DirectURL      string    `json:"direct_url"`
-	RelayURL       string    `json:"relay_url,omitempty"`
-	TLSFingerprint string    `json:"tls_fingerprint"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ServerID   string `json:"server_id"`
+	ServerCode string `json:"server_code"`
+	AccountID  string `json:"account_id"`
+	Endpoint   string `json:"endpoint"`
+	URL        string `json:"url"`
+	DirectURL  string `json:"direct_url"`
+	RelayURL   string `json:"relay_url,omitempty"`
+	// ExternalEndpoint and ExternalURL are the public alternate learned from
+	// the node's gateway mapping, when it published one.
+	ExternalEndpoint string    `json:"external_endpoint,omitempty"`
+	ExternalURL      string    `json:"external_url,omitempty"`
+	TLSFingerprint   string    `json:"tls_fingerprint"`
+	UpdatedAt        time.Time `json:"updated_at"`
 	// Source is "directory", "mdns", or "card".
 	Source string `json:"source,omitempty"`
 }
@@ -239,6 +243,8 @@ func (s *Service) LookupServer(ctx context.Context, code string) (*DirectoryReco
 		return nil, errors.New("directory node endpoint is not HTTPS")
 	}
 	direct := NodeURL(nm.Endpoint, nm.TLSFingerprint)
+	externalEndpoint, externalURL := externalAlternate(&nm)
+	direct = relayproto.JoinAlternate(direct, externalEndpoint)
 	// Only the relay route signed inside the node manifest is trusted. An
 	// unsigned directory hint must not be able to redirect traffic.
 	relayURL := nm.RelayURL
@@ -250,8 +256,10 @@ func (s *Service) LookupServer(ctx context.Context, code string) (*DirectoryReco
 	record := &DirectoryRecord{
 		ServerID: im.ServerID, ServerCode: im.ServerCode, AccountID: nm.AccountID,
 		Endpoint: nm.Endpoint, URL: relayproto.JoinAddress(direct, relayURL),
-		DirectURL: direct, RelayURL: relayURL, TLSFingerprint: nm.TLSFingerprint,
-		UpdatedAt: out.UpdatedAt, Source: "directory",
+		DirectURL: direct, RelayURL: relayURL,
+		ExternalEndpoint: externalEndpoint, ExternalURL: externalURL,
+		TLSFingerprint: nm.TLSFingerprint,
+		UpdatedAt:      out.UpdatedAt, Source: "directory",
 	}
 	if err := checkSavedCardPin(savedCards, record); err != nil {
 		return nil, err

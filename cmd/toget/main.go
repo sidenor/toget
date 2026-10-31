@@ -45,18 +45,21 @@ import (
 )
 
 var (
-	homeFlag          string
-	jsonFlag          bool
-	listenFlag        string
-	nodeListenFlag    string
-	nodeAdvertiseFlag string
-	nodeRelayFlag     string
-	nodeDirectoryFlag string
-	noNodeFlag        bool
-	noRelayFlag       bool
-	noMDNSFlag        bool
-	noQUICFlag        bool
-	stdinReader       = bufio.NewReader(os.Stdin)
+	homeFlag           string
+	jsonFlag           bool
+	listenFlag         string
+	nodeListenFlag     string
+	nodeAdvertiseFlag  string
+	nodeRelayFlag      string
+	nodeDirectoryFlag  string
+	nodeNATFlag        string
+	nodeSTUNFlag       string
+	nodeNATGatewayFlag string
+	noNodeFlag         bool
+	noRelayFlag        bool
+	noMDNSFlag         bool
+	noQUICFlag         bool
+	stdinReader        = bufio.NewReader(os.Stdin)
 )
 
 func main() {
@@ -325,6 +328,9 @@ func newServeCommand() *cobra.Command {
 	cmd.Flags().StringVar(&nodeAdvertiseFlag, "node-advertise", "", "host:port that peers should use for this node")
 	cmd.Flags().StringVar(&nodeRelayFlag, "node-relay", "", "pinned relay URL or \"auto\" for directory discovery")
 	cmd.Flags().StringVar(&nodeDirectoryFlag, "node-directory", "", "pinned public directory URL")
+	cmd.Flags().StringVar(&nodeNATFlag, "node-nat", "", "ask the gateway to forward ports: \"auto\" or \"off\"")
+	cmd.Flags().StringVar(&nodeSTUNFlag, "node-stun", "", "STUN host:port for public address discovery")
+	cmd.Flags().StringVar(&nodeNATGatewayFlag, "node-nat-gateway", "", "NAT-PMP/PCP gateway IP or host:port")
 	cmd.Flags().BoolVar(&noNodeFlag, "no-node", false, "disable the LAN node transport")
 	cmd.Flags().BoolVar(&noRelayFlag, "no-relay", false, "disable relay fallback")
 	cmd.Flags().BoolVar(&noMDNSFlag, "no-mdns", false, "disable same-LAN multicast discovery")
@@ -351,6 +357,21 @@ func runServe(ctx context.Context) error {
 	}
 	if nodeDirectoryFlag != "" {
 		cfg.NodeDirectory = nodeDirectoryFlag
+	}
+	if nodeNATFlag != "" {
+		cfg.NodeNAT = nodeNATFlag
+	}
+	if nodeSTUNFlag != "" {
+		cfg.NodeSTUN = nodeSTUNFlag
+	}
+	if nodeNATGatewayFlag != "" {
+		cfg.NodeNATGateway = nodeNATGatewayFlag
+	}
+	if cfg.NodeNAT == "" {
+		cfg.NodeNAT = "off"
+	}
+	if cfg.NodeNAT != "auto" && cfg.NodeNAT != "off" {
+		return fmt.Errorf("node_nat must be \"auto\" or \"off\"")
 	}
 	if noRelayFlag {
 		cfg.NodeRelay = "off"
@@ -473,15 +494,18 @@ func runServe(ctx context.Context) error {
 	}()
 
 	nodeService, err = node.New(node.Options{
-		Accounts:  accounts,
-		Rooms:     rooms,
-		Paths:     paths,
-		Listen:    cfg.NodeListen,
-		Advertise: cfg.NodeAdvertise,
-		Relay:     cfg.NodeRelay,
-		Directory: cfg.NodeDirectory,
-		MDNS:      cfg.NodeMDNS,
-		QUIC:      cfg.NodeQUIC,
+		Accounts:   accounts,
+		Rooms:      rooms,
+		Paths:      paths,
+		Listen:     cfg.NodeListen,
+		Advertise:  cfg.NodeAdvertise,
+		Relay:      cfg.NodeRelay,
+		Directory:  cfg.NodeDirectory,
+		MDNS:       cfg.NodeMDNS,
+		QUIC:       cfg.NodeQUIC,
+		NAT:        cfg.NodeNAT,
+		STUN:       cfg.NodeSTUN,
+		NATGateway: cfg.NodeNATGateway,
 		SaveRelay: func(setting string) error {
 			return saveNodeRelay(paths, setting)
 		},
