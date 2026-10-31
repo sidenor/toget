@@ -103,6 +103,16 @@ queue limits. The relay-to-relay parent session uses the same tunnel protocol.
 with the WebSocket listener disabled and remains wire-compatible with nodes
 that only implement long-poll.
 
+### HTTP/3
+
+A relay also serves the same HTTPS API over HTTP/3 on the same port over UDP.
+Nodes and child relays probe `/relay/v1/health` and use HTTP/3 only when the
+probe succeeds; a failed HTTP/3 request is not retried on HTTPS, so a write
+cannot be applied twice. The next request falls back. `--no-quic` disables the
+UDP listener, and `GET /relay/v1/info` reports `"quic": true/false`. This is a
+transport change only: the signed envelope format, route announcements, and
+WebSocket tunnel are unchanged. HTTP/3 does not provide NAT traversal.
+
 ## Addresses and direct-first fallback
 
 A relayed node address is a normal pinned node URL with a relay route in the
@@ -288,8 +298,10 @@ short code and are visible to the directory operator.
 
 ## What is not implemented
 
-- QUIC, UDP hole punching, UPnP/NAT-PMP/PCP, and any other NAT traversal.
-  Two nodes behind different NATs work only through a relay.
+- QUIC hole punching, UDP port mapping (UPnP/NAT-PMP/PCP), and any other NAT
+  traversal. HTTP/3 itself is implemented as an alternative transport on the
+  relay's normal port, but it does not solve reachability: two nodes behind
+  different NATs still work only through a relay.
 - Automatic re-advertisement of a new relay to devices that already stored a
   room address. A running node can switch its own relay, and new invites and
   directory lookups carry the new route, but remote members keep the address

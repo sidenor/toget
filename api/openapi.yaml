@@ -5334,7 +5334,7 @@ components:
     NodeInfo:
       type: object
       additionalProperties: false
-      required: [server_id, server_code, account_id, device_id, endpoint, url, relay_mode, relay_setting, relay_connected, relay_tunnel, mdns, mdns_peers, tls_fingerprint, protocol]
+      required: [server_id, server_code, account_id, device_id, endpoint, url, relay_mode, relay_setting, relay_connected, relay_tunnel, mdns, mdns_peers, quic, tls_fingerprint, protocol]
       properties:
         server_id:
           type: string
@@ -5390,6 +5390,12 @@ components:
           type: integer
           minimum: 0
           description: Number of current LAN advertisements.
+        quic:
+          type: boolean
+          description: |
+            Whether the node is serving HTTP/3 on UDP alongside HTTPS. Clients
+            select it only after a successful health probe and fall back to
+            HTTPS without retrying an ambiguous request.
         tls_fingerprint:
           type: string
           description: Hex SHA-256 fingerprint of the node's self-signed certificate.

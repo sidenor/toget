@@ -102,6 +102,7 @@ export type NodeInfo = {
   directory_url?: string;
   mdns: boolean;
   mdns_peers?: number;
+  quic: boolean;
   tls_fingerprint: string;
   protocol: number;
 };

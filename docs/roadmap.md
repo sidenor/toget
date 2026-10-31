@@ -38,7 +38,7 @@ Toget is at the very beginning. The order below is chosen so that each milestone
 
 **Goal:** prove the room and identity model across machines.
 
-- [x] Node-to-node handshake over pinned HTTPS on the LAN (QUIC is still planned)
+- [x] Node-to-node handshake over pinned HTTPS on the LAN, with HTTP/3 over QUIC as an alternate transport
 - [x] Device enrollment approved by an existing device, with sealed account-key transfer and room-key snapshots
 - [x] Account record sync between paired devices: certificate-verified device sets, account-signed revocation proofs, and read-only revoked-device discovery
 - [x] Invite a second account into a room; membership event and epoch rotation
@@ -53,7 +53,8 @@ Toget is at the very beginning. The order below is chosen so that each milestone
 **Status:** the LAN milestone works for message rooms. Remote-room
 attachments, remote leave/archive, device enrollment, and account-record sync
 are done; invite and pairing codes can be shown as QR codes and scanned from a
-still image; QUIC is not. Relay fallback is implemented in M4. A packet capture still shows metadata (account/device
+still image; HTTP/3 over QUIC is available as an alternate transport. Relay
+fallback is implemented in M4. A packet capture still shows metadata (account/device
 IDs in signed request headers) and sealed payloads; it does not show message
 plaintext.
 
@@ -103,6 +104,7 @@ of the event log or visible to remote room members. See
 - [x] Standalone relay-only mode: `toget relay`
 - [x] Runtime relay switching from Settings and the local API
 - [x] Signed relay-to-relay forwarding and per-sender byte quotas
+- [x] HTTP/3 over QUIC for node and relay transports, with HTTPS fallback and `--no-quic`
 - [ ] QUIC hole punching, UDP port mapping, and general NAT traversal
 
 **Status:** cross-network rooms work through a relay: encrypted messages,

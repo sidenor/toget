@@ -2598,6 +2598,10 @@ export function SettingsView({
                   </dd>
                 </div>
                 <div>
+                  <dt>{t("settings.quic")}</dt>
+                  <dd>{node.info.quic ? t("settings.quicOn") : t("settings.quicOff")}</dd>
+                </div>
+                <div>
                   <dt>{t("settings.lanFingerprint")}</dt>
                   <dd className="mono fingerprint">{node.info.tls_fingerprint}</dd>
                 </div>

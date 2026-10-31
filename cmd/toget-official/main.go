@@ -45,6 +45,7 @@ func newRootCommand() *cobra.Command {
 		relayURL        string
 		noRelay         bool
 		noDirectory     bool
+		noQUIC          bool
 		updateDir       string
 		updateListen    string
 		updateTLSCert   string
@@ -91,12 +92,17 @@ func newRootCommand() *cobra.Command {
 
 			var relayService *relay.Service
 			if !noRelay {
+				quic := "on"
+				if noQUIC {
+					quic = "off"
+				}
 				relayService, err = relay.New(relay.Options{
 					Listen:    relayListen,
 					Advertise: relayAdvertise,
 					Paths:     paths,
 					Parent:    relayParent,
 					Logger:    logger,
+					QUIC:      quic,
 				})
 				if err != nil {
 					return err
@@ -151,6 +157,7 @@ func newRootCommand() *cobra.Command {
 	cmd.Flags().StringVar(&relayURL, "relay-url", "", "default relay advertised to nodes (defaults to this relay)")
 	cmd.Flags().BoolVar(&noRelay, "no-relay", false, "do not run the relay")
 	cmd.Flags().BoolVar(&noDirectory, "no-directory", false, "do not run the directory")
+	cmd.Flags().BoolVar(&noQUIC, "no-quic", false, "disable HTTP/3 on the relay")
 	cmd.Flags().StringVar(&updateDir, "update-dir", "", "release tree to serve (channels/, manifests/, daemon/, sbom/)")
 	cmd.Flags().StringVar(&updateListen, "update-listen", "127.0.0.1:7721", "update service listen address")
 	cmd.Flags().StringVar(&updateTLSCert, "update-tls-cert", "", "TLS certificate for the update service")

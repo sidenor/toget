@@ -7,7 +7,7 @@ Toget has one protocol with three planes:
 
 | Plane | Transport | Encoding | Used by |
 | --- | --- | --- | --- |
-| **Node protocol** | HTTPS on `7717` with a pinned self-signed certificate (QUIC is planned) | JSON envelopes | Nodes on the same LAN |
+| **Node protocol** | HTTP/3 over QUIC and HTTPS on `7717`, pinned self-signed certificate | JSON envelopes | Nodes on the same LAN |
 | **Local API** | HTTP on `127.0.0.1:7718` or a Unix socket | JSON (OpenAPI) | Local web UI, CLI, Agents on the same machine |
 | **Directory API** | HTTPS on `443` | JSON + signed manifests (design only) | Clients resolving a server code |
 
@@ -65,11 +65,12 @@ decode it from a still image locally. The wire format and security rules do not
 change: a QR code is another way to carry the same single-use invite or
 short-lived pairing secret, not a new credential.
 
-Still design-only: QUIC, Protobuf framing, and NAT traversal or hole punching.
-Relays and the directory are implemented with HTTPS + JSON rather than the
-future Protobuf framing, and relay sessions use an optional WebSocket tunnel
-with HTTPS long-poll fallback; see [relay.md](relay.md) for their wire format,
-trust boundaries, and limits. LAN discovery is implemented
+Still design-only: Protobuf framing, a custom QUIC stream protocol, and NAT
+traversal or hole punching. HTTP/3 over QUIC is implemented as an alternative
+transport for the same HTTP/JSON API. Relays and the directory are implemented
+with HTTPS + JSON rather than the future Protobuf framing, and relay sessions
+use an optional WebSocket tunnel with HTTPS long-poll fallback; see
+[relay.md](relay.md) for their wire format, trust boundaries, and limits. LAN discovery is implemented
 with a small mDNS responder and browser; see [discovery.md](discovery.md).
 Portable business cards carry signed manifests as text or QR codes; see
 [cards.md](cards.md). The rest of this document describes the target design;
@@ -168,16 +169,19 @@ nonce
 hex(sha256(body))
 ```
 
-**Target transport (design):** QUIC with TLS 1.3, ALPN `toget/1`. One control
-stream for session messages, one stream per request, and datagrams reserved for
-presence and typing. WSS over TCP `443` is the fallback for networks that block
-UDP. IPv6, UPnP/NAT-PMP/PCP, and QUIC hole punching would be attempted before a
-relay is used.
+**Implemented transport:** the same JSON API is served over pinned HTTPS + HTTP/2
+on TCP `7717` and over HTTP/3 on QUIC on the same port over UDP. The client
+probes `/toget/v1/health`; a successful HTTP/3 probe selects QUIC, and any
+failed HTTP/3 request is surfaced without an automatic retry on HTTPS. The next
+request falls back to HTTPS. Relays expose the same split on their own port.
 
-**Implemented transport:** pinned HTTPS + JSON on TCP `7717`, HTTP/2 where
-available. If the direct health probe fails, the node client uses an outbound
+If the direct health probe fails entirely, the node client uses an outbound
 relay session: a WebSocket tunnel when the relay supports it, otherwise HTTPS
-long-poll. No UDP, port mapping, or hole punching is implemented.
+long-poll. No port mapping, IPv6 preference, or UDP hole punching is implemented.
+
+**Target transport (design):** a custom QUIC protocol with ALPN `toget/1`, one
+control stream, one request per stream, and datagrams for presence and typing,
+with Protobuf framing. It would attempt IPv6 and NAT traversal before a relay.
 
 Target handshake:
 

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sidenor/toget/internal/quicclient"
 	"github.com/sidenor/toget/internal/relayproto"
 	"github.com/sidenor/toget/internal/relaytunnel"
 )
@@ -32,6 +33,7 @@ type relayConn struct {
 	base        string
 	fingerprint string
 	client      *http.Client
+	transport   *quicclient.Transport
 	wsClient    *http.Client
 	token       string
 	expires     time.Time
@@ -43,11 +45,28 @@ func newRelayConn(s *Service, base, fingerprint string) (*relayConn, error) {
 	if err != nil {
 		return nil, err
 	}
+	client := pinnedHTTPClient(config, relayTimeout, relayTimeout)
 	return &relayConn{
 		svc: s, base: base, fingerprint: fingerprint,
-		client:   pinnedHTTPClient(config, relayTimeout, relayTimeout),
-		wsClient: pinnedTunnelHTTPClient(config),
+		client:    client,
+		transport: quicclient.New(base, "/relay/v1/health", config, client, relayTimeout, probeTimeout),
+		wsClient:  pinnedTunnelHTTPClient(config),
 	}, nil
+}
+
+func (c *relayConn) close() {
+	if c == nil {
+		return
+	}
+	if c.transport != nil {
+		c.transport.Close()
+	}
+	if c.client != nil {
+		c.client.CloseIdleConnections()
+	}
+	if c.wsClient != nil {
+		c.wsClient.CloseIdleConnections()
+	}
 }
 
 func (c *relayConn) register(ctx context.Context) error {
@@ -153,7 +172,7 @@ func (c *relayConn) request(ctx context.Context, method, path string, payload []
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := c.client.Do(req)
+	resp, err := c.transport.Do(req)
 	if err != nil {
 		return nil, nil, fmt.Errorf("relay unreachable: %w", err)
 	}
@@ -245,6 +264,7 @@ func (s *Service) runRelaySession(ctx context.Context, base, fingerprint string)
 	if err != nil {
 		return err
 	}
+	defer conn.close()
 	if err := conn.register(ctx); err != nil {
 		return err
 	}

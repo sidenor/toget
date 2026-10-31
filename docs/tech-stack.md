@@ -3,19 +3,21 @@
 > Status: proposed direction. Exact versions are pinned in `.mise.toml`, `go.mod`, and `pnpm-lock.yaml`.
 >
 > **Current implementation note:** the LAN node and relay use Go's standard
-> `net/http` over TLS 1.3 with pinned self-signed Ed25519 certificates and JSON
-> payloads (`internal/node`, `internal/relay`), not QUIC or Protobuf yet.
-> Relay sessions use a WebSocket tunnel with HTTPS long-poll fallback; the
-> WebSocket upgrade is still HTTP-shaped and the inner request format is
-> unchanged. Go, SQLite, React, TypeScript, and Vite match this document. QUIC
-> and Protobuf remain the target for relay-scale transport.
+> `net/http` with TLS 1.3, pinned self-signed Ed25519 certificates, and JSON
+> payloads (`internal/node`, `internal/relay`). The same handler is also served
+> over **HTTP/3 on QUIC** (`quic-go`) on the same port over UDP; clients probe
+> the health endpoint and fall back to HTTPS without retrying an ambiguous
+> request. Relay sessions use a WebSocket tunnel with HTTPS long-poll fallback.
+> Protobuf framing and a custom QUIC stream protocol remain design-only, and
+> NAT traversal is not implemented. Go, SQLite, React, TypeScript, and Vite
+> match this document.
 
 ## Decision summary
 
 | Layer | Choice | Why |
 | --- | --- | --- |
 | Node, daemon, account host, relay | **Go** | Static binary, cross-platform services, strong concurrency, predictable memory |
-| Node transport | **QUIC** (`quic-go`), WSS/TCP `443` fallback | Low-latency multiplexing, NAT traversal, HTTPS fallback for hostile networks |
+| Node transport | **HTTP/3 over QUIC** (`quic-go`), HTTPS/TCP fallback | Low-latency multiplexing, HTTPS fallback for hostile networks; NAT traversal remains future work |
 | Node encoding | **Protobuf** | Compact, versionable, generated types in Go and TypeScript |
 | Local API | **HTTP JSON + OpenAPI 3.1** on `127.0.0.1:7718` | Easy to inspect, script, and generate clients for |
 | Local web UI | **TypeScript + React + Vite** | Largest UI ecosystem; one codebase for web, desktop shell, and PWA |

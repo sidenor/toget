@@ -226,6 +226,7 @@ type Info struct {
 	Routes         int       `json:"routes"`
 	Queued         int       `json:"queued"`
 	Tunnels        int       `json:"tunnels"`
+	QUIC           bool      `json:"quic"`
 	ServerTime     time.Time `json:"server_time"`
 }
 

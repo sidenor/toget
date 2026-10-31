@@ -130,6 +130,9 @@ type Config struct {
 	// node's server code and endpoint; "off" disables advertisement and
 	// browsing. An empty value is treated as "on" by `toget serve`.
 	NodeMDNS string `json:"node_mdns,omitempty"`
+	// NodeQUIC controls the HTTP/3 listener on the node's HTTPS port over
+	// UDP. "on" is the default; "off" keeps HTTPS only.
+	NodeQUIC string `json:"node_quic,omitempty"`
 	// AgentRuntimes maps an Agent's runtime name to a local command. The
 	// built-in echo and claude-code runtimes do not need an entry unless they
 	// should be overridden.

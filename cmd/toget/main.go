@@ -55,6 +55,7 @@ var (
 	noNodeFlag        bool
 	noRelayFlag       bool
 	noMDNSFlag        bool
+	noQUICFlag        bool
 	stdinReader       = bufio.NewReader(os.Stdin)
 )
 
@@ -230,6 +231,7 @@ func newRelayCommand() *cobra.Command {
 		advertise string
 		parent    string
 		noWS      bool
+		noQUIC    bool
 	)
 	cmd := &cobra.Command{
 		Use:   "relay",
@@ -265,9 +267,13 @@ func newRelayCommand() *cobra.Command {
 			if noWS {
 				websocket = "off"
 			}
+			quic := "on"
+			if noQUIC {
+				quic = "off"
+			}
 			service, err := relay.New(relay.Options{
 				Listen: listen, Advertise: advertise, Paths: paths,
-				Parent: parent, Logger: logger, WebSocket: websocket,
+				Parent: parent, Logger: logger, WebSocket: websocket, QUIC: quic,
 			})
 			if err != nil {
 				return err
@@ -283,6 +289,7 @@ func newRelayCommand() *cobra.Command {
 				if err := printJSON(map[string]any{
 					"url": service.URL(), "relay_id": service.RelayID(),
 					"data": paths.Home, "websocket": websocket != "off",
+					"quic": quic != "off",
 				}); err != nil {
 					return err
 				}
@@ -301,6 +308,7 @@ func newRelayCommand() *cobra.Command {
 	cmd.Flags().StringVar(&advertise, "advertise", "", "host:port advertised by the relay")
 	cmd.Flags().StringVar(&parent, "parent", "", "pinned parent relay URL for multi-hop routing")
 	cmd.Flags().BoolVar(&noWS, "no-websocket", false, "disable the WebSocket tunnel and serve HTTPS long-poll only")
+	cmd.Flags().BoolVar(&noQUIC, "no-quic", false, "disable HTTP/3 and serve HTTPS only")
 	return cmd
 }
 
@@ -320,6 +328,7 @@ func newServeCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&noNodeFlag, "no-node", false, "disable the LAN node transport")
 	cmd.Flags().BoolVar(&noRelayFlag, "no-relay", false, "disable relay fallback")
 	cmd.Flags().BoolVar(&noMDNSFlag, "no-mdns", false, "disable same-LAN multicast discovery")
+	cmd.Flags().BoolVar(&noQUICFlag, "no-quic", false, "disable HTTP/3 on the node transport")
 	return cmd
 }
 
@@ -354,6 +363,15 @@ func runServe(ctx context.Context) error {
 	}
 	if cfg.NodeMDNS != "on" && cfg.NodeMDNS != "off" {
 		return fmt.Errorf("node_mdns must be \"on\" or \"off\"")
+	}
+	if cfg.NodeQUIC == "" {
+		cfg.NodeQUIC = "on"
+	}
+	if noQUICFlag || cfg.NodeQUIC == "off" {
+		cfg.NodeQUIC = "off"
+	}
+	if cfg.NodeQUIC != "on" && cfg.NodeQUIC != "off" {
+		return fmt.Errorf("node_quic must be \"on\" or \"off\"")
 	}
 	if noNodeFlag {
 		cfg.NodeListen = config.NodeListenOff
@@ -463,6 +481,7 @@ func runServe(ctx context.Context) error {
 		Relay:     cfg.NodeRelay,
 		Directory: cfg.NodeDirectory,
 		MDNS:      cfg.NodeMDNS,
+		QUIC:      cfg.NodeQUIC,
 		SaveRelay: func(setting string) error {
 			return saveNodeRelay(paths, setting)
 		},

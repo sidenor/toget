@@ -68,7 +68,8 @@ toget/
 │   ├── identity/                  # keys, signatures, trust anchors, manifests
 │   ├── crypto/                    # HPKE, AEAD, KDF, PAKE wrappers; no domain logic
 │   ├── protocol/                  # generated Protobuf types and validation
-│   ├── transport/                 # planned QUIC framing; the implemented path is HTTPS + WebSocket/long-poll relay traffic
+│   ├── quicclient/                # HTTP/3 probe and fallback client for pinned node/relay endpoints
+│   ├── transport/                 # planned custom QUIC framing; implemented traffic is HTTP/3 or HTTPS + WebSocket/long-poll
 │   ├── room/                      # rooms, membership, epochs, events, ordering
 │   ├── message/                   # envelope construction, inner/outer split, attachments
 │   ├── sync/                      # cursors, deltas, snapshots, outbox replay

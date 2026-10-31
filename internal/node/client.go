@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sidenor/toget/internal/quicclient"
 	"github.com/sidenor/toget/internal/relayproto"
 	"github.com/sidenor/toget/internal/room"
 )
@@ -65,6 +66,7 @@ type Client struct {
 	deviceID  string
 	key       ed25519.PrivateKey
 	http      *http.Client
+	quic      *quicclient.Transport
 
 	relayBase   string
 	relayTarget string
@@ -82,12 +84,15 @@ func NewClient(endpoint, fingerprint, accountID, deviceID string, key ed25519.Pr
 	if err != nil {
 		return nil, err
 	}
+	base := strings.TrimSuffix(endpoint, "/")
+	httpsClient := pinnedHTTPClient(config, requestTimeout, requestTimeout)
 	return &Client{
-		endpoint:  strings.TrimSuffix(endpoint, "/"),
+		endpoint:  base,
 		accountID: accountID,
 		deviceID:  deviceID,
 		key:       key,
-		http:      pinnedHTTPClient(config, requestTimeout, requestTimeout),
+		http:      httpsClient,
+		quic:      quicclient.New(base, "/toget/v1/health", config, httpsClient, requestTimeout, probeTimeout),
 	}, nil
 }
 
@@ -150,10 +155,16 @@ func NewClientForURL(raw, accountID, deviceID string, key ed25519.PrivateKey) (*
 
 // Close releases idle connections.
 func (c *Client) Close() {
-	if c != nil && c.http != nil {
+	if c == nil {
+		return
+	}
+	if c.quic != nil {
+		c.quic.Close()
+	}
+	if c.http != nil {
 		c.http.CloseIdleConnections()
 	}
-	if c != nil && c.relayHTTP != nil {
+	if c.relayHTTP != nil {
 		c.relayHTTP.CloseIdleConnections()
 	}
 }
@@ -347,7 +358,7 @@ func (c *Client) directExchange(ctx context.Context, method, path string, payloa
 	if err := SignRequest(req, payload, c.key, time.Now()); err != nil {
 		return 0, nil, nil, err
 	}
-	resp, err := c.http.Do(req)
+	resp, err := c.quic.Do(req)
 	if err != nil {
 		return 0, nil, nil, fmt.Errorf("%w: %v", ErrUnreachable, err)
 	}
@@ -488,18 +499,7 @@ func (c *Client) useDirect(ctx context.Context) bool {
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, c.endpoint+"/toget/v1/health", nil)
-	if err != nil {
-		rememberDirect(c.endpoint, false, 30*time.Second)
-		return false
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		rememberDirect(c.endpoint, false, 60*time.Second)
-		return false
-	}
-	resp.Body.Close()
-	ok := resp.StatusCode == http.StatusOK
+	ok := c.quic.Probe(probeCtx)
 	rememberDirect(c.endpoint, ok, 60*time.Second)
 	return ok
 }

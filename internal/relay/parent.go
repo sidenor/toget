@@ -17,6 +17,7 @@ import (
 	"time"
 
 	nodenet "github.com/sidenor/toget/internal/node"
+	"github.com/sidenor/toget/internal/quicclient"
 	"github.com/sidenor/toget/internal/relayproto"
 	"github.com/sidenor/toget/internal/relaytunnel"
 )
@@ -37,6 +38,7 @@ type parentLink struct {
 	fingerprint string
 	url         string
 	client      *http.Client
+	transport   *quicclient.Transport
 	wsClient    *http.Client
 }
 
@@ -71,11 +73,28 @@ func newParentLink(_ context.Context, svc *Service, raw string) (*parentLink, er
 		MaxIdleConnsPerHost:   2,
 		IdleConnTimeout:       90 * time.Second,
 	}
+	client := &http.Client{Transport: transport, Timeout: parentTimeout}
 	return &parentLink{
 		svc: svc, base: base, fingerprint: fingerprint, url: raw,
-		client:   &http.Client{Transport: transport, Timeout: parentTimeout},
-		wsClient: &http.Client{Transport: tunnelTransport},
+		client:    client,
+		transport: quicclient.New(base, "/relay/v1/health", config, client, parentTimeout, 2500*time.Millisecond),
+		wsClient:  &http.Client{Transport: tunnelTransport},
 	}, nil
+}
+
+func (p *parentLink) close() {
+	if p == nil {
+		return
+	}
+	if p.transport != nil {
+		p.transport.Close()
+	}
+	if p.client != nil {
+		p.client.CloseIdleConnections()
+	}
+	if p.wsClient != nil {
+		p.wsClient.CloseIdleConnections()
+	}
 }
 
 func (p *parentLink) register(ctx context.Context) (string, time.Time, error) {
@@ -228,7 +247,7 @@ func (p *parentLink) request(ctx context.Context, method, path string, payload [
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := p.client.Do(req)
+	resp, err := p.transport.Do(req)
 	if err != nil {
 		return nil, nil, fmt.Errorf("parent relay unreachable: %w", err)
 	}
@@ -253,6 +272,7 @@ func (s *Service) runParent(ctx context.Context) {
 	if parent == nil {
 		return
 	}
+	defer parent.close()
 	backoff := time.Second
 	for {
 		token, expires, err := parent.register(ctx)

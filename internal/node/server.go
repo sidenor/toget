@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/quic-go/quic-go/http3"
 	"github.com/sidenor/toget/internal/account"
 	"github.com/sidenor/toget/internal/card"
 	"github.com/sidenor/toget/internal/config"
@@ -55,6 +56,9 @@ type Options struct {
 	// MDNS is "on" to advertise and browse Toget nodes on the local network.
 	// Empty or "off" disables multicast discovery.
 	MDNS string
+	// QUIC is "off" to disable the HTTP/3 listener on the same port over UDP.
+	// Empty or "on" enables it; the HTTPS listener always remains available.
+	QUIC string
 	// SaveRelay persists a runtime relay setting ("off", "auto", or a pinned
 	// URL). It is called before the change is applied; an error leaves the
 	// current relay untouched.
@@ -80,6 +84,7 @@ type Info struct {
 	DirectoryURL   string `json:"directory_url,omitempty"`
 	MDNS           bool   `json:"mdns"`
 	MDNSPeers      int    `json:"mdns_peers"`
+	QUIC           bool   `json:"quic"`
 	TLSFingerprint string `json:"tls_fingerprint"`
 	Protocol       int    `json:"protocol"`
 }
@@ -101,6 +106,9 @@ type Service struct {
 	fingerprint string
 	server      *http.Server
 	listener    net.Listener
+	quicServer  *http3.Server
+	quicConn    net.PacketConn
+	quicActive  atomic.Bool
 	started     bool
 	closeOnce   sync.Once
 	cancel      context.CancelFunc
@@ -130,6 +138,8 @@ type Service struct {
 	mdnsSetting string
 	mdnsMu      sync.RWMutex
 	discovery   *mdns.Service
+
+	quicSetting string
 
 	pairMu    sync.Mutex
 	pairings  map[string]*pairSession
@@ -202,6 +212,16 @@ func New(opts Options) (*Service, error) {
 	if mdnsSetting != "" && mdnsSetting != "on" {
 		return nil, errors.New(`node mdns: expected "on" or "off"`)
 	}
+	quicSetting := strings.TrimSpace(opts.QUIC)
+	if quicSetting == "" {
+		quicSetting = "on"
+	}
+	if quicSetting == "off" {
+		quicSetting = ""
+	}
+	if quicSetting != "" && quicSetting != "on" {
+		return nil, errors.New(`node quic: expected "on" or "off"`)
+	}
 	cards, err := card.Open(opts.Paths.Cards)
 	if err != nil {
 		logger.Warn("saved cards could not be loaded", "error", err)
@@ -216,7 +236,7 @@ func New(opts Options) (*Service, error) {
 		relayWake: make(chan struct{}, 1), relayBase: relayBase, relayFP: relayFP,
 		directorySetting: directorySetting, directoryBase: directoryBase,
 		directoryFP: directoryFP, directoryHTTP: directoryHTTP,
-		mdnsSetting: mdnsSetting,
+		mdnsSetting: mdnsSetting, quicSetting: quicSetting,
 	}
 	// Agent, approval, and tool services append through the room service.
 	// Once this node exists, events for rooms hosted elsewhere are forwarded
@@ -293,6 +313,9 @@ func (s *Service) Start(ctx context.Context) error {
 			s.logger.Error("node listener stopped", "error", err)
 		}
 	}()
+	if s.quicSetting != "" {
+		s.startQUIC(rawListener.Addr().String(), material.Certificate)
+	}
 	go s.syncLoop(runCtx)
 	go s.accountSyncLoop(runCtx)
 	// The relay loop always runs so a relay can be enabled, disabled, or
@@ -329,9 +352,17 @@ func (s *Service) Close() error {
 		s.mu.RLock()
 		cancel := s.cancel
 		server := s.server
+		quicServer := s.quicServer
+		quicConn := s.quicConn
 		s.mu.RUnlock()
 		if cancel != nil {
 			cancel()
+		}
+		if quicServer != nil {
+			_ = quicServer.Close()
+		}
+		if quicConn != nil {
+			_ = quicConn.Close()
 		}
 		if server != nil {
 			ctx, done := context.WithTimeout(context.Background(), 5*time.Second)
@@ -340,6 +371,47 @@ func (s *Service) Close() error {
 		}
 	})
 	return err
+}
+
+// startQUIC serves the same handler over HTTP/3 on UDP at the node's HTTPS
+// port. A bind failure is not fatal: the node stays reachable over HTTPS.
+func (s *Service) startQUIC(addr string, certificate tls.Certificate) {
+	conn, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		s.logger.Warn("QUIC listener unavailable; using HTTPS only", "address", addr, "error", err)
+		return
+	}
+	server := &http3.Server{
+		Addr: addr,
+		TLSConfig: http3.ConfigureTLSConfig(&tls.Config{
+			Certificates: []tls.Certificate{certificate},
+			MinVersion:   tls.VersionTLS13,
+		}),
+		Handler:        s.Handler(),
+		MaxHeaderBytes: 64 << 10,
+		IdleTimeout:    2 * time.Minute,
+		Logger:         s.logger,
+	}
+	s.mu.Lock()
+	s.quicServer = server
+	s.quicConn = conn
+	s.mu.Unlock()
+	s.quicActive.Store(true)
+	go func() {
+		err := server.Serve(conn)
+		s.quicActive.Store(false)
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			s.logger.Warn("QUIC listener stopped", "error", err)
+		}
+	}()
+}
+
+// QUICEnabled reports whether the HTTP/3 listener is running.
+func (s *Service) QUICEnabled() bool {
+	if s == nil {
+		return false
+	}
+	return s.quicActive.Load()
 }
 
 // URL returns the pinned home URL shown in invitations.
@@ -405,7 +477,7 @@ func (s *Service) Info(ctx context.Context) (*Info, error) {
 		Endpoint: endpoint, URL: address, DirectURL: direct, RelayURL: relayRoute,
 		RelayBase: relayBase, RelayMode: s.relayModeLabel(), RelaySetting: s.relaySettingValue(),
 		RelayConnected: s.RelayConnected(), RelayTunnel: s.RelayTunnelConnected(), DirectoryURL: s.directorySetting,
-		MDNS: s.mdnsSetting != "", MDNSPeers: peers,
+		MDNS: s.mdnsSetting != "", MDNSPeers: peers, QUIC: s.QUICEnabled(),
 		TLSFingerprint: fingerprint, Protocol: Protocol,
 	}, nil
 }

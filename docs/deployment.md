@@ -180,11 +180,15 @@ Device roles:
 ### Direct
 
 The node advertises its endpoint in its signed manifest. Clients probe that
-pinned HTTPS endpoint first and use it when reachable. IPv6 preference, port
-mapping (UPnP/NAT-PMP/PCP), and QUIC hole punching are design-only; today a
-direct connection works on a LAN, a VPN, or a genuinely reachable public
+pinned endpoint first and use it when reachable. The node serves HTTPS on TCP
+and HTTP/3 over QUIC on the same port over UDP; clients select HTTP/3 only
+after a successful health probe and fall back to HTTPS without retrying an
+ambiguous request. UDP `7717` must be reachable for HTTP/3. IPv6 preference,
+port mapping (UPnP/NAT-PMP/PCP), and QUIC hole punching are design-only; today
+a direct connection works on a LAN, a VPN, or a genuinely reachable public
 address. Direct connections are preferred because they are faster and keep
-relays out of the path.
+relays out of the path. Set `--no-quic` when UDP is filtered or a middlebox
+breaks HTTP/3.
 
 ### Same-LAN discovery
 

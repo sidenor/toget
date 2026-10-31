@@ -23,6 +23,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+	"github.com/quic-go/quic-go/http3"
 
 	"github.com/sidenor/toget/internal/config"
 	"github.com/sidenor/toget/internal/identity"
@@ -60,6 +61,9 @@ type Options struct {
 	// WebSocket is "off" to disable the WebSocket tunnel and require HTTPS
 	// long-poll. Empty or "on" keeps the tunnel enabled.
 	WebSocket string
+	// QUIC is "off" to disable the HTTP/3 listener on the relay's HTTPS port
+	// over UDP. Empty or "on" enables it; HTTPS remains available.
+	QUIC string
 	// MaxSenderBytesPerMinute caps request bytes from one account or client
 	// IP. Relay-to-relay forwarding has a separate, larger allowance.
 	MaxSenderBytesPerMinute int64
@@ -85,6 +89,9 @@ type Service struct {
 	fingerprint string
 	server      *http.Server
 	listener    net.Listener
+	quicServer  *http3.Server
+	quicConn    net.PacketConn
+	quicActive  atomic.Bool
 	started     bool
 	closeOnce   sync.Once
 	cancel      context.CancelFunc
@@ -192,6 +199,12 @@ func New(opts Options) (*Service, error) {
 	}
 	if opts.WebSocket == "" {
 		opts.WebSocket = "on"
+	}
+	if opts.QUIC == "" {
+		opts.QUIC = "on"
+	}
+	if opts.QUIC != "on" && opts.QUIC != "off" {
+		return nil, errors.New(`relay quic: expected "on" or "off"`)
 	}
 	if opts.MaxSenderBytesPerMinute <= 0 {
 		opts.MaxSenderBytesPerMinute = 32 << 20
@@ -323,6 +336,9 @@ func (s *Service) Start(ctx context.Context) error {
 			s.logger.Error("relay listener stopped", "error", err)
 		}
 	}()
+	if s.opts.QUIC == "on" {
+		s.startQUIC(rawListener.Addr().String(), material.Certificate)
+	}
 	go s.cleanupLoop(runCtx)
 	if parent != nil {
 		go s.runParent(runCtx)
@@ -341,9 +357,17 @@ func (s *Service) Close() error {
 		s.mu.RLock()
 		cancel := s.cancel
 		server := s.server
+		quicServer := s.quicServer
+		quicConn := s.quicConn
 		s.mu.RUnlock()
 		if cancel != nil {
 			cancel()
+		}
+		if quicServer != nil {
+			_ = quicServer.Close()
+		}
+		if quicConn != nil {
+			_ = quicConn.Close()
 		}
 		if server != nil {
 			ctx, done := context.WithTimeout(context.Background(), 5*time.Second)
@@ -352,6 +376,47 @@ func (s *Service) Close() error {
 		}
 	})
 	return err
+}
+
+// startQUIC serves the relay handler over HTTP/3 on the relay's HTTPS port.
+// A bind failure leaves the relay available over HTTPS.
+func (s *Service) startQUIC(addr string, certificate tls.Certificate) {
+	conn, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		s.logger.Warn("relay QUIC listener unavailable; using HTTPS only", "address", addr, "error", err)
+		return
+	}
+	server := &http3.Server{
+		Addr: addr,
+		TLSConfig: http3.ConfigureTLSConfig(&tls.Config{
+			Certificates: []tls.Certificate{certificate},
+			MinVersion:   tls.VersionTLS13,
+		}),
+		Handler:        s.Handler(),
+		MaxHeaderBytes: 64 << 10,
+		IdleTimeout:    2 * time.Minute,
+		Logger:         s.logger,
+	}
+	s.mu.Lock()
+	s.quicServer = server
+	s.quicConn = conn
+	s.mu.Unlock()
+	s.quicActive.Store(true)
+	go func() {
+		err := server.Serve(conn)
+		s.quicActive.Store(false)
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			s.logger.Warn("relay QUIC listener stopped", "error", err)
+		}
+	}()
+}
+
+// QUICEnabled reports whether the relay HTTP/3 listener is running.
+func (s *Service) QUICEnabled() bool {
+	if s == nil {
+		return false
+	}
+	return s.quicActive.Load()
 }
 
 // Handler returns the relay HTTP handler.
@@ -408,6 +473,7 @@ func (s *Service) handleInfo(w http.ResponseWriter, r *http.Request) {
 		Routes:         s.liveRouteCountLocked(),
 		Queued:         s.queued,
 		Tunnels:        s.tunnelCountLocked(),
+		QUIC:           s.quicActive.Load(),
 		ServerTime:     time.Now().UTC(),
 	}
 	s.mu.RUnlock()

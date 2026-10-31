@@ -253,8 +253,8 @@ web UI can show bounded, ephemeral partial output; the final reply remains the
 durable timeline event. An optional relay and signed-manifest
 directory work across networks, with direct-first fallback, automatic relay
 discovery, runtime relay switching, multi-hop routes, signed relay hops, loop
-detection, byte quotas, a WebSocket tunnel with long-poll fallback, and a
-bounded offline queue. A standalone `toget relay` process needs no account or
+detection, byte quotas, a WebSocket tunnel with long-poll fallback, HTTP/3
+over QUIC with automatic HTTPS fallback, and a bounded offline queue. A standalone `toget relay` process needs no account or
 database. Same-LAN nodes also discover each other over multicast DNS and can
 resolve a server code without a directory; every discovered endpoint is still
 verified through its pinned TLS certificate and signed manifests. Portable
@@ -328,8 +328,8 @@ go run ./cmd/toget-official
 给 `toget serve` 加上 `--node-relay '<中继地址>'` 和
 `--node-directory '<目录地址>'`，或用 `--node-relay auto` 跟随目录的默认中继。
 中继只转发加密请求、看得到元数据，看不到房间内容。已实现多跳中继、逐跳签名、字节配额、
-WebSocket 隧道（HTTPS 长轮询自动回退）和短暂的离线队列；也可以用 `toget relay` 单独运行中继，
-或在设置里运行期切换中继。NAT 穿透和打洞还没有，跨网络时中继就是通路。详见
+WebSocket 隧道（HTTPS 长轮询自动回退）、HTTP/3（QUIC，失败自动回退 HTTPS）和短暂的离线队列；
+也可以用 `toget relay` 单独运行中继，或在设置里运行期切换中继。NAT 穿透和打洞还没有，跨网络时中继就是通路。详见
 [中继与目录](docs/relay.md)。
 
 ```bash

@@ -60,8 +60,8 @@
 Any node can also be its owner's account host. The distinction is a role, not a separate product: the same binary can run a node, host an account, and relay encrypted traffic.
 
 **Implemented today:** one `toget serve` process owns the local account, vault,
-SQLite log, loopback API (`7718`), and a LAN HTTPS listener (`7717`) with a
-pinned self-signed certificate. Two nodes on the same LAN can share a room
+SQLite log, loopback API (`7718`), and a LAN listener (`7717`) serving both
+HTTP/3 over QUIC and HTTPS with a pinned self-signed certificate. Two nodes on the same LAN can share a room
 through a single-use invite code; the home node orders events and peers sync
 incrementally. A second device can join the same account through a pairing
 code: it generates fresh device keys, the existing device approves after
@@ -297,7 +297,7 @@ If a member is offline, the home node or a relay holds the envelope for a bounde
 
 A node chooses a **relay** to reach the rest of the network when direct connections fail. The default can come from the directory (`--node-relay auto`); users can point at a friend's relay, a community relay, or their own `toget-official` instance.
 
-- **Direct first (implemented):** probe the pinned LAN endpoint with a 2.5-second health check; use it when reachable. IPv6 preference, UPnP/NAT-PMP/PCP, and QUIC hole punching are not implemented.
+- **Direct first (implemented):** probe the pinned LAN endpoint with a 2.5-second health check; use it when reachable. The probe prefers HTTP/3 over QUIC, with HTTPS as the fallback, and a failed HTTP/3 request is never retried automatically. IPv6 preference, UPnP/NAT-PMP/PCP, and QUIC hole punching are not implemented.
 - **Relay fallback (implemented):** register over outbound pinned HTTPS, then prefer a WebSocket tunnel and fall back to long-poll for opaque signed requests. No inbound port is needed.
 - **Runtime switching (implemented):** a node can switch between off, automatic, and pinned relays from Settings or `POST /api/v1/node/relay` without a restart. New invites and directory records use the new route; existing room addresses are not re-advertised automatically.
 - **Relay-only process (implemented):** `toget relay` runs a relay without an account, database, or vault. `toget-official` remains a bundle of relay, directory, and optional services.
