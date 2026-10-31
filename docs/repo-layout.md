@@ -133,6 +133,7 @@ toget/
 │   ├── architecture.md
 │   ├── protocol.md
 │   ├── security-model.md
+│   ├── account-recovery.md
 │   ├── discovery.md
 │   ├── cards.md
 │   ├── relay.md

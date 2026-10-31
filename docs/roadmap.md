@@ -120,13 +120,19 @@ NAT. See [relay.md](relay.md), [discovery.md](discovery.md), and
 
 **Goal:** make the official service a real, optional convenience.
 
-- Official-hosted accounts: blind ciphertext storage, MK wrapping, PAKE login
-- Recovery credential: generation, forced download, local reset flow
-- Account reset page: static, open source, no third-party scripts, local file read
+- [x] Self-hosted per-device recovery credential: generation, locked-password reset, unlocked local reset, password change
+- [x] Recovery-file checksum, account/device/server binding, rate limiting, verifier/wrap rollback
+- [ ] Official-hosted accounts: blind ciphertext storage, MK wrapping, PAKE login
+- [ ] Official recovery credential: forced download at registration
+- [ ] Account reset page: static, open source, no third-party scripts, local file read
 - [x] Device management UI: list, rename, revoke (local and paired devices)
-- Official room home node (ciphertext only)
-- Signed release manifests, update service, atomic update and rollback
-- Stable and beta channels
+- [ ] Official room home node (ciphertext only)
+- [ ] Signed release manifests, update service, atomic update and rollback
+- [ ] Stable and beta channels
+
+**Status:** self-hosted local-vault recovery is implemented; the official hosted
+account flow, forced-download registration, and browser reset page are not.
+See [account-recovery.md](account-recovery.md).
 
 **Done when:** a user can register on the official service, lose their password, reset it with the recovery credential, and still open old history — while the official service never has a key to read it.
 

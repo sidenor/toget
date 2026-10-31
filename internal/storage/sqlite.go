@@ -526,6 +526,24 @@ func (d *DB) UpdateAccountKey(ctx context.Context, acct *account.Account, device
 	return nil
 }
 
+// UpdateAccountPasswordHash replaces the local password verifier after a
+// password change or recovery. It does not touch sealed account keys.
+func (d *DB) UpdateAccountPasswordHash(ctx context.Context, accountID, passwordHash string) error {
+	result, err := d.db.ExecContext(ctx,
+		`UPDATE accounts SET password_hash = ? WHERE id = ?`, passwordHash, accountID)
+	if err != nil {
+		return fmt.Errorf("storage: update account password: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("storage: update account password: %w", err)
+	}
+	if affected == 0 {
+		return account.ErrNotFound
+	}
+	return nil
+}
+
 func encodeKeyRotations(rotations []string) (string, error) {
 	if len(rotations) == 0 {
 		return "[]", nil

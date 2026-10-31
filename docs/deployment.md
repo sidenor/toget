@@ -97,21 +97,33 @@ The command asks where the account should live:
 - **This machine** — self-hosted. The node prints the 14-digit account ID and starts serving as the account host.
 - **Official** — the node registers with the official service and stores the account record there.
 
-For an official-hosted account, registration generates the account master key and the recovery credential. The credential file must be downloaded and confirmed before registration completes:
+**Planned:** for an official-hosted account, registration generates the account master key and the recovery credential. The credential file must be downloaded and confirmed before registration completes:
 
 ```text
-toget-recovery-48392017-174628.togetkey
+toget-recovery-48392017174628-01a2b3c4.togetkey
 ```
 
-Store it offline. It is a bearer secret: anyone with the file and the account ID can reset the password and unwrap the account key. It is never uploaded to the official service; the reset page reads it locally in the browser.
+Store it offline. It is a bearer secret: anyone with the file and the account ID can reset the password and unwrap the account key. It is never uploaded to the official service; the planned reset page reads it locally in the browser. Official hosting and the browser reset page are not implemented yet.
 
-Self-hosted accounts do not have a recovery credential. The local administrator can reset the password:
+Self-hosted accounts use a per-device recovery credential for a forgotten password while the node is locked. Create it while the node is unlocked and store it offline:
 
 ```bash
-toget account reset-password
+toget account recovery create --out ~/offline/toget-recovery.togetkey
 ```
 
-or from the local UI at `127.0.0.1:7718`. If the machine is lost and there is no backup, the data is lost. Full-disk encryption and regular backups are strongly recommended.
+Reset with the file:
+
+```bash
+toget account reset-password --recovery ~/offline/toget-recovery.togetkey
+```
+
+If the password is forgotten but the node is still unlocked, reset locally without the old password:
+
+```bash
+toget account reset-password --local
+```
+
+The same flows are available from the local UI at `127.0.0.1:7718`: the lock screen accepts a recovery file, and Settings has password change, local reset, and recovery-file management. If the machine is locked, the password is forgotten, and no recovery file exists, the sealed local history cannot be opened. If the machine is lost and there is no backup, the data is lost. Full-disk encryption, locking the node, and regular tested backups are strongly recommended. See [account-recovery.md](account-recovery.md).
 
 ## Connect from another device
 
@@ -235,7 +247,7 @@ What matters, in order:
 1. **Account and device keys** — without them, encrypted history is unreadable.
 2. **Room history and local data** — `/var/lib/toget/data` or the platform equivalent.
 3. **Configuration** — relay parent, ports, Agent policies.
-4. **Recovery credential** — for official-hosted accounts, stored offline.
+4. **Recovery credential** — per device; required to reset a forgotten password while the node is locked. Store it offline.
 
 A backup is only useful if restore is tested. `toget backup` writes an encrypted archive; `toget restore` verifies and restores it. Backups never leave the machine unless the user moves them.
 
@@ -253,6 +265,6 @@ A backup is only useful if restore is tested. `toget backup` writes an encrypted
 - A dedicated non-root service user.
 - Automatic security updates for the OS.
 - Backups tested at least once.
-- Recovery credential stored offline for official-hosted accounts.
+- Recovery credential stored offline for every device you cannot afford to lose access to.
 - Review the device list after any suspicious login.
 - Keep the node within the supported version window (N-2).

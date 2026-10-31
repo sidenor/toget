@@ -10,7 +10,8 @@ Toget's security model follows one rule: **the endpoint is the trust boundary**.
 - Room epoch keys and message content.
 - Agent credentials, API keys, and local file access.
 - Approval decisions and the audit trail.
-- The account master key (MK) and recovery credential on official-hosted accounts.
+- The per-device vault master key (MK); on official-hosted accounts, the account master key.
+- Recovery credentials, both per-device files and the planned official-account credential.
 - Server root keys and release signing keys.
 - Metadata: who talks to whom, when, and how often.
 
@@ -376,17 +377,35 @@ Controls:
 - Every participant keeps a copy, so a single host cannot silently rewrite history for everyone.
 - A mismatch between copies is detectable and surfaced.
 
-### Recovery credential compromise
+### Local vault and forgotten-password reset
 
-The recovery credential is a bearer secret: whoever holds it and the account ID can reset the password and unwrap MK.
+Each device has its own vault master key. The key file is mode `0600`, wrapped with an Argon2id-derived KEK from the account password. An optional recovery key wraps the same master key, so sealed history survives a forgotten-password reset while the node is locked.
 
 Controls:
 
+- A recovery file is a bearer secret bound to the account ID, device ID, server ID, and server fingerprint, with a SHA-256 checksum. The recovery wrap uses AAD over the account and device IDs.
+- Creating a new recovery file replaces the previous wrap; the old file stops working. Removing it requires an unlocked vault.
+- A locked reset validates the file before changing anything, updates the password verifier, and re-wraps the vault key. If the rewrap fails, the previous verifier is restored.
+- A local-administrator reset is available only while the node is unlocked, because the daemon already holds MK. It re-wraps MK without the old password. While locked, the route returns `423`.
+- Password mutations are serialized, and password endpoints are rate-limited.
+- With no recovery file and the node locked, there is no bypass: OS root can delete the installation but cannot decrypt sealed values without the password or recovery key.
+- A reset or password change on one device does not change another device's local vault or verifier.
+- Treat recovery files like private keys: offline storage, not email, not a chat app, not a cloud drive without encryption.
+
+Residual risk: access to the unlocked process, the OS user, or the local API token is equivalent to access to sealed local data. Lock the node when leaving and use full-disk encryption on a shared machine.
+
+### Recovery credential compromise (official-hosted design)
+
+For official-hosted accounts, the planned recovery credential is a bearer secret: whoever holds it and the account ID can reset the password and unwrap the account master key.
+
+Planned controls:
+
 - It is generated client-side and downloaded at registration; registration cannot complete without the download confirmation.
 - The filename includes the 14-digit account ID; the file contains a checksum and the official server fingerprint.
-- The reset page is static, open source, and uses the browser's File API to read the file locally. The file is never uploaded. WebCrypto unwraps MK and re-wraps it with the new password's KEK; only the new wrapped blob and verifier are sent.
-- Treat it like a private key: offline storage, not email, not a chat app, not a cloud drive without encryption.
+- The static reset page is open source and reads the file locally with the browser's File API. The file is never uploaded. WebCrypto unwraps MK and re-wraps it with the new password's KEK; only the new wrapped blob and verifier are sent.
 - Logged-in devices can regenerate it; the old credential becomes void.
+
+The current tree implements only the per-device local-vault recovery described above; official hosting and the browser reset page are not implemented.
 
 ### Account takeover via email
 

@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/chacha20poly1305"
@@ -40,6 +41,15 @@ var ErrInvalidPassword = errors.New("vault password is incorrect")
 // ErrNoKey means no vault key file exists.
 var ErrNoKey = errors.New("vault key does not exist")
 
+// ErrRecoveryNotConfigured means no recovery key is wrapped in the key file.
+var ErrRecoveryNotConfigured = errors.New("vault recovery key is not configured")
+
+// ErrInvalidRecoveryKey means the recovery key did not unwrap the master key.
+var ErrInvalidRecoveryKey = errors.New("vault recovery key is invalid")
+
+// RecoveryKeySize is the raw size of a recovery key.
+const RecoveryKeySize = 32
+
 // Argon2id parameters for the password-derived KEK. Tests may lower these.
 var (
 	argonMemory      uint32 = 64 * 1024
@@ -50,14 +60,25 @@ var (
 
 // wrappedKey is the on-disk password-wrapped master key.
 type wrappedKey struct {
-	Version     int    `json:"version"`
-	KDF         string `json:"kdf"`
-	Memory      uint32 `json:"m"`
-	Iterations  uint32 `json:"t"`
-	Parallelism uint8  `json:"p"`
-	Salt        string `json:"salt"`
-	Nonce       string `json:"nonce"`
-	Ciphertext  string `json:"ciphertext"`
+	Version     int          `json:"version"`
+	KDF         string       `json:"kdf"`
+	Memory      uint32       `json:"m"`
+	Iterations  uint32       `json:"t"`
+	Parallelism uint8        `json:"p"`
+	Salt        string       `json:"salt"`
+	Nonce       string       `json:"nonce"`
+	Ciphertext  string       `json:"ciphertext"`
+	Recovery    *recoveryKey `json:"recovery,omitempty"`
+}
+
+// recoveryKey wraps the master key with a high-entropy recovery key. It is
+// independent of the password wrap, so a forgotten password can be reset
+// without losing sealed data.
+type recoveryKey struct {
+	Version    int       `json:"version"`
+	Nonce      string    `json:"nonce"`
+	Ciphertext string    `json:"ciphertext"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // Vault seals and opens local values. Its master key can be locked and
@@ -68,6 +89,7 @@ type Vault struct {
 	path    string
 	wrapped bool
 	legacy  bool
+	wrap    *wrappedKey
 }
 
 // Load reads the key file without unlocking a password-wrapped vault. A legacy
@@ -290,18 +312,12 @@ func (v *Vault) currentKey() ([]byte, error) {
 
 func (v *Vault) loadData(data []byte) error {
 	if strings.HasPrefix(string(data), wrapPrefix) {
-		var wrapped wrappedKey
-		raw, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(string(data), wrapPrefix))
+		wrapped, err := decodeWrapped(data)
 		if err != nil {
-			return fmt.Errorf("vault: decode wrapped key: %w", err)
-		}
-		if err := json.Unmarshal(raw, &wrapped); err != nil {
-			return fmt.Errorf("vault: decode wrapped key: %w", err)
-		}
-		if wrapped.Version != 1 || wrapped.KDF != "argon2id" {
-			return errors.New("vault: unsupported wrapped key format")
+			return err
 		}
 		v.wrapped = true
+		v.wrap = wrapped
 		return nil
 	}
 	if len(data) != keySize {
@@ -310,6 +326,35 @@ func (v *Vault) loadData(data []byte) error {
 	v.key = append([]byte(nil), data...)
 	v.legacy = true
 	return nil
+}
+
+func decodeWrapped(data []byte) (*wrappedKey, error) {
+	if !strings.HasPrefix(string(data), wrapPrefix) {
+		return nil, errors.New("vault: key is not wrapped")
+	}
+	raw, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(string(data), wrapPrefix))
+	if err != nil {
+		return nil, fmt.Errorf("vault: decode wrapped key: %w", err)
+	}
+	var wrapped wrappedKey
+	if err := json.Unmarshal(raw, &wrapped); err != nil {
+		return nil, fmt.Errorf("vault: decode wrapped key: %w", err)
+	}
+	if wrapped.Version != 1 || wrapped.KDF != "argon2id" {
+		return nil, errors.New("vault: unsupported wrapped key format")
+	}
+	return &wrapped, nil
+}
+
+func (v *Vault) readWrapped() (*wrappedKey, error) {
+	data, err := os.ReadFile(v.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, ErrNoKey
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read vault key: %w", err)
+	}
+	return decodeWrapped(data)
 }
 
 func (v *Vault) readOrCreateKey() ([]byte, error) {
@@ -336,68 +381,245 @@ func (v *Vault) wrapLocked(password string) error {
 	if len(v.key) != keySize {
 		return ErrNoKey
 	}
-	if len(password) == 0 {
-		return errors.New("vault password is required")
+	var recovery *recoveryKey
+	if v.wrap != nil {
+		recovery = v.wrap.Recovery
 	}
-	if err := os.MkdirAll(filepath.Dir(v.path), 0o700); err != nil {
-		return fmt.Errorf("create vault directory: %w", err)
-	}
-	salt := make([]byte, argonSaltLength)
-	if _, err := rand.Read(salt); err != nil {
-		return fmt.Errorf("generate vault salt: %w", err)
-	}
-	kek := argon2.IDKey([]byte(password), salt, argonIterations, argonMemory, argonParallelism, keySize)
-	defer zero(kek)
-	aead, err := chacha20poly1305.NewX(kek)
+	wrapped, err := v.buildWrappedLocked(v.key, password, recovery)
 	if err != nil {
-		return fmt.Errorf("create vault key cipher: %w", err)
-	}
-	nonce := make([]byte, nonceSize)
-	if _, err := rand.Read(nonce); err != nil {
-		return fmt.Errorf("generate vault key nonce: %w", err)
-	}
-	ciphertext := aead.Seal(nil, nonce, v.key, []byte(wrapAAD))
-	wrapped := wrappedKey{
-		Version: 1, KDF: "argon2id", Memory: argonMemory, Iterations: argonIterations,
-		Parallelism: argonParallelism, Salt: base64.RawStdEncoding.EncodeToString(salt),
-		Nonce:      base64.RawStdEncoding.EncodeToString(nonce),
-		Ciphertext: base64.RawStdEncoding.EncodeToString(ciphertext),
-	}
-	data, err := json.Marshal(wrapped)
-	if err != nil {
-		return fmt.Errorf("encode wrapped vault key: %w", err)
-	}
-	file := wrapPrefix + base64.RawStdEncoding.EncodeToString(data)
-	if err := writeWrappedKeyFile(v.path, file); err != nil {
 		return err
 	}
+	v.wrap = wrapped
 	v.wrapped = true
 	v.legacy = false
 	return nil
 }
 
-func (v *Vault) unwrap(password string) ([]byte, error) {
-	data, err := os.ReadFile(v.path)
-	if errors.Is(err, os.ErrNotExist) {
+// buildWrappedLocked derives a fresh password KEK, encrypts master, writes the
+// key file, and returns the new on-disk envelope. v.mu must be held.
+func (v *Vault) buildWrappedLocked(master []byte, password string, recovery *recoveryKey) (*wrappedKey, error) {
+	if len(master) != keySize {
 		return nil, ErrNoKey
 	}
+	if len(password) == 0 {
+		return nil, errors.New("vault password is required")
+	}
+	if err := os.MkdirAll(filepath.Dir(v.path), 0o700); err != nil {
+		return nil, fmt.Errorf("create vault directory: %w", err)
+	}
+	salt := make([]byte, argonSaltLength)
+	if _, err := rand.Read(salt); err != nil {
+		return nil, fmt.Errorf("generate vault salt: %w", err)
+	}
+	kek := argon2.IDKey([]byte(password), salt, argonIterations, argonMemory, argonParallelism, keySize)
+	defer zero(kek)
+	aead, err := chacha20poly1305.NewX(kek)
 	if err != nil {
-		return nil, fmt.Errorf("read vault key: %w", err)
+		return nil, fmt.Errorf("create vault key cipher: %w", err)
 	}
-	if !strings.HasPrefix(string(data), wrapPrefix) {
-		return nil, errors.New("vault: key is not wrapped")
+	nonce := make([]byte, nonceSize)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, fmt.Errorf("generate vault key nonce: %w", err)
 	}
-	raw, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(string(data), wrapPrefix))
+	ciphertext := aead.Seal(nil, nonce, master, []byte(wrapAAD))
+	wrapped := &wrappedKey{
+		Version: 1, KDF: "argon2id", Memory: argonMemory, Iterations: argonIterations,
+		Parallelism: argonParallelism, Salt: base64.RawStdEncoding.EncodeToString(salt),
+		Nonce:      base64.RawStdEncoding.EncodeToString(nonce),
+		Ciphertext: base64.RawStdEncoding.EncodeToString(ciphertext),
+		Recovery:   recovery,
+	}
+	if err := v.writeWrappedLocked(wrapped); err != nil {
+		return nil, err
+	}
+	return wrapped, nil
+}
+
+func (v *Vault) writeWrappedLocked(wrapped *wrappedKey) error {
+	data, err := json.Marshal(wrapped)
 	if err != nil {
-		return nil, fmt.Errorf("vault: decode wrapped key: %w", err)
+		return fmt.Errorf("encode wrapped vault key: %w", err)
 	}
-	var wrapped wrappedKey
-	if err := json.Unmarshal(raw, &wrapped); err != nil {
-		return nil, fmt.Errorf("vault: decode wrapped key: %w", err)
+	file := wrapPrefix + base64.RawStdEncoding.EncodeToString(data)
+	return writeWrappedKeyFile(v.path, file)
+}
+
+// SetRecoveryKey wraps the in-memory master key with a high-entropy recovery
+// key and records it in the key file. The vault must be unlocked and already
+// password-wrapped. Replacing an existing recovery key voids the old one.
+func (v *Vault) SetRecoveryKey(key []byte, aad string) (time.Time, error) {
+	if len(key) != RecoveryKeySize {
+		return time.Time{}, errors.New("vault: recovery key must be 32 bytes")
 	}
-	if wrapped.Version != 1 || wrapped.KDF != "argon2id" {
-		return nil, errors.New("vault: unsupported wrapped key format")
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if len(v.key) != keySize {
+		return time.Time{}, ErrLocked
 	}
+	if !v.wrapped || v.wrap == nil {
+		return time.Time{}, errors.New("vault: password wrapping is not initialized")
+	}
+	aead, err := chacha20poly1305.NewX(key)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("create recovery cipher: %w", err)
+	}
+	nonce := make([]byte, nonceSize)
+	if _, err := rand.Read(nonce); err != nil {
+		return time.Time{}, fmt.Errorf("generate recovery nonce: %w", err)
+	}
+	created := time.Now().UTC().Truncate(time.Second)
+	ciphertext := aead.Seal(nil, nonce, v.key, []byte(aad))
+	updated := *v.wrap
+	updated.Recovery = &recoveryKey{
+		Version: 1, Nonce: base64.RawStdEncoding.EncodeToString(nonce),
+		Ciphertext: base64.RawStdEncoding.EncodeToString(ciphertext), CreatedAt: created,
+	}
+	if err := v.writeWrappedLocked(&updated); err != nil {
+		return time.Time{}, err
+	}
+	v.wrap = &updated
+	return created, nil
+}
+
+// RemoveRecoveryKey deletes the recovery wrap. The password wrap is unchanged.
+func (v *Vault) RemoveRecoveryKey() error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.wrap == nil || v.wrap.Recovery == nil {
+		return ErrRecoveryNotConfigured
+	}
+	updated := *v.wrap
+	updated.Recovery = nil
+	if err := v.writeWrappedLocked(&updated); err != nil {
+		return err
+	}
+	v.wrap = &updated
+	return nil
+}
+
+// RecoveryEnabled reports whether a recovery key is wrapped in the key file.
+func (v *Vault) RecoveryEnabled() bool {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.wrap != nil && v.wrap.Recovery != nil
+}
+
+// RecoveryCreatedAt returns when the current recovery key was created.
+func (v *Vault) RecoveryCreatedAt() time.Time {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if v.wrap == nil || v.wrap.Recovery == nil {
+		return time.Time{}
+	}
+	return v.wrap.Recovery.CreatedAt
+}
+
+// ResetPasswordWithRecoveryKey re-wraps the master key under a new password
+// using a recovery key. It works while the vault is locked, so it is the
+// forgotten-password path. The recovery wrap is preserved.
+func (v *Vault) ResetPasswordWithRecoveryKey(key []byte, aad, newPassword string) error {
+	if len(key) != RecoveryKeySize {
+		return ErrInvalidRecoveryKey
+	}
+	if len(newPassword) == 0 {
+		return errors.New("vault password is required")
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	wrapped, err := v.readWrapped()
+	if err != nil {
+		return err
+	}
+	if wrapped.Recovery == nil {
+		return ErrRecoveryNotConfigured
+	}
+	master, err := openRecovery(wrapped.Recovery, key, aad)
+	if err != nil {
+		return err
+	}
+	updated, err := v.buildWrappedLocked(master, newPassword, wrapped.Recovery)
+	if err != nil {
+		zero(master)
+		return err
+	}
+	zero(v.key)
+	v.key = master
+	v.wrap = updated
+	v.wrapped = true
+	v.legacy = false
+	return nil
+}
+
+// ResetPasswordUnlocked re-wraps the in-memory master key under a new
+// password without asking for the old one. It is the local-administrator
+// reset path: possession of the unlocked process is already enough to read
+// every sealed value. The recovery wrap, if any, is preserved.
+func (v *Vault) ResetPasswordUnlocked(newPassword string) error {
+	if len(newPassword) == 0 {
+		return errors.New("vault password is required")
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if len(v.key) != keySize {
+		return ErrLocked
+	}
+	var recovery *recoveryKey
+	if v.wrap != nil {
+		recovery = v.wrap.Recovery
+	}
+	updated, err := v.buildWrappedLocked(v.key, newPassword, recovery)
+	if err != nil {
+		return err
+	}
+	v.wrap = updated
+	v.wrapped = true
+	v.legacy = false
+	return nil
+}
+
+// ChangePassword re-wraps the master key from the old password to the new one.
+// It works whether the vault is currently locked or unlocked. The recovery
+// wrap, if any, is preserved.
+func (v *Vault) ChangePassword(oldPassword, newPassword string) error {
+	if len(newPassword) == 0 {
+		return errors.New("vault password is required")
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if !v.wrapped {
+		if len(v.key) != keySize {
+			return ErrNoKey
+		}
+		updated, err := v.buildWrappedLocked(v.key, newPassword, nil)
+		if err != nil {
+			return err
+		}
+		v.wrap = updated
+		v.wrapped = true
+		v.legacy = false
+		return nil
+	}
+	wrapped, err := v.readWrapped()
+	if err != nil {
+		return err
+	}
+	master, err := openPassword(wrapped, oldPassword)
+	if err != nil {
+		return err
+	}
+	updated, err := v.buildWrappedLocked(master, newPassword, wrapped.Recovery)
+	if err != nil {
+		zero(master)
+		return err
+	}
+	zero(v.key)
+	v.key = master
+	v.wrap = updated
+	return nil
+}
+
+// openPassword decrypts a password-wrapped master key.
+func openPassword(wrapped *wrappedKey, password string) ([]byte, error) {
 	salt, err := base64.RawStdEncoding.DecodeString(wrapped.Salt)
 	if err != nil || len(salt) < 8 {
 		return nil, errors.New("vault: wrapped key salt is invalid")
@@ -424,6 +646,42 @@ func (v *Vault) unwrap(password string) ([]byte, error) {
 		return nil, errors.New("vault: unwrapped key has the wrong size")
 	}
 	return key, nil
+}
+
+// openRecovery decrypts a recovery-wrapped master key.
+func openRecovery(wrapped *recoveryKey, key []byte, aad string) ([]byte, error) {
+	if wrapped.Version != 1 {
+		return nil, ErrInvalidRecoveryKey
+	}
+	nonce, err := base64.RawStdEncoding.DecodeString(wrapped.Nonce)
+	if err != nil || len(nonce) != nonceSize {
+		return nil, ErrInvalidRecoveryKey
+	}
+	ciphertext, err := base64.RawStdEncoding.DecodeString(wrapped.Ciphertext)
+	if err != nil || len(ciphertext) < keySize+16 {
+		return nil, ErrInvalidRecoveryKey
+	}
+	aead, err := chacha20poly1305.NewX(key)
+	if err != nil {
+		return nil, ErrInvalidRecoveryKey
+	}
+	master, err := aead.Open(nil, nonce, ciphertext, []byte(aad))
+	if err != nil {
+		return nil, ErrInvalidRecoveryKey
+	}
+	if len(master) != keySize {
+		zero(master)
+		return nil, ErrInvalidRecoveryKey
+	}
+	return master, nil
+}
+
+func (v *Vault) unwrap(password string) ([]byte, error) {
+	wrapped, err := v.readWrapped()
+	if err != nil {
+		return nil, err
+	}
+	return openPassword(wrapped, password)
 }
 
 func writeKeyFile(path string, key []byte) error {

@@ -299,6 +299,160 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/account/recovery:
+    get:
+      tags: [account]
+      operationId: getRecovery
+      summary: Read the local recovery-file state
+      description: |
+        Reports whether this device's vault has a recovery wrap. This route is
+        available while locked because it does not reveal key material.
+      responses:
+        "200":
+          description: The recovery state for this device.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoveryStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/AccountNotFound"
+    post:
+      tags: [account]
+      operationId: createRecovery
+      summary: Create a new recovery file for this device
+      description: |
+        Wraps the vault master key with a new high-entropy recovery key and
+        returns the credential file once. The previous recovery file stops
+        working. The vault must be unlocked. Store the returned file offline:
+        anyone with it and local access can reset the password and open history.
+      responses:
+        "201":
+          description: The recovery file was created. Its content is returned once.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoveryCredential"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/AccountNotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+    delete:
+      tags: [account]
+      operationId: removeRecovery
+      summary: Remove this device's recovery file
+      description: The password is unchanged; only the recovery wrap is removed.
+      responses:
+        "204":
+          description: The recovery file was removed.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/AccountNotFound"
+        "409":
+          description: This device has no recovery file.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/account/change-password:
+    post:
+      tags: [account]
+      operationId: changePassword
+      summary: Change the account password on this device
+      description: |
+        Verifies the current password, replaces the local password verifier,
+        and re-wraps this device's vault master key under the new password.
+        Other devices keep their own local password. The recovery file, if
+        present, remains valid. A successful change unlocks the session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangePasswordRequest"
+      responses:
+        "200":
+          description: The password was changed and the node is unlocked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/InvalidCredentials"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "404":
+          $ref: "#/components/responses/AccountNotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/account/reset-password:
+    post:
+      tags: [account]
+      operationId: resetPassword
+      summary: Reset the password with a recovery file or a local reset
+      description: |
+        With a recovery file, available while locked: the file unwraps this
+        device's vault master key locally, the daemon re-wraps it under the new
+        password, and sealed history is preserved. A file for another account
+        or device is rejected.
+
+        With `local: true`, available only while this device is unlocked (the
+        vault master key is already in memory). This is the local-administrator
+        reset for a forgotten password and does not require the old password.
+
+        Either path preserves the recovery wrap, and other devices keep their
+        own local password.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResetPasswordRequest"
+      responses:
+        "200":
+          description: The password was reset and the node is unlocked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: The request or recovery file is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "404":
+          $ref: "#/components/responses/AccountNotFound"
+        "409":
+          description: This device has no recovery file or it cannot be used.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
   /api/v1/pairings:
     get:
       tags: [devices]
@@ -3625,6 +3779,72 @@ components:
           type: boolean
         info:
           $ref: "#/components/schemas/NodeInfo"
+
+    RecoveryStatus:
+      type: object
+      additionalProperties: false
+      required: [enabled, device_id]
+      properties:
+        enabled:
+          type: boolean
+        created_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        device_id:
+          type: string
+
+    RecoveryCredential:
+      type: object
+      additionalProperties: false
+      required: [filename, content, created_at]
+      properties:
+        filename:
+          type: string
+          examples: ["toget-recovery-68173501840479-0199a1b2.togetkey"]
+        content:
+          type: string
+          maxLength: 16384
+          description: |
+            The complete recovery file. It is a bearer secret: store it
+            offline and never send it through chat or unencrypted storage.
+        created_at:
+          type: string
+          format: date-time
+
+    ChangePasswordRequest:
+      type: object
+      additionalProperties: false
+      required: [current_password, new_password]
+      properties:
+        current_password:
+          type: string
+          format: password
+        new_password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 1024
+
+    ResetPasswordRequest:
+      type: object
+      additionalProperties: false
+      required: [new_password]
+      properties:
+        credential:
+          type: string
+          maxLength: 16384
+          description: The complete contents of a `.togetkey` recovery file. Required unless `local` is true.
+        new_password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 1024
+        local:
+          type: boolean
+          default: false
+          description: Reset while this device is unlocked without the old password or a recovery file.
 
     CreateAccountRequest:
       type: object

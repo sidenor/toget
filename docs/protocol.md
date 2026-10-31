@@ -566,6 +566,7 @@ The local API is how the local web UI, the CLI, and Agents talk to the daemon.
 - Origin checks and `SameSite=Strict` cookies for browser requests.
 - Endpoints mirror the node protocol conceptually: rooms, messages, agents, approvals, devices, relay, audit.
 - The CLI is a thin client over this API, so scripts and Agents use the same surface as the UI.
+- One local password protects one device. `POST /api/v1/account/reset-password` accepts a recovery file while locked, or `local: true` while unlocked; `POST /api/v1/account/change-password` requires the current password. Recovery status, create, and remove use `/api/v1/account/recovery`. See [account-recovery.md](account-recovery.md).
 
 ## Agent protocol
 

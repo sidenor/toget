@@ -19,9 +19,10 @@ The local API is what a user or a local program can inspect and script. The node
 - Approval consumption is single-use and bound to the exact action digest.
   Idempotency keys for arbitrary task creation are not implemented yet.
 
-The implementation covers health, session, account, devices, rooms, events,
-messages, invites, node sync, business cards and QR codes, attachments,
-search, read cursors, audit, Agents, approvals, and tools. `openapi.yaml`
+The implementation covers health, session, account, password change and
+recovery, devices, rooms, events, messages, invites, node sync, business cards
+and QR codes, attachments, search, read cursors, audit, Agents, approvals, and
+tools. `openapi.yaml`
 documents every route currently registered in `internal/api/server.go`. When
 the two disagree, the route table is authoritative; update the YAML in the
 same change.

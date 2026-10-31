@@ -10,6 +10,7 @@ Start here:
 | [Connectors](connectors.md) | Stable v1 command/connector protocol, Go SDK, compatibility, security |
 | [Protocol](protocol.md) | Node protocol, end-to-end envelope, local API, versioning |
 | [Security model](security-model.md) | Assets, who can see what, threats, controls, limits |
+| [Account recovery](account-recovery.md) | Per-device vault recovery, password change, local reset, limits |
 | [Relay and directory](relay.md) | Cross-network routing, trust boundaries, quotas, limits |
 | [LAN discovery](discovery.md) | mDNS advertisement, verified lookup, privacy, limits |
 | [Business cards](cards.md) | Portable signed cards, QR codes for cards, invites, and pairing, saved-card pinning, limits |
@@ -27,10 +28,11 @@ Start here:
 4. Protocol — how nodes, devices, and relays talk.
 5. Connectors — how a local Agent runtime talks to the daemon.
 6. Security model — who can decrypt what, and what we do not protect yet.
-7. Deployment — how a node is installed and operated.
-8. Tech stack — why these tools.
-9. Repository layout — where code goes.
-10. Roadmap — what to build next.
+7. Account recovery — how passwords and local vault keys are recovered.
+8. Deployment — how a node is installed and operated.
+9. Tech stack — why these tools.
+10. Repository layout — where code goes.
+11. Roadmap — what to build next.
 
 ## Decision records
 

@@ -130,6 +130,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/devices/{id}", s.data(s.handleRevokeDevice))
 	mux.HandleFunc("POST /api/v1/account/sync", s.data(s.handleAccountSync))
 	mux.HandleFunc("POST /api/v1/account/rotate-key", s.data(s.handleRotateAccountKey))
+	mux.HandleFunc("GET /api/v1/account/recovery", s.protected(s.handleGetRecovery))
+	mux.HandleFunc("POST /api/v1/account/recovery", s.data(s.handleCreateRecovery))
+	mux.HandleFunc("DELETE /api/v1/account/recovery", s.data(s.handleRemoveRecovery))
+	mux.HandleFunc("POST /api/v1/account/change-password", s.protected(s.handleChangePassword))
+	mux.HandleFunc("POST /api/v1/account/reset-password", s.protected(s.handleResetPassword))
 	mux.HandleFunc("GET /api/v1/pairings", s.data(s.handleListPairings))
 	mux.HandleFunc("POST /api/v1/pairings", s.data(s.handleCreatePairing))
 	mux.HandleFunc("POST /api/v1/pairings/{id}/approve", s.data(s.handleApprovePairing))
@@ -238,6 +243,9 @@ type AccountView struct {
 // AccountSyncResult is the public result of one account-sync round.
 type AccountSyncResult = node.AccountSyncResult
 
+// RecoveryStatus is the public state of the local recovery wrap.
+type RecoveryStatus = account.RecoveryStatus
+
 // DeviceView is the public shape of a device, without private key material.
 type DeviceView struct {
 	ID          string     `json:"id"`
@@ -294,6 +302,150 @@ func (s *Server) handleGetAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, accountView(snapshot.Account, snapshot.Device))
+}
+
+// RecoveryCredentialView is a recovery file the client must save. The content
+// is a bearer secret; it is returned once and never stored by the daemon.
+type RecoveryCredentialView struct {
+	Filename  string    `json:"filename"`
+	Content   string    `json:"content"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (s *Server) handleGetRecovery(w http.ResponseWriter, r *http.Request) {
+	noStore(w)
+	status, err := s.accounts.Recovery(r.Context())
+	if err != nil {
+		writeAccountError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) handleCreateRecovery(w http.ResponseWriter, r *http.Request) {
+	noStore(w)
+	credential, content, err := s.accounts.CreateRecovery(r.Context())
+	if err != nil {
+		writeAccountError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, RecoveryCredentialView{
+		Filename: credential.Filename(), Content: string(content), CreatedAt: credential.CreatedAt,
+	})
+}
+
+func (s *Server) handleRemoveRecovery(w http.ResponseWriter, r *http.Request) {
+	noStore(w)
+	if err := s.accounts.RemoveRecovery(r.Context()); err != nil {
+		writeAccountError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type changePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
+func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	noStore(w)
+	key := clientKey(r)
+	if err := s.session.Allow(key); err != nil {
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many failed attempts; wait a few minutes")
+		return
+	}
+	var req changePasswordRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if _, err := s.accounts.ChangePassword(r.Context(), req.CurrentPassword, req.NewPassword); err != nil {
+		if errors.Is(err, account.ErrInvalidCredentials) || errors.Is(err, vault.ErrInvalidPassword) {
+			s.session.Failed(key)
+			writeError(w, http.StatusUnauthorized, "invalid_credentials", "current password is incorrect")
+			return
+		}
+		writeAccountError(w, err)
+		return
+	}
+	s.session.Succeeded(key)
+	expires := s.session.Unlock()
+	writeJSON(w, http.StatusOK, SessionView{
+		HasAccount: true, Locked: false, ExpiresAt: &expires,
+		TTLSeconds: int(session.DefaultTTL.Seconds()),
+	})
+}
+
+type resetPasswordRequest struct {
+	Credential  string `json:"credential"`
+	NewPassword string `json:"new_password"`
+	Local       bool   `json:"local"`
+}
+
+func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
+	noStore(w)
+	key := clientKey(r)
+	var req resetPasswordRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if req.Local {
+		// A local administrator reset needs the unlocked process: the daemon
+		// already holds the vault master key, so no old password is required.
+		if err := s.session.Require(); err != nil {
+			s.accounts.LockVault()
+			writeError(w, http.StatusLocked, "locked", "unlock the node with your password")
+			return
+		}
+		s.session.Touch()
+		if _, err := s.accounts.ResetPasswordUnlocked(r.Context(), req.NewPassword); err != nil {
+			writeAccountError(w, err)
+			return
+		}
+		s.session.Succeeded(key)
+		expires := s.session.Unlock()
+		writeJSON(w, http.StatusOK, SessionView{
+			HasAccount: true, Locked: false, ExpiresAt: &expires,
+			TTLSeconds: int(session.DefaultTTL.Seconds()),
+		})
+		return
+	}
+	if strings.TrimSpace(req.Credential) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "a recovery credential is required unless local is true")
+		return
+	}
+	if err := s.session.Allow(key); err != nil {
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many failed attempts; wait a few minutes")
+		return
+	}
+	if _, err := s.accounts.ResetPasswordWithRecovery(r.Context(), []byte(req.Credential), req.NewPassword); err != nil {
+		if errors.Is(err, account.ErrInvalidRecoveryCredential) || errors.Is(err, vault.ErrInvalidRecoveryKey) {
+			s.session.Failed(key)
+			writeError(w, http.StatusBadRequest, "invalid_recovery_credential",
+				"the recovery file is invalid or belongs to another device")
+			return
+		}
+		if errors.Is(err, account.ErrRecoveryUnavailable) || errors.Is(err, vault.ErrRecoveryNotConfigured) {
+			writeError(w, http.StatusConflict, "recovery_not_configured",
+				"this device has no recovery file; create one while it is unlocked")
+			return
+		}
+		writeAccountError(w, err)
+		return
+	}
+	s.session.Succeeded(key)
+	expires := s.session.Unlock()
+	writeJSON(w, http.StatusOK, SessionView{
+		HasAccount: true, Locked: false, ExpiresAt: &expires,
+		TTLSeconds: int(session.DefaultTTL.Seconds()),
+	})
+}
+
+func noStore(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 }
 
 type createAccountRequest struct {
@@ -733,7 +885,13 @@ func writeAccountError(w http.ResponseWriter, err error) {
 	case errors.Is(err, account.ErrInvalidName):
 		writeError(w, http.StatusBadRequest, "invalid_name", "name must be 1–64 characters")
 	case errors.Is(err, account.ErrInvalidPassword):
-		writeError(w, http.StatusBadRequest, "invalid_password", "password must be at least 8 characters")
+		writeError(w, http.StatusBadRequest, "invalid_password", "password must be between 8 and 1024 characters")
+	case errors.Is(err, account.ErrInvalidRecoveryCredential), errors.Is(err, vault.ErrInvalidRecoveryKey):
+		writeError(w, http.StatusBadRequest, "invalid_recovery_credential",
+			"the recovery file is invalid or belongs to another device")
+	case errors.Is(err, account.ErrRecoveryUnavailable), errors.Is(err, vault.ErrRecoveryNotConfigured):
+		writeError(w, http.StatusConflict, "recovery_not_configured",
+			"this device has no recovery file; create one while it is unlocked")
 	case errors.Is(err, vault.ErrLocked):
 		writeError(w, http.StatusLocked, "locked", "unlock the node with your password")
 	case errors.Is(err, vault.ErrInvalidPassword), errors.Is(err, account.ErrInvalidCredentials):

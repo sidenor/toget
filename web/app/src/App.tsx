@@ -388,7 +388,11 @@ function LockScreen({
   setError: (value: string) => void;
   onUnlocked: () => Promise<void>;
 }) {
+  const [mode, setMode] = useState<"unlock" | "reset">("unlock");
   const [password, setPassword] = useState("");
+  const [recoveryFile, setRecoveryFile] = useState<File | null>(null);
+  const [newPassword, setNewPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function submit(event: FormEvent) {
@@ -403,6 +407,89 @@ function LockScreen({
     } finally {
       setBusy(false);
     }
+  }
+
+  async function reset(event: FormEvent) {
+    event.preventDefault();
+    if (!recoveryFile) {
+      setError(t("lock.recoveryRequired"));
+      return;
+    }
+    if (newPassword.length < 8) {
+      setError(t("lock.passwordShort"));
+      return;
+    }
+    if (newPassword !== confirm) {
+      setError(t("lock.mismatch"));
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const credential = await recoveryFile.text();
+      await api.resetPassword(credential, newPassword);
+      await onUnlocked();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("common.error"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (mode === "reset") {
+    return (
+      <div className="onboarding">
+        <div className="onboarding-card compact">
+          <div className="brand-mark">T</div>
+          <p className="eyebrow">{account.name}</p>
+          <h1>{t("lock.resetTitle")}</h1>
+          <p className="muted">{t("lock.resetSubtitle")}</p>
+          {error && <div className="form-error">{error}</div>}
+          <form onSubmit={reset}>
+            <label>
+              {t("lock.recoveryFile")}
+              <input
+                type="file"
+                accept=".togetkey,application/json"
+                onChange={(event) => setRecoveryFile(event.target.files?.[0] ?? null)}
+                required
+              />
+            </label>
+            <label>
+              {t("lock.newPassword")}
+              <input
+                type="password"
+                value={newPassword}
+                onChange={(event) => setNewPassword(event.target.value)}
+                required
+              />
+            </label>
+            <label>
+              {t("lock.confirmPassword")}
+              <input
+                type="password"
+                value={confirm}
+                onChange={(event) => setConfirm(event.target.value)}
+                required
+              />
+            </label>
+            <button className="button primary wide" type="submit" disabled={busy}>
+              {busy ? t("lock.resetting") : t("lock.reset")}
+            </button>
+          </form>
+          <button
+            className="link"
+            type="button"
+            onClick={() => {
+              setMode("unlock");
+              setError("");
+            }}
+          >
+            {t("lock.back")}
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -428,6 +515,16 @@ function LockScreen({
             {busy ? t("lock.unlocking") : t("lock.unlock")}
           </button>
         </form>
+        <button
+          className="link"
+          type="button"
+          onClick={() => {
+            setMode("reset");
+            setError("");
+          }}
+        >
+          {t("lock.recoveryLink")}
+        </button>
         <p className="fine-print">{t("lock.note")}</p>
       </div>
     </div>

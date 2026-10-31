@@ -79,9 +79,12 @@ cards carry those same signed manifests as text or a QR code and can be saved
 as an explicit full-server-ID pin. The account signing key can be rotated
 without changing the account ID: active device certificates are re-signed, and
 paired devices receive the new private key as per-device sealed envelopes.
-The local vault is wrapped by a key derived from the account password. The
-phone client and official account hosting shown above are still design-only;
-NAT traversal is not implemented.
+The local vault is wrapped by a key derived from the account password; an
+optional per-device recovery file wraps the same vault key so a forgotten
+password can be reset while the node is locked, and an unlocked node can reset
+without the old password. The phone client and official account hosting shown
+above are still design-only; NAT traversal is not implemented. See
+[account-recovery.md](account-recovery.md).
 
 ## Account and device model
 
@@ -146,7 +149,8 @@ Switching accounts: log out, wipe local keys and caches, then join the new accou
 | Device key (Ed25519 + X25519) | Each device | Signs device messages; receives HPKE-wrapped room keys |
 | Room epoch key | Each room member endpoint | Encrypts room messages for one membership epoch |
 | Account master key (MK) | User devices; official host stores only ciphertext | Unlocks account data and history on official-hosted accounts |
-| Recovery key (RK) | The user's recovery credential file | Unwraps MK after a password reset |
+| Local vault key | Each device | Seals local private keys and secrets; wrapped by the password |
+| Recovery key (RK) | The user's per-device recovery file | Unwraps the local vault key after a forgotten-password reset |
 | Server root key (Ed25519) | Account host / official service | Signs the server manifest and rotates operation keys |
 | Release key | Official service | Signs version manifests; certified by the root key |
 

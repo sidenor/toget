@@ -669,7 +669,311 @@ func newAccountCommand() *cobra.Command {
 	cmd.AddCommand(newAccountShowCommand())
 	cmd.AddCommand(newAccountSyncCommand())
 	cmd.AddCommand(newAccountRotateCommand())
+	cmd.AddCommand(newAccountChangePasswordCommand())
+	cmd.AddCommand(newAccountRecoveryCommand())
+	cmd.AddCommand(newAccountResetPasswordCommand())
 	return cmd
+}
+
+func newAccountChangePasswordCommand() *cobra.Command {
+	var currentPassword, newPassword string
+	cmd := &cobra.Command{
+		Use:   "change-password",
+		Short: "Change the account password on this device",
+		Long: "Change the local password verifier and re-wrap this device's vault key.\n" +
+			"Other devices keep their own local password until changed there.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			if currentPassword == "" {
+				currentPassword, err = promptPassword("Current password: ")
+				if err != nil {
+					return err
+				}
+			}
+			if newPassword == "" {
+				newPassword, err = promptPassword("New password (at least 8 characters): ")
+				if err != nil {
+					return err
+				}
+				confirm, err := promptPassword("Confirm new password: ")
+				if err != nil {
+					return err
+				}
+				if newPassword != confirm {
+					return errors.New("passwords do not match")
+				}
+			}
+			var state api.SessionView
+			if err := c.Post(cmd.Context(), "/api/v1/account/change-password", map[string]string{
+				"current_password": currentPassword, "new_password": newPassword,
+			}, &state); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(state)
+			}
+			fmt.Println("Password changed. This device is unlocked; other devices are unchanged.")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&currentPassword, "current-password", "", "current password (prompted when omitted)")
+	cmd.Flags().StringVar(&newPassword, "new-password", "", "new password (prompted when omitted)")
+	return cmd
+}
+
+func newAccountRecoveryCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "recovery",
+		Short: "Manage the recovery file for this device",
+	}
+	cmd.AddCommand(newAccountRecoveryStatusCommand())
+	cmd.AddCommand(newAccountRecoveryCreateCommand())
+	cmd.AddCommand(newAccountRecoveryRemoveCommand())
+	return cmd
+}
+
+func newAccountRecoveryStatusCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "status",
+		Short: "Show whether this device has a recovery file",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			var status api.RecoveryStatus
+			if err := c.Get(cmd.Context(), "/api/v1/account/recovery", &status); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(status)
+			}
+			if !status.Enabled {
+				fmt.Println("Recovery file: not configured")
+				fmt.Println("Without one, a forgotten password cannot open sealed history on this device.")
+				return nil
+			}
+			fmt.Printf("Recovery file: enabled since %s\nDevice: %s\n",
+				status.CreatedAt.Local().Format(time.RFC3339), status.DeviceID)
+			return nil
+		},
+	}
+}
+
+func newAccountRecoveryCreateCommand() *cobra.Command {
+	var out, password string
+	cmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create a new recovery file (voids the previous one)",
+		Long: "Create a high-entropy recovery file for this device's vault. Store it offline.\n" +
+			"Anyone with the file and local access to this node can reset the password and open history.\n" +
+			"Creating a new file voids the previous one.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var explicitPath string
+			if out != "" {
+				var err error
+				explicitPath, err = filepath.Abs(out)
+				if err != nil {
+					return err
+				}
+				if _, err := os.Stat(explicitPath); err == nil {
+					return fmt.Errorf("output file already exists: %s; choose another path or remove it before creating a new recovery file", explicitPath)
+				} else if !errors.Is(err, os.ErrNotExist) {
+					return err
+				}
+			}
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			if password != "" {
+				if err := c.Post(cmd.Context(), "/api/v1/session", map[string]string{"password": password}, nil); err != nil {
+					return err
+				}
+			}
+			var created api.RecoveryCredentialView
+			if err := c.Post(cmd.Context(), "/api/v1/account/recovery", nil, &created); err != nil {
+				return err
+			}
+			path := created.Filename
+			if explicitPath != "" {
+				path = explicitPath
+			}
+			path, err = filepath.Abs(path)
+			if err != nil {
+				return err
+			}
+			content := []byte(created.Content)
+			written, err := writeRecoveryFile(path, content, explicitPath == "")
+			if err != nil {
+				return fmt.Errorf("recovery was created but the file could not be saved: %w; run the command again while unlocked", err)
+			}
+			path = written
+			if jsonFlag {
+				return printJSON(map[string]any{
+					"path": path, "filename": created.Filename, "created_at": created.CreatedAt,
+				})
+			}
+			fmt.Printf("Recovery file written to:\n  %s\n\n", path)
+			fmt.Println("Store it offline like a private key. Do not send it through chat, email, or an unencrypted cloud drive.")
+			fmt.Println("The previous recovery file, if any, no longer works.")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&out, "out", "", "output path (default: the suggested recovery filename)")
+	cmd.Flags().StringVar(&password, "password", "", "unlock password, used when the node is locked")
+	return cmd
+}
+
+func newAccountRecoveryRemoveCommand() *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "remove",
+		Short: "Remove this device's recovery file",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !yes {
+				answer := strings.ToLower(strings.TrimSpace(prompt("Remove the recovery file? A forgotten password will no longer be recoverable on this device. [y/N]: ")))
+				if answer != "y" && answer != "yes" {
+					return errors.New("cancelled")
+				}
+			}
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			if err := c.Delete(cmd.Context(), "/api/v1/account/recovery", nil); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(map[string]bool{"ok": true})
+			}
+			fmt.Println("Recovery file removed. The password still works.")
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&yes, "yes", false, "do not ask for confirmation")
+	return cmd
+}
+
+func newAccountResetPasswordCommand() *cobra.Command {
+	var recoveryPath, newPassword string
+	var local bool
+	cmd := &cobra.Command{
+		Use:   "reset-password",
+		Short: "Reset the password with a recovery file or a local admin reset",
+		Long: "With --recovery, reset the password while the node is locked. The recovery file\n" +
+			"unwraps this device's vault key locally, so sealed history stays readable.\n" +
+			"With --local, reset a forgotten password while this device is unlocked; no old\n" +
+			"password or recovery file is needed. Other devices are unchanged either way.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if local && recoveryPath != "" {
+				return errors.New("choose either --local or --recovery, not both")
+			}
+			if !local && recoveryPath == "" {
+				return errors.New("--recovery or --local is required")
+			}
+			var content []byte
+			var err error
+			if recoveryPath != "" {
+				content, err = readRecoveryFile(recoveryPath)
+				if err != nil {
+					return err
+				}
+			}
+			if newPassword == "" {
+				newPassword, err = promptPassword("New password (at least 8 characters): ")
+				if err != nil {
+					return err
+				}
+				confirm, err := promptPassword("Confirm new password: ")
+				if err != nil {
+					return err
+				}
+				if newPassword != confirm {
+					return errors.New("passwords do not match")
+				}
+			}
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			request := map[string]any{"new_password": newPassword}
+			if local {
+				request["local"] = true
+			} else {
+				request["credential"] = string(content)
+			}
+			var state api.SessionView
+			if err := c.Post(cmd.Context(), "/api/v1/account/reset-password", request, &state); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(state)
+			}
+			fmt.Println("Password reset. This device is unlocked; other devices keep their old local password.")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&recoveryPath, "recovery", "", "path to a .togetkey recovery file")
+	cmd.Flags().StringVar(&newPassword, "new-password", "", "new password (prompted when omitted)")
+	cmd.Flags().BoolVar(&local, "local", false, "reset while this device is unlocked, without the old password")
+	return cmd
+}
+
+// writeRecoveryFile writes a credential without overwriting an existing file.
+// For the default filename, an occupied path is suffixed rather than failing
+// after the server has already invalidated the previous credential.
+func writeRecoveryFile(path string, content []byte, allowSuffix bool) (string, error) {
+	for attempt := 0; attempt < 100; attempt++ {
+		candidate := path
+		if attempt > 0 {
+			ext := filepath.Ext(path)
+			base := strings.TrimSuffix(path, ext)
+			candidate = fmt.Sprintf("%s-%d%s", base, attempt+1, ext)
+		}
+		err := writePrivateFile(candidate, content)
+		if err == nil {
+			return candidate, nil
+		}
+		if !errors.Is(err, os.ErrExist) || !allowSuffix {
+			return "", err
+		}
+	}
+	return "", errors.New("could not find an unused recovery filename")
+}
+
+func readRecoveryFile(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("%s is a directory", path)
+	}
+	if info.Size() > account.MaxRecoveryCredentialBytes {
+		return nil, fmt.Errorf("%s is too large to be a recovery file", path)
+	}
+	return os.ReadFile(path)
+}
+
+func writePrivateFile(path string, content []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(content); err != nil {
+		f.Close()
+		os.Remove(path)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return err
+	}
+	return nil
 }
 
 func newAccountRotateCommand() *cobra.Command {

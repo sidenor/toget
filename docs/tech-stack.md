@@ -131,7 +131,8 @@ Rules:
 ## Authentication and secrets
 
 - **Account login:** password via PAKE; the account host stores only a verifier.
-- **Official-hosted accounts:** MK is generated client-side and stored as `Enc(KEK(password), MK)`; the recovery credential stores `Enc(RK, MK)`.
+- **Local vault (implemented):** each device has a random vault key wrapped by an Argon2id-derived KEK from the password; an optional recovery key wraps the same vault key.
+- **Official-hosted accounts (planned):** MK is generated client-side and stored as `Enc(KEK(password), MK)`; the recovery credential stores `Enc(RK, MK)`.
 - **Devices:** each device has its own key pair and a certificate signed by the account key. Device enrollment requires approval from an existing device or the account host.
 - **Local API:** per-session token in a user-only file; `Origin` checks and `SameSite=Strict` cookies.
 - **Secrets at rest:** OS keychain (Keychain, Credential Manager, Secret Service) or an encrypted local vault for headless Linux. Agent API keys never go to the account host.

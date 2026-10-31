@@ -116,13 +116,13 @@ The trust boundary follows the hosting choice:
 
 | Hosting | Endpoint (can decrypt) | Official can read? | Password recovery |
 | --- | --- | --- | --- |
-| **Self-hosted** | The user's own server | No | Local administrator reset; data stays on the machine |
+| **Self-hosted** | The user's own server | No | Local recovery file, or an unlocked-device reset; data stays on the machine |
 | **Official** | The user's devices; official stores ciphertext | No | Email restores login; the recovery credential restores old history |
 | **Official + official Agent** | The official Agent, only with explicit authorization | Not by default; the authorization scope is visible | Same as official |
 
 - The official service never holds a universal key.
-- Official-hosted accounts must download a **recovery credential** at registration. It is a high-entropy key that can unwrap the account's master key after a password reset. Without it, an email reset restores login but cannot open old history.
-- Self-hosted accounts do not need a recovery credential: the machine's administrator is the account owner and can reset the password locally. If the machine is lost and there is no backup, the data is lost; we say so plainly.
+- In the planned official-hosted flow, accounts must download a **recovery credential** at registration. It is a high-entropy key that can unwrap the account's master key after a password reset. Without it, an email reset restores login but cannot open old history.
+- Self-hosted accounts can use a **per-device recovery file** to reset a forgotten password while the node is locked. Without one, the only reset path is while the node is already unlocked, because the daemon needs the in-memory vault key to re-wrap it. A forgotten password plus a locked node and no recovery file means the sealed local history cannot be opened. If the machine is lost and there is no backup, the data is lost; we say so plainly. See [account-recovery.md](account-recovery.md).
 
 ## Core loop
 

@@ -3,10 +3,12 @@ package backup_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/sidenor/toget/internal/account"
 	"github.com/sidenor/toget/internal/backup"
 	"github.com/sidenor/toget/internal/config"
 	"github.com/sidenor/toget/internal/identity"
@@ -134,6 +136,81 @@ func TestBackupCreateAndRestore(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(rollback, "toget.db")); !os.IsNotExist(err) {
 		// The destination was empty, so no old database was moved.
 		t.Logf("rollback dir: %s", rollback)
+	}
+}
+
+func TestBackupRestorePreservesRecoveryReset(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	paths, err := config.Resolve(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Ensure(paths); err != nil {
+		t.Fatal(err)
+	}
+	db, err := storage.Open(paths.DB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := vault.Load(paths.VaultKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accounts := account.New(db, v)
+	if _, err := accounts.Create(ctx, "Aiden", "oldpass123", "backup-device"); err != nil {
+		t.Fatal(err)
+	}
+	_, recovery, err := accounts.CreateRecovery(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := v.Seal([]byte("sealed history"), "backup-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "recovery.toget-backup")
+	if _, err := backup.Create(ctx, db, paths, archive); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	home2 := t.TempDir()
+	paths2, err := config.Resolve(home2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Ensure(paths2); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := backup.Restore(ctx, paths2, archive); err != nil {
+		t.Fatal(err)
+	}
+	db2, err := storage.Open(paths2.DB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db2.Close()
+	v2, err := vault.Load(paths2.VaultKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accounts2 := account.New(db2, v2)
+	if v2.Ready() {
+		t.Fatal("restored vault was already unlocked")
+	}
+	if _, err := accounts2.ResetPasswordWithRecovery(ctx, []byte(recovery), "newpass456"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v2.Open(sealed, "backup-test"); err != nil {
+		t.Fatalf("sealed history after restore: %v", err)
+	}
+	accounts2.LockVault()
+	if _, err := accounts2.Login(ctx, "oldpass123"); !errors.Is(err, account.ErrInvalidCredentials) {
+		t.Fatalf("old password after restore = %v", err)
+	}
+	if _, err := accounts2.Login(ctx, "newpass456"); err != nil {
+		t.Fatal(err)
 	}
 }
 

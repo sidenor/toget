@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/argon2"
@@ -131,6 +132,7 @@ type Store interface {
 	CreateAccount(ctx context.Context, server *Server, account *Account, device *Device) error
 	ImportAccount(ctx context.Context, server *Server, account *Account, devices []Device) error
 	UpdateAccountKey(ctx context.Context, account *Account, devices []Device) error
+	UpdateAccountPasswordHash(ctx context.Context, accountID, passwordHash string) error
 	AddDevice(ctx context.Context, device *Device) error
 	UpdateDevice(ctx context.Context, device *Device) error
 	AccountCodeExists(ctx context.Context, serverID, code string) (bool, error)
@@ -141,6 +143,10 @@ type Service struct {
 	store Store
 	vault *vault.Vault
 	now   func() time.Time
+	// passwordMu serializes password and recovery mutations so the database
+	// verifier and the vault key wrap cannot diverge under concurrent
+	// requests.
+	passwordMu sync.Mutex
 }
 
 // New creates an account service.

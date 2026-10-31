@@ -4,7 +4,20 @@ import { formatAccountID, formatTime, shortID } from "./format";
 import type { Lang, Translate } from "./i18n";
 import { QRCodeImage, QRScanButton } from "./QR";
 import { decodeQRImage, qrScanErrorMessage } from "./qr";
-import type { Agent, AgentSession, Approval, AuditResponse, CardView, Device, DiscoveredPeer, NodeInfo, PairingView, Room, SearchHit } from "./types";
+import type {
+  Agent,
+  AgentSession,
+  Approval,
+  AuditResponse,
+  CardView,
+  Device,
+  DiscoveredPeer,
+  NodeInfo,
+  PairingView,
+  RecoveryStatus,
+  Room,
+  SearchHit,
+} from "./types";
 import { Badge, CopyButton, Modal, Spinner } from "./ui";
 
 export type CommonProps = {
@@ -820,12 +833,22 @@ export function SettingsView({
   const [cardScanning, setCardScanning] = useState(false);
   const [cardError, setCardError] = useState("");
   const [syncing, setSyncing] = useState(false);
+  const [recovery, setRecovery] = useState<RecoveryStatus | null>(null);
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [recoveryError, setRecoveryError] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordBusy, setPasswordBusy] = useState(false);
+  const [passwordError, setPasswordError] = useState("");
+  const [localReset, setLocalReset] = useState(false);
 
   useEffect(() => {
     api.node().then(setNode).catch(() => setNode({ enabled: false }));
     api.nodeDiscover().then(setDiscovery).catch(() => setDiscovery({ enabled: false, peers: [] }));
     api.nodeCard().then((result) => setOwnCard(result.card)).catch(() => setOwnCard(null));
     api.nodeCards().then((result) => setCards(result.cards)).catch(() => setCards([]));
+    api.recovery().then(setRecovery).catch(() => setRecovery(null));
   }, []);
 
   async function sync() {
@@ -870,6 +893,77 @@ export function SettingsView({
     }
   }
 
+  async function submitPassword(event: FormEvent) {
+    event.preventDefault();
+    if (newPassword.length < 8) {
+      setPasswordError(t("settings.passwordShort"));
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError(t("settings.passwordMismatch"));
+      return;
+    }
+    if (localReset && !window.confirm(t("settings.localResetConfirm"))) return;
+    setPasswordBusy(true);
+    setPasswordError("");
+    try {
+      if (localReset) {
+        await api.resetPasswordLocal(newPassword);
+        notify(t("settings.localResetDone"));
+      } else {
+        await api.changePassword(currentPassword, newPassword);
+        notify(t("settings.passwordChanged"));
+      }
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setLocalReset(false);
+    } catch (err) {
+      setPasswordError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPasswordBusy(false);
+    }
+  }
+
+  async function createRecovery() {
+    if (!window.confirm(t("settings.recoveryCreateConfirm"))) return;
+    setRecoveryBusy(true);
+    setRecoveryError("");
+    try {
+      const created = await api.createRecovery();
+      const blob = new Blob([created.content], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = created.filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      setRecovery(await api.recovery());
+      notify(t("settings.recoveryCreated"));
+    } catch (err) {
+      setRecoveryError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRecoveryBusy(false);
+    }
+  }
+
+  async function removeRecovery() {
+    if (!window.confirm(t("settings.recoveryRemoveConfirm"))) return;
+    setRecoveryBusy(true);
+    setRecoveryError("");
+    try {
+      await api.removeRecovery();
+      setRecovery(await api.recovery());
+      notify(t("settings.recoveryRemoved"));
+    } catch (err) {
+      setRecoveryError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRecoveryBusy(false);
+    }
+  }
+
   async function scanCard(file: File) {
     setCardScanning(true);
     setCardError("");
@@ -903,6 +997,98 @@ export function SettingsView({
           <button className="button ghost" onClick={() => void lock()}>
             {t("settings.lockNow")}
           </button>
+        </article>
+        <article className="panel wide">
+          <h2>{t("settings.passwordTitle")}</h2>
+          <p className="muted">{t("settings.passwordText")}</p>
+          <form className="settings-form" onSubmit={submitPassword}>
+            {localReset ? (
+              <>
+                <p className="muted">{t("settings.localResetText")}</p>
+                <button className="link" type="button" onClick={() => setLocalReset(false)}>
+                  {t("settings.localResetCancel")}
+                </button>
+              </>
+            ) : (
+              <label>
+                {t("settings.currentPassword")}
+                <input
+                  type="password"
+                  value={currentPassword}
+                  onChange={(event) => setCurrentPassword(event.target.value)}
+                  autoComplete="current-password"
+                  required
+                />
+              </label>
+            )}
+            <label>
+              {t("settings.newPassword")}
+              <input
+                type="password"
+                value={newPassword}
+                onChange={(event) => setNewPassword(event.target.value)}
+                autoComplete="new-password"
+                required
+              />
+            </label>
+            <label>
+              {t("settings.confirmPassword")}
+              <input
+                type="password"
+                value={confirmPassword}
+                onChange={(event) => setConfirmPassword(event.target.value)}
+                autoComplete="new-password"
+                required
+              />
+            </label>
+            {passwordError && <div className="form-error">{passwordError}</div>}
+            <button
+              className="button primary"
+              type="submit"
+              disabled={passwordBusy || (!localReset && !currentPassword) || !newPassword}
+            >
+              {passwordBusy
+                ? t("settings.recoveryBusy")
+                : localReset
+                  ? t("settings.localReset")
+                  : t("settings.changePassword")}
+            </button>
+            {!localReset && (
+              <button className="link" type="button" onClick={() => setLocalReset(true)}>
+                {t("settings.forgotPassword")}
+              </button>
+            )}
+          </form>
+          <hr className="settings-divider" />
+          <h3>{t("settings.recoveryTitle")}</h3>
+          <p className="muted">{t("settings.recoveryText")}</p>
+          {recoveryError && <div className="form-error">{recoveryError}</div>}
+          {recovery === null ? (
+            <Spinner label={t("common.loading")} />
+          ) : recovery.enabled ? (
+            <>
+              <p className="muted">
+                {t("settings.recoveryEnabled", {
+                  date: recovery.created_at ? new Date(recovery.created_at).toLocaleString() : "—",
+                })}
+              </p>
+              <div className="button-row">
+                <button className="button ghost" onClick={() => void createRecovery()} disabled={recoveryBusy}>
+                  {recoveryBusy ? t("settings.recoveryBusy") : t("settings.recoveryReplace")}
+                </button>
+                <button className="button ghost danger" onClick={() => void removeRecovery()} disabled={recoveryBusy}>
+                  {t("settings.recoveryRemove")}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="form-error">{t("settings.recoveryDisabled")}</p>
+              <button className="button primary" onClick={() => void createRecovery()} disabled={recoveryBusy}>
+                {recoveryBusy ? t("settings.recoveryBusy") : t("settings.recoveryCreate")}
+              </button>
+            </>
+          )}
         </article>
         <article className="panel">
           <h2>{t("settings.node")}</h2>

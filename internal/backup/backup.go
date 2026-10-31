@@ -222,6 +222,12 @@ func Restore(ctx context.Context, paths config.Paths, archivePath string) (*Mani
 	if err := extract(archivePath, manifest, data); err != nil {
 		return nil, "", err
 	}
+	// Empty directories are not stored in the archive. A node with no
+	// attachments still needs the restore target to exist for the atomic
+	// rename below.
+	if err := os.MkdirAll(filepath.Join(data, "attachments"), 0o700); err != nil {
+		return nil, "", fmt.Errorf("restore: create attachments dir: %w", err)
+	}
 	restoredDB, err := storage.Open(filepath.Join(data, "toget.db"))
 	if err != nil {
 		return nil, "", fmt.Errorf("restore: validate database: %w", err)

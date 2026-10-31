@@ -17,6 +17,8 @@ import type {
   NodeInfo,
   PairingView,
   PairJoinView,
+  RecoveryCredential,
+  RecoveryStatus,
   Room,
   RoomDevice,
   RoomEvent,
@@ -72,6 +74,15 @@ export const api = {
   createAccount: (name: string, password: string, deviceName?: string) =>
     request<Account>("/api/v1/account", json({ name, password, device_name: deviceName })),
   account: () => request<Account>("/api/v1/account"),
+  recovery: () => request<RecoveryStatus>("/api/v1/account/recovery"),
+  createRecovery: () => request<RecoveryCredential>("/api/v1/account/recovery", json({})),
+  removeRecovery: () => request<void>("/api/v1/account/recovery", { method: "DELETE" }),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<SessionInfo>("/api/v1/account/change-password", json({ current_password: currentPassword, new_password: newPassword })),
+  resetPassword: (credential: string, newPassword: string) =>
+    request<SessionInfo>("/api/v1/account/reset-password", json({ credential, new_password: newPassword })),
+  resetPasswordLocal: (newPassword: string) =>
+    request<SessionInfo>("/api/v1/account/reset-password", json({ local: true, new_password: newPassword })),
 
   rooms: () => request<{ rooms: Room[] }>("/api/v1/rooms"),
   createRoom: (name: string, topic = "") => request<CreateRoomResponse>("/api/v1/rooms", json({ name, topic })),

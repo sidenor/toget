@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,6 +38,40 @@ func TestWriteSecretQR(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("secret QR mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestWriteRecoveryFileDoesNotOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "recovery.togetkey")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writeRecoveryFile(path, []byte("new"), false); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("explicit existing path error = %v, want ErrExist", err)
+	}
+	if data, _ := os.ReadFile(path); string(data) != "old" {
+		t.Fatalf("existing file changed: %q", data)
+	}
+	written, err := writeRecoveryFile(path, []byte("new"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if written == path {
+		t.Fatal("suffix mode overwrote the existing path")
+	}
+	if data, _ := os.ReadFile(written); string(data) != "new" {
+		t.Fatalf("new file = %q", data)
+	}
+	info, err := os.Stat(written)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("recovery file mode = %o, want 600", info.Mode().Perm())
+	}
+	if data, _ := os.ReadFile(path); string(data) != "old" {
+		t.Fatalf("existing file changed after suffix write: %q", data)
 	}
 }
 

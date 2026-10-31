@@ -33,6 +33,18 @@ export type RotateAccountKeyResult = {
   warnings: string[];
 };
 
+export type RecoveryStatus = {
+  enabled: boolean;
+  created_at?: string | null;
+  device_id: string;
+};
+
+export type RecoveryCredential = {
+  filename: string;
+  content: string;
+  created_at: string;
+};
+
 export type Account = {
   id: string;
   name: string;

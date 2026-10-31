@@ -66,14 +66,24 @@ pnpm --filter @toget/app build   # web/app/dist is also committed
 go run ./cmd/toget serve
 ```
 
-Open <http://127.0.0.1:7718> and create your account. There is no password
-recovery service yet, but you can link a second device through pairing (below),
-and an encrypted backup can move an account between machines. The password is
-an Argon2id verifier for local sign-in and also derives the key that wraps the
-local vault, so account and device private keys stay encrypted at rest. The
-daemon unwraps them while it is unlocked; protect the data directory with OS
-permissions and full-disk encryption on a shared machine, and lock the node
-when you leave it.
+Open <http://127.0.0.1:7718> and create your account. The password is an
+Argon2id verifier for local sign-in and also derives the key that wraps the
+local vault, so account and device private keys stay encrypted at rest. Create
+a per-device recovery file while the node is unlocked:
+
+```bash
+go run ./cmd/toget account recovery create --out ~/offline/toget-recovery.togetkey
+```
+
+Use it with `account reset-password --recovery <file>` if the password is
+forgotten while the node is locked, or `account reset-password --local` while
+the node is still unlocked. Each device has its own password and vault; a reset
+does not change other devices. Without a recovery file, a locked forgotten
+password cannot open the sealed local history. Protect the data directory with
+OS permissions and full-disk encryption on a shared machine, and lock the node
+when you leave it. See [Account recovery](docs/account-recovery.md). You can
+also link a second device through pairing (below), and an encrypted backup can
+move an account between machines.
 
 The same loop from the CLI, while `toget serve` is running:
 

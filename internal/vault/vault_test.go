@@ -1,6 +1,8 @@
 package vault
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,10 +42,12 @@ func TestOpenRejectsWrongAADAndTampering(t *testing.T) {
 	if _, err := v.Open(sealed, "wrong"); err == nil {
 		t.Fatal("opened with the wrong AAD")
 	}
-	tampered := sealed[:len(sealed)-2] + "AA"
-	if tampered == sealed {
-		t.Fatal("test did not modify the sealed value")
+	i := len(sealed) / 2
+	replacement := byte('A')
+	if sealed[i] == 'A' {
+		replacement = 'B'
 	}
+	tampered := sealed[:i] + string(replacement) + sealed[i+1:]
 	if _, err := v.Open(tampered, "right"); err == nil {
 		t.Fatal("opened a tampered value")
 	}
@@ -190,4 +194,246 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func testRecoveryKey(t *testing.T) []byte {
+	t.Helper()
+	key := make([]byte, RecoveryKeySize)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+func TestRecoveryKeyResetsPasswordWhileLocked(t *testing.T) {
+	lowerArgonForTest(t)
+	path := filepath.Join(t.TempDir(), "vault.key")
+	v, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Initialize("old password"); err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := v.Seal([]byte("history"), "history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovery := testRecoveryKey(t)
+	created, err := v.SetRecoveryKey(recovery, "account-device")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.IsZero() || !v.RecoveryEnabled() || !v.RecoveryCreatedAt().Equal(created) {
+		t.Fatalf("recovery metadata = %v / %v", created, v.RecoveryCreatedAt())
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(string(raw), wrapPrefix))
+	if err != nil || !strings.Contains(string(payload), `"recovery"`) {
+		t.Fatalf("vault file does not contain a recovery wrap: %s", raw)
+	}
+
+	restarted, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restarted.Ready() {
+		t.Fatal("restarted vault unlocked without a password")
+	}
+	if err := restarted.ResetPasswordWithRecoveryKey(testRecoveryKey(t), "account-device", "new password"); err != ErrInvalidRecoveryKey {
+		t.Fatalf("wrong recovery key error = %v, want ErrInvalidRecoveryKey", err)
+	}
+	if err := restarted.ResetPasswordWithRecoveryKey(recovery, "wrong-aad", "new password"); err != ErrInvalidRecoveryKey {
+		t.Fatalf("wrong AAD error = %v, want ErrInvalidRecoveryKey", err)
+	}
+	if err := restarted.ResetPasswordWithRecoveryKey(recovery, "account-device", "new password"); err != nil {
+		t.Fatal(err)
+	}
+	if !restarted.Ready() {
+		t.Fatal("reset did not leave the vault unlocked")
+	}
+	plaintext, err := restarted.Open(sealed, "history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(plaintext) != "history" {
+		t.Fatalf("plaintext = %q", plaintext)
+	}
+
+	after, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := after.Unlock("old password"); err != ErrInvalidPassword {
+		t.Fatalf("old password error = %v, want ErrInvalidPassword", err)
+	}
+	if err := after.Unlock("new password"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := after.Open(sealed, "history"); err != nil {
+		t.Fatal(err)
+	}
+	if !after.RecoveryEnabled() {
+		t.Fatal("password reset removed the recovery wrap")
+	}
+	if err := after.ResetPasswordWithRecoveryKey(recovery, "account-device", "third password"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestChangePasswordPreservesRecoveryKey(t *testing.T) {
+	lowerArgonForTest(t)
+	path := filepath.Join(t.TempDir(), "vault.key")
+	v, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Initialize("old password"); err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := v.Seal([]byte("secret"), "aad")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovery := testRecoveryKey(t)
+	if _, err := v.SetRecoveryKey(recovery, "bound"); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.ChangePassword("wrong password", "new password"); err != ErrInvalidPassword {
+		t.Fatalf("wrong old password error = %v, want ErrInvalidPassword", err)
+	}
+	if err := v.ChangePassword("old password", "new password"); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Unlock("old password"); err != ErrInvalidPassword {
+		t.Fatalf("old password error = %v", err)
+	}
+	if err := restarted.Unlock("new password"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.Open(sealed, "aad"); err != nil {
+		t.Fatal(err)
+	}
+	if !restarted.RecoveryEnabled() {
+		t.Fatal("password change removed the recovery wrap")
+	}
+}
+
+func TestResetPasswordUnlockedPreservesDataAndRecovery(t *testing.T) {
+	lowerArgonForTest(t)
+	path := filepath.Join(t.TempDir(), "vault.key")
+	v, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Initialize("old password"); err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := v.Seal([]byte("secret"), "aad")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovery := testRecoveryKey(t)
+	if _, err := v.SetRecoveryKey(recovery, "bound"); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.ResetPasswordUnlocked("new password"); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Unlock("old password"); err != ErrInvalidPassword {
+		t.Fatalf("old password error = %v", err)
+	}
+	if err := restarted.Unlock("new password"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.Open(sealed, "aad"); err != nil {
+		t.Fatal(err)
+	}
+	if !restarted.RecoveryEnabled() {
+		t.Fatal("local reset removed the recovery wrap")
+	}
+}
+
+func TestResetPasswordUnlockedRequiresUnlockedVault(t *testing.T) {
+	lowerArgonForTest(t)
+	path := filepath.Join(t.TempDir(), "vault.key")
+	v, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Initialize("old password"); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.ResetPasswordUnlocked("new password"); err != ErrLocked {
+		t.Fatalf("locked reset error = %v, want ErrLocked", err)
+	}
+}
+
+func TestRemoveRecoveryKey(t *testing.T) {
+	lowerArgonForTest(t)
+	path := filepath.Join(t.TempDir(), "vault.key")
+	v, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Initialize("password"); err != nil {
+		t.Fatal(err)
+	}
+	recovery := testRecoveryKey(t)
+	if _, err := v.SetRecoveryKey(recovery, "aad"); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.RemoveRecoveryKey(); err != nil {
+		t.Fatal(err)
+	}
+	if v.RecoveryEnabled() {
+		t.Fatal("recovery is still enabled")
+	}
+	if err := v.RemoveRecoveryKey(); err != ErrRecoveryNotConfigured {
+		t.Fatalf("second remove error = %v", err)
+	}
+	restarted, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restarted.RecoveryEnabled() {
+		t.Fatal("removed recovery wrap persisted")
+	}
+	if err := restarted.ResetPasswordWithRecoveryKey(recovery, "aad", "new"); err != ErrRecoveryNotConfigured {
+		t.Fatalf("reset without recovery error = %v", err)
+	}
+}
+
+func TestRecoveryKeyRequiresUnlockedWrappedVault(t *testing.T) {
+	lowerArgonForTest(t)
+	path := filepath.Join(t.TempDir(), "vault.key")
+	v, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.SetRecoveryKey(testRecoveryKey(t), "aad"); err == nil {
+		t.Fatal("set recovery on a missing vault key")
+	}
+	if err := v.Initialize("password"); err != nil {
+		t.Fatal(err)
+	}
+	v.Lock()
+	if _, err := v.SetRecoveryKey(testRecoveryKey(t), "aad"); err != ErrLocked {
+		t.Fatalf("set recovery while locked error = %v, want ErrLocked", err)
+	}
 }
