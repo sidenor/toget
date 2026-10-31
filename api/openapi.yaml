@@ -1884,6 +1884,36 @@ paths:
         "502":
           $ref: "#/components/responses/BadGateway"
 
+  /api/v1/rooms/{id}/agent-streams:
+    get:
+      tags: [agents]
+      operationId: listRoomAgentStreams
+      summary: Read partial output from active Agent runs
+      description: |
+        Returns transient, in-memory partial output for Agents running on this
+        node. The text is capped at 64 KiB per run and is never written to the
+        room event log; the final reply is still a `message.posted` event.
+        Streams are visible only to members of the room and only on the Agent
+        owner's node. Poll this endpoint while a room is open; an empty array
+        means no local run is active.
+      parameters:
+        - $ref: "#/components/parameters/RoomID"
+      responses:
+        "200":
+          description: Active local Agent streams in the room.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentStreamList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/RoomNotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
   /api/v1/rooms/{id}/approvals:
     get:
       tags: [approvals]
@@ -3072,6 +3102,49 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Agent"
+
+    AgentStream:
+      type: object
+      additionalProperties: false
+      required:
+        [run_id, agent_id, agent_name, room_id, text, truncated, started_at, updated_at]
+      properties:
+        run_id:
+          type: string
+        agent_id:
+          type: string
+        agent_name:
+          type: string
+        room_id:
+          type: string
+        trigger_event_id:
+          type: string
+        trigger_seq:
+          type: integer
+          format: int64
+        text:
+          type: string
+          maxLength: 65536
+          description: Partial output accumulated so far, as plain text.
+        truncated:
+          type: boolean
+          description: True when further output was dropped at the 64 KiB cap.
+        started_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    AgentStreamList:
+      type: object
+      additionalProperties: false
+      required: [streams]
+      properties:
+        streams:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentStream"
 
     AgentSession:
       type: object

@@ -73,12 +73,16 @@ plaintext.
 - [x] Agent status cards: idle, running, waiting for approval
 - [x] Stop an active run from the CLI or web UI
 - [x] Shared Agent: owner visibility warning on join
+- [x] Streaming partial output in the local API and web UI
 
 **Status:** the runtime loop is implemented. The daemon wakes an Agent on a
 mention, serializes runs, catches up after the last completed run, resumes the
-Claude Code session, posts the reply to the thread, and shows idle, running,
-waiting, and offline status. A configurable command runtime is available for
-other tools. Remaining: streaming partial output and a stable connector SDK. See [agent-runtime.md](agent-runtime.md).
+Claude Code session, shows bounded partial output while it works, posts the
+reply to the thread, and shows idle, running, waiting, and offline status. A
+configurable command runtime is available for other tools. Partial output is
+transient and local to the Agent owner's node; it is not part of the event log
+or visible to remote room members. Remaining: a stable connector SDK. See
+[agent-runtime.md](agent-runtime.md).
 
 **Done when:** a user asks an Agent in a room to do a task, the Agent proposes a risky action, the user approves it in the conversation, and the result appears in the same thread with a complete audit trail.
 

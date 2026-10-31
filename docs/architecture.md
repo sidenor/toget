@@ -232,14 +232,15 @@ The daemon is the local runtime on a persistent device. It:
 
 - An Agent runs on an endpoint: the user's self-hosted server, or the user's device for an official-hosted account.
 - The local daemon owns a runtime loop. It scans local rooms for mentions, serializes runs per Agent, and posts the final answer back to the same thread.
-- The first runtime is Claude Code, driven by the `toget` CLI and a skill. The daemon launches `claude -p`, keeps the Claude session ID per (Agent, Room), and resumes it on the next mention. A command runtime receives a JSON `RunRequest` on stdin for other tools.
+- While a run is active, the daemon exposes bounded, in-memory partial text through the local API so the owner's web UI can show the Agent working. Partial text is display-only: it is never appended to the event log, is not replicated, and vanishes when the run ends or the daemon restarts. The final `message.posted` reply is the durable record.
+- The first runtime is Claude Code, driven by the `toget` CLI and a skill. The daemon launches `claude -p` with stream-json partial events when available and falls back to JSON output, keeps the Claude session ID per (Agent, Room), and resumes it on the next mention. A command runtime receives a JSON `RunRequest` on stdin for other tools and may emit NDJSON deltas when given `TOGET_STREAM=ndjson`.
 - Sessions are local, not room events. Each one stores the scan cursor, the last completed run cursor, the runtime conversation ID, the run count, and the last error. The next mention catches up on every room event after the last completed run, including messages that arrived while the Agent was busy or offline.
 - The CLI talks to the local daemon over the local API, using the Agent's own identity. Agent replies carry an `agent_id` display attribute in the signed message payload; the cryptographic author remains the owning account's device.
 - Each Agent runs in its own workspace directory under the data home, with mode `0700`. A run can be stopped from the local UI or CLI; resetting a session stops an active run first and then starts fresh on the next mention.
 - Agents have scoped permissions: file access, command execution, network access, and tool use.
 - Risky actions become approval cards in the room; the Agent waits for a human decision. The runtime loop sees a pending approval and shows `waiting_approval` while it is blocked.
 - Shared Agents remain on their owner's endpoint; other members call them through the room. The owner can see the room content the Agent can see, and the room shows a warning when a shared Agent is present.
-- Agents can run in rooms hosted by another node. The owner's daemon posts `agent.joined`, status, tool, and approval events to the home node, which accepts them only after checking that the author account owns the Agent and that the Agent has not left. Approval decisions remain on the owner's node for now; other members see the audit trail in the timeline.
+- Agents can run in rooms hosted by another node. The owner's daemon posts `agent.joined`, status, tool, and approval events to the home node, which accepts them only after checking that the author account owns the Agent and that the Agent has not left. Approval decisions remain on the owner's node for now; other members see the audit trail in the timeline. Live partial output stays on the owner's node; remote members see the final reply, not the Agent typing.
 
 ## Room model
 

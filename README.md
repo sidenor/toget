@@ -93,8 +93,9 @@ go run ./cmd/toget send "@Claude summarize what we talked about"
 ```
 
 The daemon wakes the Agent on the mention, catches it up after its last run,
-resumes its Claude Code session, posts the reply, and shows status cards in the
-timeline. See [Agent runtime](docs/agent-runtime.md) for command runtimes,
+resumes its Claude Code session, shows live partial output while it works,
+posts the reply, and shows status cards in the timeline. See
+[Agent runtime](docs/agent-runtime.md) for command runtimes, streaming,
 timeouts, sessions, and approvals.
 
 To invite a second machine on the same LAN, keep `toget serve` running on both.
@@ -213,7 +214,9 @@ the home verifies that the event author owns the Agent. Shared Agent names and
 status are projected from the room log, so every member with that history sees
 them by name. Agents can be registered, joined to rooms, run locally when
 mentioned, and gated through
-local approval and tool-receipt cards. An optional relay and signed-manifest
+local approval and tool-receipt cards. While a local Agent runs, the owner's
+web UI can show bounded, ephemeral partial output; the final reply remains the
+durable timeline event. An optional relay and signed-manifest
 directory work across networks, with direct-first fallback, automatic relay
 discovery, multi-hop routes, loop detection, quotas, and a bounded offline
 queue. Same-LAN nodes also discover each other over multicast DNS and can
@@ -376,6 +379,6 @@ toget node lookup 12345678           # 先用已存名片，再走 mDNS，最后
 - [代码结构](docs/repo-layout.md)
 - [路线图](docs/roadmap.md)
 
-**早期实现：本地、局域网和跨网络中继房间已经可用。** 当前版本有账号与设备身份、端到端加密的房间密钥代次、加密的哈希链事件日志、附件、备份恢复、本地 API、CLI 和双语 React 网页。同一局域网内的两个节点可以用邀请码加入房间、互发消息并同步历史；第二台设备可以通过配对恢复同一账号并同步房间，无需拷贝私钥。远程房间支持附件、自主退出和本地归档。Agent 可以注册、加入房间，并通过本地审批和工具回执卡片受控。可选的中继和签名目录已经能跨网络工作，支持直连优先、自动发现中继、多跳路由、环路检测、配额和有限的离线队列。同一局域网里的节点还能通过 mDNS 相互发现，不依赖目录也能用服务器代码找到对方；发现的地址仍会通过固定 TLS 证书和签名清单验证。名片可以复制成文本或显示为二维码，保存后会把完整服务器 ID 固定到对应的八位代码上。房间邀请码和设备配对码也可以显示成二维码，并从图片中识别。
+**早期实现：本地、局域网和跨网络中继房间已经可用。** 当前版本有账号与设备身份、端到端加密的房间密钥代次、加密的哈希链事件日志、附件、备份恢复、本地 API、CLI 和双语 React 网页。同一局域网内的两个节点可以用邀请码加入房间、互发消息并同步历史；第二台设备可以通过配对恢复同一账号并同步房间，无需拷贝私钥。远程房间支持附件、自主退出和本地归档。Agent 可以注册、加入房间，并通过本地审批和工具回执卡片受控；本机 Agent 运行时，网页会显示有大小上限的临时过程输出，最终回答才是写入时间线的持久记录。可选的中继和签名目录已经能跨网络工作，支持直连优先、自动发现中继、多跳路由、环路检测、配额和有限的离线队列。同一局域网里的节点还能通过 mDNS 相互发现，不依赖目录也能用服务器代码找到对方；发现的地址仍会通过固定 TLS 证书和签名清单验证。名片可以复制成文本或显示为二维码，保存后会把完整服务器 ID 固定到对应的八位代码上。房间邀请码和设备配对码也可以显示成二维码，并从图片中识别。
 
 还没有实现：NAT 穿透与打洞、账号密钥轮换、同一节点登录多个账号，以及自带模型。守护进程会在被 @ 时在本地运行 Agent，可以用 Claude Code，也可以用任何实现了运行时协议的命令。很多地方仍会调整。欢迎开 issue 关注、分享场景，或直接参与建设。项目理念见 [docs/philosophy.md](docs/philosophy.md)，参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。

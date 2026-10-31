@@ -3,6 +3,7 @@ import type {
   AccountSyncResult,
   Agent,
   AgentSession,
+  AgentStream,
   Approval,
   ApprovalAction,
   Attachment,
@@ -154,6 +155,8 @@ export const api = {
     ),
   roomAgents: (roomID: string) =>
     request<{ agents: Agent[] }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/agents`),
+  agentStreams: (roomID: string) =>
+    request<{ streams: AgentStream[] }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/agent-streams`),
   joinAgent: (roomID: string, agentID: string) =>
     request<{ agent: Agent; event: RoomEvent }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/agents`, json({ agent_id: agentID })),
   leaveAgent: (roomID: string, agentID: string) =>

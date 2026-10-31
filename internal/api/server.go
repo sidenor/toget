@@ -39,39 +39,47 @@ type AgentRunController interface {
 	Stop(agentID string) bool
 }
 
+// AgentStreamProvider exposes transient partial output for active runs. The
+// runner implements it; streams live only on the Agent owner's node.
+type AgentStreamProvider interface {
+	Streams(roomID string) []agent.RunStream
+}
+
 // Options configures the local API.
 type Options struct {
-	Accounts  *account.Service
-	Rooms     *room.Service
-	Agents    *agent.Service
-	Approvals *approval.Service
-	Tools     *tool.Service
-	Node      *node.Service
-	Session   *session.Manager
-	AgentRuns AgentRunController
-	Version   version.Info
-	Token     string
-	Listen    string
-	UI        fs.FS
-	Logger    *slog.Logger
+	Accounts     *account.Service
+	Rooms        *room.Service
+	Agents       *agent.Service
+	Approvals    *approval.Service
+	Tools        *tool.Service
+	Node         *node.Service
+	Session      *session.Manager
+	AgentRuns    AgentRunController
+	AgentStreams AgentStreamProvider
+	Version      version.Info
+	Token        string
+	Listen       string
+	UI           fs.FS
+	Logger       *slog.Logger
 }
 
 // Server is the loopback HTTP server.
 type Server struct {
-	accounts  *account.Service
-	rooms     *room.Service
-	agents    *agent.Service
-	approvals *approval.Service
-	tools     *tool.Service
-	node      *node.Service
-	session   *session.Manager
-	agentRuns AgentRunController
-	version   version.Info
-	token     string
-	listen    string
-	ui        fs.FS
-	logger    *slog.Logger
-	origins   map[string]bool
+	accounts     *account.Service
+	rooms        *room.Service
+	agents       *agent.Service
+	approvals    *approval.Service
+	tools        *tool.Service
+	node         *node.Service
+	session      *session.Manager
+	agentRuns    AgentRunController
+	agentStreams AgentStreamProvider
+	version      version.Info
+	token        string
+	listen       string
+	ui           fs.FS
+	logger       *slog.Logger
+	origins      map[string]bool
 }
 
 // New creates a local API server.
@@ -85,20 +93,21 @@ func New(opts Options) *Server {
 		sessions = session.New(session.DefaultTTL)
 	}
 	return &Server{
-		accounts:  opts.Accounts,
-		rooms:     opts.Rooms,
-		agents:    opts.Agents,
-		approvals: opts.Approvals,
-		tools:     opts.Tools,
-		node:      opts.Node,
-		session:   sessions,
-		agentRuns: opts.AgentRuns,
-		version:   opts.Version,
-		token:     opts.Token,
-		listen:    opts.Listen,
-		ui:        opts.UI,
-		logger:    logger,
-		origins:   allowedOrigins(opts.Listen),
+		accounts:     opts.Accounts,
+		rooms:        opts.Rooms,
+		agents:       opts.Agents,
+		approvals:    opts.Approvals,
+		tools:        opts.Tools,
+		node:         opts.Node,
+		session:      sessions,
+		agentRuns:    opts.AgentRuns,
+		agentStreams: opts.AgentStreams,
+		version:      opts.Version,
+		token:        opts.Token,
+		listen:       opts.Listen,
+		ui:           opts.UI,
+		logger:       logger,
+		origins:      allowedOrigins(opts.Listen),
 	}
 }
 
@@ -179,6 +188,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/agents/{id}/sessions/{roomID}", s.data(s.handleResetAgentSession))
 	mux.HandleFunc("POST /api/v1/agents/{id}/stop", s.data(s.handleStopAgent))
 	mux.HandleFunc("GET /api/v1/rooms/{id}/agents", s.data(s.handleListRoomAgents))
+	mux.HandleFunc("GET /api/v1/rooms/{id}/agent-streams", s.data(s.handleListAgentStreams))
 	mux.HandleFunc("POST /api/v1/rooms/{id}/agents", s.data(s.handleJoinAgent))
 	mux.HandleFunc("DELETE /api/v1/rooms/{id}/agents/{agentID}", s.data(s.handleLeaveAgent))
 

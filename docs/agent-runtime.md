@@ -49,10 +49,13 @@ status cards in the timeline. Agent replies appear with an **Agent** badge and
 the Agent's name.
 
 `claude` must be installed and authenticated for the account running
-`toget serve`. The daemon launches it with `-p --output-format json` and keeps
-the returned session ID, so the next mention resumes the same conversation.
-If the saved Claude session no longer exists, the adapter starts a fresh one
-instead of failing every later mention.
+`toget serve`. The daemon launches it with `-p --output-format stream-json
+--verbose --include-partial-messages` when the installed CLI supports those
+flags, and keeps the returned session ID so the next mention resumes the same
+conversation. Text deltas are shown live; the final result is what gets posted.
+If the CLI does not support streaming flags, the adapter falls back to a normal
+`--output-format json` run. If the saved Claude session no longer exists, the
+adapter starts a fresh one instead of failing every later mention.
 
 To install the optional Claude Code skill that documents the CLI for
 interactive use:
@@ -111,6 +114,7 @@ The daemon also gives the runtime:
 | `TOGET_ROOM_ID` | Current room |
 | `TOGET_ROOM_NAME` | Room name |
 | `TOGET_RUNTIME_SESSION` | Previous runtime session ID, if any |
+| `TOGET_STREAM` | Set to `ndjson` when the daemon wants live output from a command runtime |
 | `TOGET_HOME` | Data directory for the `toget` CLI |
 | `TOGET_BIN` | Absolute path to the running `toget` binary |
 
@@ -177,6 +181,72 @@ Response:
 
 The command is started directly, without a shell. It runs with a timeout,
 bounded stdout/stderr, and its process group is killed on timeout.
+
+### Streaming output
+
+The daemon sets `TOGET_STREAM=ndjson` when it wants live output. A command can
+then write newline-delimited JSON events on stdout:
+
+```json
+{"type":"delta","text":"Reading the repo…\n"}
+{"type":"delta","text":"The answer is "}
+{"type":"delta","text":"42.","reset":false}
+{"type":"result","text":"The answer is 42.","format":"markdown","session_id":"opaque-id"}
+```
+
+- `delta` events append `text` to the live display. `reset: true` clears the
+  text collected so far, which lets an adapter discard a stale attempt before
+  retrying with a fresh session.
+- The optional `result` event is the final answer, using the same fields as the
+  non-streaming response. If it is present, it is authoritative even when it
+  differs from the collected deltas. If it is absent, the daemon uses the
+  collected delta text.
+- Lines that are not recognized protocol events are ignored for streaming. If
+  no protocol event appears at all, the whole stdout is parsed as a normal
+  JSON or plain-text response, so existing runtimes keep working.
+- If the process fails after emitting deltas, the run still fails; the partial
+  text disappears with the run and no reply is posted.
+- An adapter that does not understand `TOGET_STREAM` can ignore it and write
+  the old single JSON object or plain text.
+
+## Live output
+
+While a run is active, the daemon keeps transient display state in memory on
+the Agent owner's node: the run and trigger IDs, the Agent and room, the text
+collected so far (bounded to 64 KiB), a truncation flag, and timestamps. This
+state is not an event and is never written to the room log.
+
+`GET /api/v1/rooms/{id}/agent-streams` returns the active streams in a room to
+a caller who is a member of that room:
+
+```json
+{
+  "streams": [
+    {
+      "run_id": "01...",
+      "agent_id": "01...",
+      "agent_name": "Claude",
+      "room_id": "01...",
+      "trigger_event_id": "01...",
+      "trigger_seq": 42,
+      "text": "Reading the repo…\nThe answer is ",
+      "truncated": false,
+      "started_at": "2026-10-31T00:00:00Z",
+      "updated_at": "2026-10-31T00:00:02Z"
+    }
+  ]
+}
+```
+
+The web UI polls this endpoint about once per second, renders a dashed live
+card for each running Agent, and reloads the event timeline when a stream
+disappears; the durable outcome is still the final `message.posted` reply.
+
+Live output is local to the Agent owner's node. It is not replicated to a home
+node or to other members, it disappears if the daemon restarts, and a member
+of a remote room who does not own the Agent sees only the final reply. Clearing
+a session while a run is active stops the run; revoking an Agent also stops its
+active run.
 
 ## Approvals and tool receipts
 
@@ -247,7 +317,12 @@ run.
   owner's node. Revoking an Agent removes it from every room with an
   `agent.left` event whose reason is `revoked`, so other members and the home
   node's ownership projection stop admitting it.
-- Replies are posted when the run finishes; partial streaming is not
-  implemented.
+- Live partial output is visible only on the Agent owner's node and only while
+  the run is active. It is not written to the event log, is not replicated to
+  the room home or other members, and is lost on daemon restart. The final
+  reply remains the only durable record of what the Agent said.
+- The streaming protocol between the daemon and a command runtime is a local
+  convention, not a stable cross-node wire format. A remote member cannot watch
+  another node's Agent type.
 - A shared Agent's owner can see what the Agent can see. Joining a shared Agent
   shows a warning in the room.

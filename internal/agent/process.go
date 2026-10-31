@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -35,15 +36,11 @@ func runProcess(ctx context.Context, command string, args []string, stdin []byte
 	if maxStderr <= 0 {
 		maxStderr = defaultRuntimeStderr
 	}
-	cmd := exec.CommandContext(ctx, command, args...)
-	cmd.Dir = dir
-	cmd.Env = mergeEnv(os.Environ(), env)
-	cmd.Stdin = bytes.NewReader(stdin)
+	cmd := newRuntimeCommand(ctx, command, args, stdin, dir, env)
 	stdout := newLimitedBuffer(maxStdout)
 	stderr := newLimitedBuffer(maxStderr)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	configureProcess(cmd)
 
 	if err := cmd.Start(); err != nil {
 		return processResult{err: runtimeStartError(err)}
@@ -59,7 +56,83 @@ func runProcess(ctx context.Context, command string, args []string, stdin []byte
 	}()
 	err := cmd.Wait()
 	once.Do(func() { close(done) })
+	result := finishProcess(ctx, cmd, stdout, stderr, err)
+	if result.err == nil && stdout.Truncated() {
+		result.err = fmt.Errorf("runtime output exceeded %d bytes", maxStdout)
+	}
+	return result
+}
 
+// runProcessStreaming is runProcess with a line callback. Stdout is still
+// bounded and retained so a runtime that ignores the streaming protocol can
+// fall back to its complete response. onLine is called synchronously for each
+// line before the process is reaped; the slice is only valid during the call.
+func runProcessStreaming(ctx context.Context, command string, args []string, stdin []byte, dir string, env []string, maxStdout, maxStderr int, onLine func([]byte)) processResult {
+	if maxStdout <= 0 {
+		maxStdout = defaultRuntimeStdout
+	}
+	if maxStderr <= 0 {
+		maxStderr = defaultRuntimeStderr
+	}
+	cmd := newRuntimeCommand(ctx, command, args, stdin, dir, env)
+	stdout := newLimitedBuffer(maxStdout)
+	stderr := newLimitedBuffer(maxStderr)
+	cmd.Stderr = stderr
+	pipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return processResult{err: fmt.Errorf("open runtime stdout: %w", err)}
+	}
+
+	if err := cmd.Start(); err != nil {
+		_ = pipe.Close()
+		return processResult{err: runtimeStartError(err)}
+	}
+	done := make(chan struct{})
+	var once sync.Once
+	go func() {
+		select {
+		case <-ctx.Done():
+			killProcessGroup(cmd)
+		case <-done:
+		}
+	}()
+
+	scanner := bufio.NewScanner(pipe)
+	scanner.Buffer(make([]byte, 64*1024), defaultRuntimeStdout)
+	for scanner.Scan() {
+		line := append([]byte(nil), scanner.Bytes()...)
+		_, _ = stdout.Write(line)
+		_, _ = stdout.Write([]byte("\n"))
+		if onLine != nil {
+			onLine(line)
+		}
+	}
+	readErr := scanner.Err()
+	if readErr != nil {
+		// A scanner failure means nobody will drain stdout. Stop the runtime
+		// before waiting so it cannot block forever on a full pipe.
+		killProcessGroup(cmd)
+	}
+	waitErr := cmd.Wait()
+	once.Do(func() { close(done) })
+
+	result := finishProcess(ctx, cmd, stdout, stderr, waitErr)
+	if readErr != nil && ctx.Err() == nil && result.err == nil {
+		result.err = fmt.Errorf("read runtime output: %w", readErr)
+	}
+	return result
+}
+
+func newRuntimeCommand(ctx context.Context, command string, args []string, stdin []byte, dir string, env []string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, command, args...)
+	cmd.Dir = dir
+	cmd.Env = mergeEnv(os.Environ(), env)
+	cmd.Stdin = bytes.NewReader(stdin)
+	configureProcess(cmd)
+	return cmd
+}
+
+func finishProcess(ctx context.Context, cmd *exec.Cmd, stdout, stderr *limitedBuffer, waitErr error) processResult {
 	result := processResult{
 		stdout:    stdout.Bytes(),
 		stderr:    stderr.Bytes(),
@@ -76,9 +149,9 @@ func runProcess(ctx context.Context, command string, args []string, stdin []byte
 		result.err = context.Canceled
 		return result
 	}
-	if err != nil {
+	if waitErr != nil {
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if errors.As(waitErr, &exitErr) {
 			message := strings.TrimSpace(string(result.stderr))
 			if message == "" {
 				message = strings.TrimSpace(string(result.stdout))
@@ -91,13 +164,12 @@ func runProcess(ctx context.Context, command string, args []string, stdin []byte
 			}
 			return result
 		}
-		result.err = runtimeStartError(err)
+		result.err = runtimeStartError(waitErr)
 		return result
 	}
-	if stdout.Truncated() {
-		result.err = fmt.Errorf("runtime output exceeded %d bytes", maxStdout)
-		return result
-	}
+	// Truncation is not always fatal: a streaming caller may have already
+	// received the final result. The caller decides whether the retained raw
+	// output is still needed.
 	return result
 }
 

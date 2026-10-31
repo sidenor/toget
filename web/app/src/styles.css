@@ -714,6 +714,62 @@ p {
   vertical-align: 1px;
 }
 
+.message.streaming .bubble {
+  border-style: dashed;
+}
+
+.message-meta .stream-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.message-meta .stream-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: stream-pulse 1.4s ease-in-out infinite;
+}
+
+.stream-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -2px;
+  background: var(--accent);
+  animation: stream-blink 1s step-end infinite;
+}
+
+.stream-waiting {
+  color: var(--muted);
+  font-style: italic;
+}
+
+@keyframes stream-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes stream-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
 .bubble {
   max-width: min(680px, 76%);
   padding: 11px 15px;

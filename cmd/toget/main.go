@@ -398,19 +398,20 @@ func runServe(ctx context.Context) error {
 	}
 
 	handler := api.New(api.Options{
-		Accounts:  accounts,
-		Rooms:     rooms,
-		Agents:    agents,
-		Approvals: approvals,
-		Tools:     tools,
-		Node:      apiNode,
-		Session:   sessions,
-		AgentRuns: agentRunner,
-		Version:   version.Current(),
-		Token:     token,
-		Listen:    cfg.Listen,
-		UI:        ui.FS(),
-		Logger:    logger,
+		Accounts:     accounts,
+		Rooms:        rooms,
+		Agents:       agents,
+		Approvals:    approvals,
+		Tools:        tools,
+		Node:         apiNode,
+		Session:      sessions,
+		AgentRuns:    agentRunner,
+		AgentStreams: agentRunner,
+		Version:      version.Current(),
+		Token:        token,
+		Listen:       cfg.Listen,
+		UI:           ui.FS(),
+		Logger:       logger,
 	}).Handler()
 
 	server := &http.Server{

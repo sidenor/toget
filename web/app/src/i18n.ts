@@ -91,6 +91,12 @@ const strings: Record<string, [string, string]> = {
   "conversation.mentionsHint": ["Type @name to mention an Agent", "输入 @名字 可以召唤 Agent"],
   "conversation.edited": ["edited", "已编辑"],
   "conversation.agentBadge": ["Agent", "Agent"],
+  "conversation.streaming": ["live", "实时"],
+  "conversation.streamWaiting": ["Thinking…", "思考中…"],
+  "conversation.streamTruncated": [
+    "Live output was truncated; the final reply will be complete.",
+    "实时输出已截断，最终回复会完整发送。",
+  ],
   "conversation.download": ["Download", "下载"],
   "conversation.showMore": ["Show earlier", "显示更早"],
 

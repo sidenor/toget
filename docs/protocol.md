@@ -248,7 +248,10 @@ The `.proto` files live in `proto/` and are the source of truth for the node pro
 - `agent.status` — idle, running, waiting for approval, offline.
 - `agent.invoke` — ask an Agent to act on a room event.
 - `agent.permission.request` — ask for a scoped permission.
-- `agent.result` — stream output or a final result back into the room.
+- `agent.result` — the final result back into the room. Live partial output is
+  currently local to the Agent owner's node (an in-memory stream exposed over
+  the loopback API and NDJSON from command runtimes); it is not a replicated
+  protocol message.
 
 ### Approvals
 
@@ -637,4 +640,5 @@ Errors are structured (`code`, `message`, `details`) and stable across minor ver
 - Home-node failover behavior.
 - Whether new-member history uses re-encryption, old-epoch grants, or both.
 - Push notification delivery for offline mobile clients.
-- The first stable wire format for Agent streaming output.
+- A stable, versioned streaming protocol for non-local connectors and for
+  showing an Agent's partial output to members on other nodes.

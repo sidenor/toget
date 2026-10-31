@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/sidenor/toget/internal/identity"
 	"github.com/sidenor/toget/internal/room"
 )
 
@@ -22,7 +24,24 @@ const (
 	maxHistoryScan      = 5000
 	scanPageSize        = 500
 	maxSessionError     = 2000
+	maxStreamText       = 64 << 10
 )
+
+// RunStream is a transient, read-only view of an active Agent run. It exists
+// only in the daemon's memory on the Agent owner's node; partial text is never
+// appended to the room event log. The final reply is still a message event.
+type RunStream struct {
+	RunID          string    `json:"run_id"`
+	AgentID        string    `json:"agent_id"`
+	AgentName      string    `json:"agent_name"`
+	RoomID         string    `json:"room_id"`
+	TriggerEventID string    `json:"trigger_event_id,omitempty"`
+	TriggerSeq     int64     `json:"trigger_seq,omitempty"`
+	Text           string    `json:"text"`
+	Truncated      bool      `json:"truncated"`
+	StartedAt      time.Time `json:"started_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
 
 // RunnerOptions wires the Agent runtime loop to local services. Post and
 // SetStatus are callbacks so the runner can also be used without the LAN node.
@@ -64,6 +83,7 @@ type Runner struct {
 	running map[string]bool
 	cancels map[string]context.CancelFunc
 	stopped map[string]bool
+	streams map[string]*RunStream
 	started bool
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -96,6 +116,7 @@ func NewRunner(opts RunnerOptions) *Runner {
 		running: map[string]bool{},
 		cancels: map[string]context.CancelFunc{},
 		stopped: map[string]bool{},
+		streams: map[string]*RunStream{},
 	}
 }
 
@@ -354,6 +375,9 @@ func (r *Runner) runOne(parent context.Context, actor room.Actor, agent Agent, r
 	}
 	r.setStatus(ctx, agent.ID, StatusRunning, "working", record.ID)
 
+	streamID := r.beginStream(agent, record, trigger)
+	defer r.endStream(agent.ID, streamID)
+
 	stopMonitor := make(chan struct{})
 	monitorDone := make(chan struct{})
 	go func() {
@@ -361,7 +385,12 @@ func (r *Runner) runOne(parent context.Context, actor room.Actor, agent Agent, r
 		r.monitorApprovals(ctx, agent.ID, record.ID, stopMonitor)
 	}()
 
-	result, runErr := runRuntime(ctx, runtime, req)
+	result, runErr := runRuntime(ctx, runtime, req, func(delta StreamDelta) {
+		r.emitStream(agent.ID, streamID, delta)
+	})
+	// The live card is only for the runtime turn; stop advertising it before
+	// posting the durable reply so the two never appear as separate answers.
+	r.endStream(agent.ID, streamID)
 
 	close(stopMonitor)
 	<-monitorDone
@@ -445,13 +474,17 @@ func (r *Runner) runOne(parent context.Context, actor room.Actor, agent Agent, r
 	}
 }
 
-func runRuntime(ctx context.Context, runtime Runtime, req RunRequest) (result RunResult, err error) {
+func runRuntime(ctx context.Context, runtime Runtime, req RunRequest, emit func(StreamDelta)) (result RunResult, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = fmt.Errorf("runtime panic: %v", recovered)
 		}
 	}()
-	result, err = runtime.Run(ctx, req)
+	if streaming, ok := runtime.(StreamingRuntime); ok {
+		result, err = streaming.RunStream(ctx, req, emit)
+	} else {
+		result, err = runtime.Run(ctx, req)
+	}
 	if err != nil && errors.Is(err, context.DeadlineExceeded) {
 		return result, fmt.Errorf("%w: %v", ErrRuntimeTimeout, err)
 	}
@@ -615,6 +648,77 @@ func (r *Runner) isRunning(agentID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.running[agentID]
+}
+
+// Streams returns snapshots of active runs in a room. Streams older than the
+// caller's patience are not stored anywhere else; a restart clears them.
+func (r *Runner) Streams(roomID string) []RunStream {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]RunStream, 0, len(r.streams))
+	for _, stream := range r.streams {
+		if stream.RoomID == roomID {
+			out = append(out, *stream)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].StartedAt.Equal(out[j].StartedAt) {
+			return out[i].AgentID < out[j].AgentID
+		}
+		return out[i].StartedAt.Before(out[j].StartedAt)
+	})
+	return out
+}
+
+func (r *Runner) beginStream(agent Agent, record room.Room, trigger room.Event) string {
+	runID := identity.NewID()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	stream := &RunStream{
+		RunID: runID, AgentID: agent.ID, AgentName: agent.Name, RoomID: record.ID,
+		TriggerEventID: trigger.ID, TriggerSeq: trigger.Seq, StartedAt: now, UpdatedAt: now,
+	}
+	r.mu.Lock()
+	r.streams[agent.ID] = stream
+	r.mu.Unlock()
+	return runID
+}
+
+func (r *Runner) emitStream(agentID, runID string, delta StreamDelta) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	stream := r.streams[agentID]
+	if stream == nil || stream.RunID != runID {
+		return
+	}
+	if delta.Reset {
+		stream.Text = ""
+		stream.Truncated = false
+	}
+	if delta.Text == "" || stream.Truncated {
+		stream.UpdatedAt = now
+		return
+	}
+	remaining := maxStreamText - len(stream.Text)
+	if remaining <= 0 {
+		stream.Truncated = true
+		stream.UpdatedAt = now
+		return
+	}
+	if len(delta.Text) > remaining {
+		delta.Text = truncate(delta.Text, remaining)
+		stream.Truncated = true
+	}
+	stream.Text += delta.Text
+	stream.UpdatedAt = now
+}
+
+func (r *Runner) endStream(agentID, runID string) {
+	r.mu.Lock()
+	if stream := r.streams[agentID]; stream != nil && stream.RunID == runID {
+		delete(r.streams, agentID)
+	}
+	r.mu.Unlock()
 }
 
 func (r *Runner) ensureSession(ctx context.Context, agent Agent, record *room.Room) (*Session, error) {

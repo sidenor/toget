@@ -8,6 +8,7 @@ import { decodeQRImage, qrScanErrorMessage } from "./qr";
 import type {
   Account,
   Agent,
+  AgentStream,
   Approval,
   Attachment,
   Member,
@@ -855,6 +856,40 @@ function RoomList({
   );
 }
 
+function AgentStreamCard({
+  stream,
+  t,
+}: {
+  stream: AgentStream;
+  t: (key: string, vars?: Record<string, string | number>) => string;
+}) {
+  return (
+    <article className="message agent streaming">
+      <div className="message-meta">
+        <span>
+          {stream.agent_name}
+          <span className="agent-badge">{t("conversation.agentBadge")}</span>
+        </span>
+        <span className="stream-indicator">
+          <span className="stream-dot" aria-hidden="true" />
+          {t("conversation.streaming")}
+        </span>
+      </div>
+      <div className="bubble">
+        {stream.text ? (
+          <p className="plain-text">
+            {stream.text}
+            <span className="stream-caret" aria-hidden="true" />
+          </p>
+        ) : (
+          <p className="stream-waiting">{t("conversation.streamWaiting")}</p>
+        )}
+        {stream.truncated && <p className="fine-print">{t("conversation.streamTruncated")}</p>}
+      </div>
+    </article>
+  );
+}
+
 function Conversation({
   room,
   account,
@@ -873,6 +908,7 @@ function Conversation({
   onRoomGone: () => Promise<void>;
 }) {
   const [events, setEvents] = useState<RoomEvent[]>([]);
+  const [streams, setStreams] = useState<AgentStream[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [approvals, setApprovals] = useState<Record<string, Approval>>({});
@@ -884,6 +920,7 @@ function Conversation({
   const [loading, setLoading] = useState(true);
   const [showInfo, setShowInfo] = useState(false);
   const lastSeq = useRef(0);
+  const hadStreams = useRef(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -896,6 +933,17 @@ function Conversation({
       void api.markRead(room.id, lastSeq.current).catch(() => undefined);
     }
   }, [room]);
+
+  const loadStreams = useCallback(async () => {
+    if (!room) return;
+    const result = await api.agentStreams(room.id);
+    const had = hadStreams.current;
+    hadStreams.current = result.streams.length > 0;
+    setStreams(result.streams);
+    // The live card disappears just after the final message is posted. Pull
+    // the log once more so the finished reply replaces it immediately.
+    if (had && result.streams.length === 0) void loadEvents();
+  }, [room, loadEvents]);
 
   const loadContext = useCallback(async () => {
     if (!room) return;
@@ -914,12 +962,15 @@ function Conversation({
   useEffect(() => {
     if (!room) return;
     lastSeq.current = 0;
+    hadStreams.current = false;
     setEvents([]);
+    setStreams([]);
     setLoading(true);
     let cancelled = false;
     (async () => {
       try {
         await loadEvents();
+        await loadStreams();
         await loadContext();
       } catch (err) {
         if (!cancelled) onError(err);
@@ -930,20 +981,26 @@ function Conversation({
     const eventTimer = window.setInterval(() => {
       void loadEvents().catch(() => undefined);
     }, 2000);
+    const streamTimer = window.setInterval(() => {
+      void loadStreams().catch(() => undefined);
+    }, 1000);
     const contextTimer = window.setInterval(() => {
       void loadContext().catch(() => undefined);
     }, 8000);
     return () => {
       cancelled = true;
       window.clearInterval(eventTimer);
+      window.clearInterval(streamTimer);
       window.clearInterval(contextTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room?.id]);
 
+  const streamCursor = streams.map((stream) => `${stream.run_id}:${stream.text.length}`).join("|");
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [events.length, room?.id]);
+  }, [events.length, streamCursor, room?.id]);
 
   if (!room) return null;
 
@@ -1037,6 +1094,9 @@ function Conversation({
             </div>
           );
         })}
+        {streams.map((stream) => (
+          <AgentStreamCard key={stream.run_id} stream={stream} t={t} />
+        ))}
         <div ref={bottomRef} />
       </div>
 

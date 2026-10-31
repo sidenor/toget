@@ -54,6 +54,14 @@ type runtimeHarness struct {
 
 func newRuntimeHarness(t *testing.T) *runtimeHarness {
 	t.Helper()
+	runtime := &recordingRuntime{}
+	h := newRuntimeHarnessWithRuntime(t, runtime)
+	h.runtime = runtime
+	return h
+}
+
+func newRuntimeHarnessWithRuntime(t *testing.T, runtime agent.Runtime) *runtimeHarness {
+	t.Helper()
 	agents, rooms, _ := setup(t)
 	actor := actor(t)
 	record, _, err := rooms.CreateRoom(context.Background(), "Runtime room", "", actor)
@@ -67,7 +75,6 @@ func newRuntimeHarness(t *testing.T) *runtimeHarness {
 	if _, _, err := agents.JoinRoom(context.Background(), created.ID, record.ID, actor); err != nil {
 		t.Fatal(err)
 	}
-	runtime := &recordingRuntime{}
 	runner := agent.NewRunner(agent.RunnerOptions{
 		Agents: agents,
 		Rooms:  rooms,
@@ -78,7 +85,7 @@ func newRuntimeHarness(t *testing.T) *runtimeHarness {
 		PollInterval: 10 * time.Millisecond,
 		RunTimeout:   2 * time.Second,
 	})
-	return &runtimeHarness{agents: agents, rooms: rooms, actor: actor, room: record, agent: created, runtime: runtime, runner: runner}
+	return &runtimeHarness{agents: agents, rooms: rooms, actor: actor, room: record, agent: created, runner: runner}
 }
 
 func (h *runtimeHarness) start(t *testing.T) {

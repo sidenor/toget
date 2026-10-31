@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,23 @@ var (
 // host process.
 type Runtime interface {
 	Run(ctx context.Context, req RunRequest) (RunResult, error)
+}
+
+// StreamDelta is one incremental piece of visible Agent output. Reset asks the
+// owner to discard the text accumulated so far; adapters use it when a stale
+// session is retried and the stream starts over. Deltas are display-only and
+// are never written to the room event log; the final RunResult remains the
+// authoritative reply.
+type StreamDelta struct {
+	Text  string `json:"text"`
+	Reset bool   `json:"reset,omitempty"`
+}
+
+// StreamingRuntime is implemented by runtimes that can expose partial output
+// while a run is active. The runner falls back to Runtime.Run when it is not
+// implemented. emit is safe to call from the runtime's goroutine.
+type StreamingRuntime interface {
+	RunStream(ctx context.Context, req RunRequest, emit func(StreamDelta)) (RunResult, error)
 }
 
 // RunRoom is the room context handed to a runtime.
@@ -143,7 +161,98 @@ func (r *CommandRuntime) Run(ctx context.Context, req RunRequest) (RunResult, er
 	if proc.err != nil {
 		return RunResult{}, proc.err
 	}
-	out := strings.TrimSpace(string(proc.stdout))
+	return parseCommandOutput(proc.stdout)
+}
+
+// commandStreamEvent is one line of the optional NDJSON streaming protocol:
+//
+//	{"type":"delta","text":"partial"}
+//	{"type":"result","text":"final","format":"markdown","session_id":"..."}
+//
+// A runtime that ignores TOGET_STREAM keeps returning the complete response on
+// stdout, which RunStream parses with the normal fallback.
+type commandStreamEvent struct {
+	Type            string `json:"type"`
+	Text            string `json:"text"`
+	Reset           bool   `json:"reset,omitempty"`
+	Format          string `json:"format,omitempty"`
+	SessionID       string `json:"session_id,omitempty"`
+	WaitingApproval bool   `json:"waiting_approval,omitempty"`
+}
+
+// RunStream implements StreamingRuntime. It sets TOGET_STREAM=ndjson and reads
+// newline-delimited events. Older connectors that emit only a final JSON or
+// plain-text response still work and simply produce no partial output.
+func (r *CommandRuntime) RunStream(ctx context.Context, req RunRequest, emit func(StreamDelta)) (RunResult, error) {
+	if strings.TrimSpace(r.opts.Command) == "" {
+		return RunResult{}, ErrRuntimeUnavailable
+	}
+	input, err := json.Marshal(req)
+	if err != nil {
+		return RunResult{}, fmt.Errorf("encode runtime request: %w", err)
+	}
+	input = append(input, '\n')
+	env := runtimeEnv(req, append(append([]string(nil), r.opts.Env...), "TOGET_STREAM=ndjson"))
+	dir := r.opts.Workdir
+	if req.Workdir != "" {
+		dir = req.Workdir
+	}
+	var streamed strings.Builder
+	sawEvent := false
+	var final RunResult
+	proc := runProcessStreaming(ctx, r.opts.Command, r.opts.Args, input, dir, env,
+		defaultRuntimeStdout, defaultRuntimeStderr, func(line []byte) {
+			line = bytes.TrimSpace(line)
+			if len(line) == 0 || line[0] != '{' {
+				return
+			}
+			var event commandStreamEvent
+			if err := json.Unmarshal(line, &event); err != nil || event.Type == "" {
+				return
+			}
+			// Any typed event opts into the streaming protocol; unknown types
+			// are ignored rather than treated as a legacy reply.
+			sawEvent = true
+			switch event.Type {
+			case "delta":
+				if event.Reset {
+					streamed.Reset()
+					if emit != nil {
+						emit(StreamDelta{Reset: true})
+					}
+					return
+				}
+				if event.Text == "" {
+					return
+				}
+				streamed.WriteString(event.Text)
+				if emit != nil {
+					emit(StreamDelta{Text: event.Text})
+				}
+			case "result":
+				final = RunResult{
+					Text: event.Text, Format: event.Format,
+					SessionID: event.SessionID, WaitingApproval: event.WaitingApproval,
+				}
+			}
+		})
+	if proc.err != nil {
+		return RunResult{}, proc.err
+	}
+	if !sawEvent {
+		if proc.truncated {
+			return RunResult{}, fmt.Errorf("runtime output exceeded %d bytes", defaultRuntimeStdout)
+		}
+		return parseCommandOutput(proc.stdout)
+	}
+	if strings.TrimSpace(final.Text) == "" {
+		final.Text = streamed.String()
+	}
+	return normalizeResult(final), nil
+}
+
+func parseCommandOutput(stdout []byte) (RunResult, error) {
+	out := strings.TrimSpace(string(stdout))
 	if out == "" {
 		return RunResult{}, nil
 	}

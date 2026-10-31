@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/sidenor/toget/internal/agent"
+	"github.com/sidenor/toget/internal/api"
 	"github.com/sidenor/toget/internal/room"
 )
 
@@ -24,6 +26,52 @@ func createAgentInRoom(t *testing.T, node *testNode, roomID string) agent.Agent 
 		t.Fatalf("join agent = %d %s", resp.StatusCode, body)
 	}
 	return created
+}
+
+type fakeRunController struct {
+	mu      sync.Mutex
+	stopped []string
+}
+
+func (f *fakeRunController) Stop(agentID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopped = append(f.stopped, agentID)
+	return true
+}
+
+func (f *fakeRunController) calls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.stopped...)
+}
+
+func TestRevokeStopsAnActiveRun(t *testing.T) {
+	controller := &fakeRunController{}
+	node := newTestNodeWithOptions(t, nil, func(opts *api.Options) {
+		opts.AgentRuns = controller
+	})
+	resp, body := node.request(t, http.MethodPost, "/api/v1/account", testToken,
+		`{"name":"Aiden","password":"testpass123","device_name":"test"}`, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create account = %d %s", resp.StatusCode, body)
+	}
+	resp, body = node.request(t, http.MethodPost, "/api/v1/rooms", testToken, `{"name":"Lab"}`, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create room = %d %s", resp.StatusCode, body)
+	}
+	roomID := decode[struct {
+		Room room.Room `json:"room"`
+	}](t, body).Room.ID
+	created := createAgentInRoom(t, node, roomID)
+
+	resp, body = node.request(t, http.MethodPost, "/api/v1/agents/"+created.ID+"/revoke", testToken, "", nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("revoke = %d %s", resp.StatusCode, body)
+	}
+	if calls := controller.calls(); len(calls) != 1 || calls[0] != created.ID {
+		t.Fatalf("Stop calls = %#v", calls)
+	}
 }
 
 func TestAgentMessagesAndSessions(t *testing.T) {

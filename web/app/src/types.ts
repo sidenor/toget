@@ -170,6 +170,19 @@ export type Agent = {
   revoked_at?: string;
 };
 
+export type AgentStream = {
+  run_id: string;
+  agent_id: string;
+  agent_name: string;
+  room_id: string;
+  trigger_event_id?: string;
+  trigger_seq?: number;
+  text: string;
+  truncated: boolean;
+  started_at: string;
+  updated_at: string;
+};
+
 export type AgentSession = {
   agent_id: string;
   room_id: string;

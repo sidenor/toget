@@ -123,6 +123,10 @@ func (s *Server) handleRevokeAgent(w http.ResponseWriter, r *http.Request) {
 		writeAgentError(w, err)
 		return
 	}
+	// A run that was already active must not keep working after revocation.
+	if s.agentRuns != nil {
+		s.agentRuns.Stop(r.PathValue("id"))
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -235,6 +239,24 @@ func (s *Server) handleListRoomAgents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"agents": agents})
 }
 
+func (s *Server) handleListAgentStreams(w http.ResponseWriter, r *http.Request) {
+	actor, _, err := s.actor(r.Context())
+	if err != nil {
+		writeActorError(w, err)
+		return
+	}
+	roomID := r.PathValue("id")
+	if err := s.rooms.RequireMember(r.Context(), roomID, actor); err != nil {
+		writeRoomError(w, err)
+		return
+	}
+	streams := make([]agent.RunStream, 0)
+	if s.agentStreams != nil {
+		streams = s.agentStreams.Streams(roomID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"streams": streams})
+}
+
 // listRoomAgents returns this node's Agents plus Agents announced in the room
 // log by other members. The local registry wins for a matching ID because it
 // carries the live record; remote entries come from the event-log projection.
@@ -247,9 +269,8 @@ func (s *Server) listRoomAgents(ctx context.Context, roomID string) ([]agent.Age
 	if err != nil {
 		return nil, err
 	}
-	// Revocation does not write agent.left, and ListInRoom omits revoked
-	// Agents. Read the full owned list so the log projection cannot bring a
-	// locally revoked Agent back into view.
+	// ListInRoom omits revoked Agents, so read the full owned list and keep
+	// the log projection from bringing an old revoked Agent back into view.
 	snapshot, err := s.accounts.Get(ctx)
 	if err != nil {
 		return nil, err

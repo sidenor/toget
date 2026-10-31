@@ -34,6 +34,11 @@ type testNode struct {
 
 func newTestNode(t *testing.T, ui fs.FS) *testNode {
 	t.Helper()
+	return newTestNodeWithOptions(t, ui, nil)
+}
+
+func newTestNodeWithOptions(t *testing.T, ui fs.FS, configure func(*api.Options)) *testNode {
+	t.Helper()
 	dir := t.TempDir()
 	v, err := vault.LoadOrCreate(filepath.Join(dir, "vault.key"))
 	if err != nil {
@@ -49,7 +54,7 @@ func newTestNode(t *testing.T, ui fs.FS) *testNode {
 	rooms := room.New(db, v, room.WithDataDir(dir))
 	agents := agent.New(db, rooms)
 	approvals := approval.New(db, rooms)
-	handler := api.New(api.Options{
+	opts := api.Options{
 		Accounts:  accounts,
 		Rooms:     rooms,
 		Agents:    agents,
@@ -61,7 +66,11 @@ func newTestNode(t *testing.T, ui fs.FS) *testNode {
 		Listen:    "127.0.0.1:7718",
 		UI:        ui,
 		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}).Handler()
+	}
+	if configure != nil {
+		configure(&opts)
+	}
+	handler := api.New(opts).Handler()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	return &testNode{url: server.URL, token: testToken}

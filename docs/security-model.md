@@ -333,6 +333,7 @@ Controls:
 - Each Agent gets its own workspace directory with mode `0700`. Commands run without a shell, with a bounded timeout, bounded output, and a killed process group.
 - `agent_id` on a message is display metadata. It is not a signature by the Agent, and other members must not treat it as proof of the Agent's consent.
 - Session cursors, runtime session IDs, and last errors stay on the endpoint. They are not replicated to the room.
+- Live partial output is held only in memory on the Agent owner's node, bounded to 64 KiB per run, and served only to an authenticated member of the room. It is not written to the event log, not replicated, and lost on daemon restart. The final reply event, not partial text, is the audited record.
 - A stop cancels the runtime's process group. A finishing run can update a
   session only while its trigger is still active, so a reset or a newer run
   cannot be overwritten by a stale goroutine.
