@@ -157,6 +157,7 @@ rejects updates and deletes.
 - [Security model](docs/security-model.md) — who can see what, threats, controls, and limits
 - [Agent runtime](docs/agent-runtime.md) — mentions, sessions, Claude Code, and command runtimes
 - [Relay and directory](docs/relay.md) — cross-network routing, trust boundaries, quotas, and limits
+- [LAN discovery](docs/discovery.md) — mDNS advertisement, verified lookup, privacy, and limits
 - [Deployment](docs/deployment.md) — self-hosted, official-hosted, relay, and offline modes
 - [Technology stack](docs/tech-stack.md) — choices, rationale, and rejected alternatives
 - [Repository layout](docs/repo-layout.md) — where every kind of code belongs
@@ -176,11 +177,13 @@ registered, joined to rooms, run locally when mentioned, and gated through
 local approval and tool-receipt cards. An optional relay and signed-manifest
 directory work across networks, with direct-first fallback, automatic relay
 discovery, multi-hop routes, loop detection, quotas, and a bounded offline
-queue.
+queue. Same-LAN nodes also discover each other over multicast DNS and can
+resolve a server code without a directory; every discovered endpoint is still
+verified through its pinned TLS certificate and signed manifests.
 
-Not implemented yet: NAT traversal or hole punching, mDNS discovery,
-account-key rotation, account-record sync between paired devices, multiple
-accounts on one node, and a bundled model. The daemon runs
+Not implemented yet: NAT traversal or hole punching, account-key rotation,
+account-record sync between paired devices, multiple accounts on one node, and
+a bundled model. The daemon runs
 Agents locally on a mention, through Claude Code or any command that speaks the
 runtime protocol. Many parts will change as we learn.
 That is exactly why the project is open this early. If you care about
@@ -312,11 +315,12 @@ toget pair approve <pairing-id>
 - [安全模型](docs/security-model.md)
 - [Agent 运行时](docs/agent-runtime.md)
 - [中继与目录](docs/relay.md)
+- [局域网发现](docs/discovery.md)
 - [部署](docs/deployment.md)
 - [技术栈](docs/tech-stack.md)
 - [代码结构](docs/repo-layout.md)
 - [路线图](docs/roadmap.md)
 
-**早期实现：本地、局域网和跨网络中继房间已经可用。** 当前版本有账号与设备身份、端到端加密的房间密钥代次、加密的哈希链事件日志、附件、备份恢复、本地 API、CLI 和双语 React 网页。同一局域网内的两个节点可以用邀请码加入房间、互发消息并同步历史；第二台设备可以通过配对恢复同一账号并同步房间，无需拷贝私钥。远程房间支持附件、自主退出和本地归档。Agent 可以注册、加入房间，并通过本地审批和工具回执卡片受控。可选的中继和签名目录已经能跨网络工作，支持直连优先、自动发现中继、多跳路由、环路检测、配额和有限的离线队列。
+**早期实现：本地、局域网和跨网络中继房间已经可用。** 当前版本有账号与设备身份、端到端加密的房间密钥代次、加密的哈希链事件日志、附件、备份恢复、本地 API、CLI 和双语 React 网页。同一局域网内的两个节点可以用邀请码加入房间、互发消息并同步历史；第二台设备可以通过配对恢复同一账号并同步房间，无需拷贝私钥。远程房间支持附件、自主退出和本地归档。Agent 可以注册、加入房间，并通过本地审批和工具回执卡片受控。可选的中继和签名目录已经能跨网络工作，支持直连优先、自动发现中继、多跳路由、环路检测、配额和有限的离线队列。同一局域网里的节点还能通过 mDNS 相互发现，不依赖目录也能用服务器代码找到对方；发现的地址仍会通过固定 TLS 证书和签名清单验证。
 
-还没有实现：NAT 穿透与打洞、mDNS 发现、账号密钥轮换、配对设备之间的账号记录同步、同一节点登录多个账号，以及自带模型。守护进程会在被 @ 时在本地运行 Agent，可以用 Claude Code，也可以用任何实现了运行时协议的命令。很多地方仍会调整。欢迎开 issue 关注、分享场景，或直接参与建设。项目理念见 [docs/philosophy.md](docs/philosophy.md)，参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+还没有实现：NAT 穿透与打洞、账号密钥轮换、配对设备之间的账号记录同步、同一节点登录多个账号，以及自带模型。守护进程会在被 @ 时在本地运行 Agent，可以用 Claude Code，也可以用任何实现了运行时协议的命令。很多地方仍会调整。欢迎开 issue 关注、分享场景，或直接参与建设。项目理念见 [docs/philosophy.md](docs/philosophy.md)，参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。

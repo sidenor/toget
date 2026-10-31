@@ -30,6 +30,7 @@ import (
 	"github.com/sidenor/toget/internal/backup"
 	"github.com/sidenor/toget/internal/config"
 	"github.com/sidenor/toget/internal/identity"
+	"github.com/sidenor/toget/internal/mdns"
 	"github.com/sidenor/toget/internal/node"
 	"github.com/sidenor/toget/internal/room"
 	"github.com/sidenor/toget/internal/session"
@@ -50,6 +51,7 @@ var (
 	nodeDirectoryFlag string
 	noNodeFlag        bool
 	noRelayFlag       bool
+	noMDNSFlag        bool
 	stdinReader       = bufio.NewReader(os.Stdin)
 )
 
@@ -225,6 +227,7 @@ func newServeCommand() *cobra.Command {
 	cmd.Flags().StringVar(&nodeDirectoryFlag, "node-directory", "", "pinned public directory URL")
 	cmd.Flags().BoolVar(&noNodeFlag, "no-node", false, "disable the LAN node transport")
 	cmd.Flags().BoolVar(&noRelayFlag, "no-relay", false, "disable relay fallback")
+	cmd.Flags().BoolVar(&noMDNSFlag, "no-mdns", false, "disable same-LAN multicast discovery")
 	return cmd
 }
 
@@ -250,6 +253,15 @@ func runServe(ctx context.Context) error {
 	}
 	if noRelayFlag {
 		cfg.NodeRelay = "off"
+	}
+	if cfg.NodeMDNS == "" {
+		cfg.NodeMDNS = "on"
+	}
+	if noMDNSFlag || cfg.NodeMDNS == "off" {
+		cfg.NodeMDNS = "off"
+	}
+	if cfg.NodeMDNS != "on" && cfg.NodeMDNS != "off" {
+		return fmt.Errorf("node_mdns must be \"on\" or \"off\"")
 	}
 	if noNodeFlag {
 		cfg.NodeListen = config.NodeListenOff
@@ -309,6 +321,7 @@ func runServe(ctx context.Context) error {
 		Advertise: cfg.NodeAdvertise,
 		Relay:     cfg.NodeRelay,
 		Directory: cfg.NodeDirectory,
+		MDNS:      cfg.NodeMDNS,
 		Logger:    logger,
 	})
 	if err != nil {
@@ -1085,6 +1098,11 @@ func newNodeCommand() *cobra.Command {
 			if result.Info.DirectoryURL != "" {
 				fmt.Printf("Directory:   %s\n", result.Info.DirectoryURL)
 			}
+			if result.Info.MDNS {
+				fmt.Printf("Discovery:   on (%d nearby)\n", result.Info.MDNSPeers)
+			} else {
+				fmt.Printf("Discovery:   off\n")
+			}
 			fmt.Printf("Server:      %s\n", result.Info.ServerID)
 			fmt.Printf("Account:     %s\n", result.Info.AccountID)
 			fmt.Printf("Device:      %s\n", result.Info.DeviceID)
@@ -1093,8 +1111,59 @@ func newNodeCommand() *cobra.Command {
 		},
 	})
 	cmd.AddCommand(&cobra.Command{
+		Use:   "discover",
+		Short: "List Toget nodes visible on the local network",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			var result struct {
+				Enabled bool        `json:"enabled"`
+				Peers   []mdns.Peer `json:"peers"`
+			}
+			if err := c.Get(cmd.Context(), "/api/v1/node/discover", &result); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(result)
+			}
+			if !result.Enabled {
+				fmt.Println("LAN discovery is disabled.")
+				return nil
+			}
+			if len(result.Peers) == 0 {
+				fmt.Println("No Toget nodes found on this network.")
+				return nil
+			}
+			fmt.Printf("%-8s  %-18s  %-28s  %s\n", "CODE", "SERVER", "ADDRESS", "SEEN")
+			for _, peer := range result.Peers {
+				address := ""
+				if len(peer.Addresses) > 0 {
+					address = net.JoinHostPort(peer.Addresses[0], fmt.Sprint(peer.Port))
+					if len(peer.Addresses) > 1 {
+						address += fmt.Sprintf(" (+%d)", len(peer.Addresses)-1)
+					}
+				}
+				server := peer.ServerID
+				if len(server) > 18 {
+					server = server[:15] + "..."
+				}
+				seen := "just now"
+				if !peer.LastSeen.IsZero() {
+					age := time.Since(peer.LastSeen).Round(time.Second)
+					if age > 0 {
+						seen = age.String() + " ago"
+					}
+				}
+				fmt.Printf("%-8s  %-18s  %-28s  %s\n", peer.ServerCode, server, address, seen)
+			}
+			return nil
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
 		Use:   "lookup <server-code>",
-		Short: "Resolve a server code through the public directory",
+		Short: "Resolve a server code over the LAN or public directory",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, _, _, err := localClient()
@@ -1110,6 +1179,9 @@ func newNodeCommand() *cobra.Command {
 			}
 			fmt.Printf("Server:      %s\n", record.ServerID)
 			fmt.Printf("Code:        %s\n", record.ServerCode)
+			if record.Source != "" {
+				fmt.Printf("Source:      %s\n", record.Source)
+			}
 			fmt.Printf("URL:         %s\n", record.URL)
 			if record.RelayURL != "" {
 				fmt.Printf("Relay:       %s\n", record.RelayURL)

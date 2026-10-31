@@ -71,9 +71,12 @@ homes. A node can also register with an optional relay over a pinned,
 outbound HTTPS long-poll and fall back to it when the direct LAN path is not
 reachable. Relays can chain to a parent and announce signed routes, with loop
 detection and quotas. An optional directory maps an eight-digit server code to
-a self-certifying signed manifest and can advertise a default relay. The phone
-client, official account hosting, and account-key rotation shown above are
-still design-only; mDNS and NAT traversal are not implemented.
+a self-certifying signed manifest and can advertise a default relay. Nodes also
+advertise and browse `_toget._tcp.local.` over mDNS for directory-free
+same-LAN discovery; a discovered endpoint is only used after its pinned TLS
+certificate and signed identity and node manifests verify. The phone client,
+official account hosting, and account-key rotation shown above are still
+design-only; NAT traversal is not implemented.
 
 ## Account and device model
 
@@ -165,6 +168,8 @@ The daemon is the local runtime on a persistent device. It:
 - supervises Agent processes and enforces local permissions;
 - can relay encrypted envelopes for other nodes;
 - participates in the relay tree (parent advertisement, path discovery);
+- advertises its code and pinned endpoint on the local link with mDNS and can
+  verify a discovered peer without a directory;
 - performs signed updates and rollbacks.
 
 ### Local web UI

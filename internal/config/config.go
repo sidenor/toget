@@ -53,6 +53,10 @@ type Config struct {
 	// NodeDirectory is a pinned public directory URL. It publishes this
 	// node's signed manifest and resolves "auto" relay discovery.
 	NodeDirectory string `json:"node_directory,omitempty"`
+	// NodeMDNS controls same-LAN multicast discovery. "on" advertises this
+	// node's server code and endpoint; "off" disables advertisement and
+	// browsing. An empty value is treated as "on" by `toget serve`.
+	NodeMDNS string `json:"node_mdns,omitempty"`
 	// AgentRuntimes maps an Agent's runtime name to a local command. The
 	// built-in echo and claude-code runtimes do not need an entry unless they
 	// should be overridden.

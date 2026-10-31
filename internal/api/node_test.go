@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -166,5 +167,20 @@ func TestNodeLookupRequiresDirectory(t *testing.T) {
 	resp, body = server.request(t, http.MethodGet, "/api/v1/node/lookup?code=12345678", testToken, "", nil)
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("lookup without directory = %d %s", resp.StatusCode, body)
+	}
+
+	resp, body = server.request(t, http.MethodGet, "/api/v1/node/discover", testToken, "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("discover = %d %s", resp.StatusCode, body)
+	}
+	var discovery struct {
+		Enabled bool  `json:"enabled"`
+		Peers   []any `json:"peers"`
+	}
+	if err := json.Unmarshal(body, &discovery); err != nil {
+		t.Fatal(err)
+	}
+	if discovery.Enabled || len(discovery.Peers) != 0 {
+		t.Fatalf("unexpected discovery response: %s", body)
 	}
 }

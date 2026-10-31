@@ -21,6 +21,7 @@ import (
 	"github.com/sidenor/toget/internal/account"
 	"github.com/sidenor/toget/internal/config"
 	"github.com/sidenor/toget/internal/identity"
+	"github.com/sidenor/toget/internal/mdns"
 	"github.com/sidenor/toget/internal/relayproto"
 	"github.com/sidenor/toget/internal/room"
 )
@@ -47,7 +48,10 @@ type Options struct {
 	// Directory is a pinned directory URL. It is used to publish this node
 	// and to resolve a default relay when Relay is "auto".
 	Directory string
-	Logger    *slog.Logger
+	// MDNS is "on" to advertise and browse Toget nodes on the local network.
+	// Empty or "off" disables multicast discovery.
+	MDNS   string
+	Logger *slog.Logger
 }
 
 // Info is the local node's public transport identity.
@@ -62,6 +66,8 @@ type Info struct {
 	RelayURL       string `json:"relay_url,omitempty"`
 	RelayConnected bool   `json:"relay_connected"`
 	DirectoryURL   string `json:"directory_url,omitempty"`
+	MDNS           bool   `json:"mdns"`
+	MDNSPeers      int    `json:"mdns_peers"`
 	TLSFingerprint string `json:"tls_fingerprint"`
 	Protocol       int    `json:"protocol"`
 }
@@ -98,6 +104,10 @@ type Service struct {
 	directoryFP      string
 	directoryHTTP    *http.Client
 	relayConnected   atomic.Bool
+
+	mdnsSetting string
+	mdnsMu      sync.RWMutex
+	discovery   *mdns.Service
 
 	pairMu    sync.Mutex
 	pairings  map[string]*pairSession
@@ -159,6 +169,13 @@ func New(opts Options) (*Service, error) {
 	if relaySetting == "auto" && directoryBase == "" {
 		return nil, errors.New("node relay: auto discovery needs a directory")
 	}
+	mdnsSetting := strings.TrimSpace(opts.MDNS)
+	if mdnsSetting == "off" {
+		mdnsSetting = ""
+	}
+	if mdnsSetting != "" && mdnsSetting != "on" {
+		return nil, errors.New(`node mdns: expected "on" or "off"`)
+	}
 	return &Service{
 		accounts: opts.Accounts, rooms: opts.Rooms, paths: opts.Paths,
 		listen: listen, advertise: strings.TrimSpace(opts.Advertise),
@@ -167,6 +184,7 @@ func New(opts Options) (*Service, error) {
 		relaySetting: relaySetting, relayBase: relayBase, relayFP: relayFP,
 		directorySetting: directorySetting, directoryBase: directoryBase,
 		directoryFP: directoryFP, directoryHTTP: directoryHTTP,
+		mdnsSetting: mdnsSetting,
 	}, nil
 }
 
@@ -244,6 +262,9 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 	if s.directorySetting != "" {
 		go s.directoryLoop(runCtx)
+	}
+	if s.mdnsSetting != "" {
+		go s.mdnsLoop(runCtx)
 	}
 	go func() {
 		<-runCtx.Done()
@@ -335,11 +356,16 @@ func (s *Service) Info(ctx context.Context) (*Info, error) {
 	if relayRoute != "" {
 		address = relayproto.JoinAddress(direct, relayRoute)
 	}
+	peers := 0
+	if discovery := s.discoveryService(); discovery != nil {
+		peers = len(discovery.Peers())
+	}
 	return &Info{
 		ServerID: snapshot.Server.ID, ServerCode: snapshot.Server.Code,
 		AccountID: snapshot.Account.ID, DeviceID: snapshot.Device.ID,
 		Endpoint: endpoint, URL: address, DirectURL: direct, RelayURL: relayRoute,
 		RelayConnected: s.RelayConnected(), DirectoryURL: s.directorySetting,
+		MDNS: s.mdnsSetting != "", MDNSPeers: peers,
 		TLSFingerprint: fingerprint, Protocol: Protocol,
 	}, nil
 }
@@ -426,6 +452,7 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("GET /toget/v1/health", s.handleHealth)
 	mux.HandleFunc("GET /toget/v1/info", s.handleInfo)
 	mux.HandleFunc("GET /toget/v1/manifest", s.handleInfo)
+	mux.HandleFunc("GET /toget/v1/identity", s.handleIdentity)
 	mux.HandleFunc("POST /toget/v1/invites/redeem", s.handleRedeem)
 	mux.HandleFunc("POST /toget/v1/rooms/sync", s.handleSync)
 	mux.HandleFunc("POST /toget/v1/rooms/events", s.handleEvent)
@@ -468,6 +495,20 @@ func (s *Service) handleInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, manifest)
+}
+
+// handleIdentity serves the account's signed identity manifest. Directory
+// lookups already expose it; serving it here lets a LAN peer that found this
+// node over mDNS verify the node manifest without contacting a directory.
+func (s *Service) handleIdentity(w http.ResponseWriter, r *http.Request) {
+	snapshot, err := s.accounts.Get(r.Context())
+	if err != nil || snapshot.Server == nil || snapshot.Server.Manifest == "" {
+		writeNodeError(w, http.StatusServiceUnavailable, "not_ready", "node identity is not ready")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(snapshot.Server.Manifest))
 }
 
 func (s *Service) handleRedeem(w http.ResponseWriter, r *http.Request) {

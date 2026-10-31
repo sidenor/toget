@@ -471,15 +471,38 @@ paths:
         "503":
           $ref: "#/components/responses/Unavailable"
 
+  /api/v1/node/discover:
+    get:
+      tags: [node]
+      operationId: discoverServers
+      summary: List Toget nodes visible on the local network
+      description: |
+        Returns self-reported multicast-DNS advertisements. The advertisement
+        is not authentication; use `lookupServer` to verify a peer's signed
+        identity and node manifests before connecting.
+      responses:
+        "200":
+          description: Current LAN discoveries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeDiscoveryResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "423":
+          $ref: "#/components/responses/Locked"
+
   /api/v1/node/lookup:
     get:
       tags: [node]
       operationId: lookupServer
-      summary: Resolve a server code through the configured directory
+      summary: Resolve a server code over the LAN or public directory
       description: |
-        Verifies the directory's signed server manifest and signed node
-        manifest locally. A compromised directory cannot substitute an
-        endpoint without failing the pinned-manifest checks.
+        First verifies a node advertising this code on the local network over
+        pinned TLS, including its signed identity and node manifests. If no LAN
+        node answers, falls back to the configured directory and repeats the
+        signature checks locally. A compromised directory cannot substitute an
+        endpoint without failing those checks.
       parameters:
         - name: code
           in: query
@@ -502,7 +525,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "404":
-          description: The directory does not know this server code.
+          description: No LAN node or directory entry has this server code.
           content:
             application/json:
               schema:
@@ -512,7 +535,7 @@ paths:
         "423":
           $ref: "#/components/responses/Locked"
         "502":
-          description: The directory could not be reached or returned an invalid record.
+          description: The LAN peer or directory could not be reached or returned an invalid record.
           content:
             application/json:
               schema:
@@ -3047,7 +3070,7 @@ components:
     NodeInfo:
       type: object
       additionalProperties: false
-      required: [server_id, server_code, account_id, device_id, endpoint, url, tls_fingerprint, protocol]
+      required: [server_id, server_code, account_id, device_id, endpoint, url, mdns, mdns_peers, tls_fingerprint, protocol]
       properties:
         server_id:
           type: string
@@ -3077,6 +3100,13 @@ components:
         directory_url:
           type: string
           description: Pinned public directory URL used by this node.
+        mdns:
+          type: boolean
+          description: Whether same-LAN multicast discovery is configured.
+        mdns_peers:
+          type: integer
+          minimum: 0
+          description: Number of current LAN advertisements.
         tls_fingerprint:
           type: string
           description: Hex SHA-256 fingerprint of the node's self-signed certificate.
@@ -3110,6 +3140,49 @@ components:
         updated_at:
           type: string
           format: date-time
+        source:
+          type: string
+          enum: [directory, mdns]
+          description: Where the verified record came from.
+
+    DiscoveredPeer:
+      type: object
+      additionalProperties: false
+      required: [server_id, server_code, protocol, tls_fingerprint, port, addresses, last_seen]
+      properties:
+        server_id:
+          type: string
+        server_code:
+          type: string
+          pattern: "^[0-9]{8}$"
+        protocol:
+          type: integer
+        tls_fingerprint:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        addresses:
+          type: array
+          items:
+            type: string
+        last_seen:
+          type: string
+          format: date-time
+
+    NodeDiscoveryResponse:
+      type: object
+      additionalProperties: false
+      required: [enabled, peers]
+      properties:
+        enabled:
+          type: boolean
+        peers:
+          type: array
+          items:
+            $ref: "#/components/schemas/DiscoveredPeer"
 
     NodeInfoResponse:
       type: object

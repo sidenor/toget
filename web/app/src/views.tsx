@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { formatAccountID, formatTime, shortID } from "./format";
 import type { Lang, Translate } from "./i18n";
-import type { Agent, AgentSession, Approval, AuditResponse, Device, NodeInfo, PairingView, Room, SearchHit } from "./types";
+import type { Agent, AgentSession, Approval, AuditResponse, Device, DiscoveredPeer, NodeInfo, PairingView, Room, SearchHit } from "./types";
 import { Badge, CopyButton, Modal, Spinner } from "./ui";
 
 export type CommonProps = {
@@ -753,10 +753,12 @@ export function SettingsView({
   lock: () => Promise<void>;
 }) {
   const [node, setNode] = useState<{ enabled: boolean; info?: NodeInfo } | null>(null);
+  const [discovery, setDiscovery] = useState<{ enabled: boolean; peers: DiscoveredPeer[] } | null>(null);
   const [syncing, setSyncing] = useState(false);
 
   useEffect(() => {
     api.node().then(setNode).catch(() => setNode({ enabled: false }));
+    api.nodeDiscover().then(setDiscovery).catch(() => setDiscovery({ enabled: false, peers: [] }));
   }, []);
 
   async function sync() {
@@ -849,6 +851,17 @@ export function SettingsView({
                   </div>
                 )}
                 <div>
+                  <dt>{t("settings.mdns")}</dt>
+                  <dd>
+                    {node.info.mdns ? t("settings.mdnsOn") : t("settings.mdnsOff")}
+                    {node.info.mdns && node.info.mdns_peers ? (
+                      <span className="muted">
+                        {" "}· {node.info.mdns_peers} {t("settings.mdnsPeers")}
+                      </span>
+                    ) : null}
+                  </dd>
+                </div>
+                <div>
                   <dt>{t("settings.lanFingerprint")}</dt>
                   <dd className="mono fingerprint">{node.info.tls_fingerprint}</dd>
                 </div>
@@ -856,6 +869,31 @@ export function SettingsView({
               <button className="button ghost" onClick={() => void sync()} disabled={syncing}>
                 {syncing ? t("settings.syncing") : t("settings.syncNow")}
               </button>
+            </>
+          )}
+        </article>
+        <article className="panel wide">
+          <h2>{t("settings.nearby")}</h2>
+          {discovery === null ? (
+            <Spinner label={t("common.loading")} />
+          ) : !discovery.enabled ? (
+            <p className="muted">{t("settings.mdnsOff")}</p>
+          ) : discovery.peers.length === 0 ? (
+            <p className="muted">{t("settings.noNearby")}</p>
+          ) : (
+            <>
+              <p className="fine-print muted">{t("settings.nearbyHint")}</p>
+              <dl className="facts vertical">
+                {discovery.peers.map((peer) => (
+                  <div key={`${peer.server_id}-${peer.port}`}>
+                    <dt className="mono">{peer.server_code}</dt>
+                    <dd>
+                      {peer.addresses.map((address) => `${address}:${peer.port}`).join(" · ")}
+                      <span className="muted"> · {shortID(peer.server_id)}</span>
+                    </dd>
+                  </div>
+                ))}
+              </dl>
             </>
           )}
         </article>

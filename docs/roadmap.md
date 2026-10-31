@@ -46,10 +46,11 @@ Toget is at the very beginning. The order below is chosen so that each milestone
 - [x] History sync with cursors and idempotent replay
 - [x] New-member history choice: none / recent (current epoch) / all, with a system notice
 - [x] Direct connection by default; address and pin carried in the invite code (relay fallback added in M4)
+- [x] mDNS advertisement and directory-free, signature-verified server-code lookup on one LAN
 
 **Status:** the LAN milestone works for message rooms. Remote-room
-attachments, remote leave/archive, and device enrollment are done; mDNS and
-QUIC are not. Relay fallback is implemented in M4. A packet capture still shows metadata (account/device
+attachments, remote leave/archive, and device enrollment are done; QUIC is
+not. Relay fallback is implemented in M4. A packet capture still shows metadata (account/device
 IDs in signed request headers) and sealed payloads; it does not show message
 plaintext.
 
@@ -99,8 +100,9 @@ requests. The relay cannot read room content. Clients try a direct pinned
 connection first and fall back to the relay; auto relay discovery, multi-hop
 routing, loop detection, quotas, and a 55-second offline queue are implemented
 and tested. NAT traversal is still absent, so a relay is required whenever the
-LAN/VPN path is not reachable. mDNS and QR business cards are next. See
-[relay.md](relay.md).
+LAN/VPN path is not reachable. Same-LAN mDNS discovery is implemented; QR
+business cards are next. See [relay.md](relay.md) and
+[discovery.md](discovery.md).
 
 **Done when:** two users behind different NATs share a room through a relay, the relay cannot read the messages, and a direct connection is used automatically when the network allows it.
 

@@ -55,9 +55,10 @@ The LAN path is real and covered by tests in `internal/node` and
    device syncs event history from each room's home.
 
 Still design-only: QUIC, Protobuf framing, NAT traversal or hole punching,
-mDNS, and WebSocket transport. Relays and the directory are implemented with
-HTTPS + JSON rather than the future Protobuf framing; see
-[relay.md](relay.md) for their wire format, trust boundaries, and limits. The
+and WebSocket transport. Relays and the directory are implemented with HTTPS +
+JSON rather than the future Protobuf framing; see [relay.md](relay.md) for
+their wire format, trust boundaries, and limits. LAN discovery is implemented
+with a small mDNS responder and browser; see [discovery.md](discovery.md). The
 rest of this document describes the target design; sections marked
 “implemented today” use HTTPS + JSON rather than the future framing.
 
@@ -81,11 +82,11 @@ Clients parse the account ID by its total length, so more digits can be added la
 ## Discovery
 
 1. The client extracts the server code from the account ID.
-2. It asks the directory for the signed manifest of that server code, or uses a cached card, a QR code, peer exchange, mDNS on a LAN (design-only), or a manually entered address.
+2. It looks for a signed manifest through the local mDNS cache, the configured directory, a cached card, a QR code, peer exchange, or a manually entered address.
 3. It verifies the manifest signature with the server root key and checks that `server_code == hash(root_pubkey || nonce)`.
 4. It connects to one of the advertised endpoints, directly or through a relay.
 
-Implemented today: `toget node lookup <code>` asks the configured directory, then re-verifies both the identity manifest and the signed node manifest locally. A directory result includes the node's HTTPS endpoint, TLS pin, and signed relay route; the endpoint is not trusted from the directory alone.
+Implemented today: `toget node lookup <code>` first verifies a node advertising that code on the local network and otherwise asks the configured directory, then re-verifies both the identity manifest and the signed node manifest locally. A LAN result is fetched from `/toget/v1/identity` and `/toget/v1/info` over the advertised certificate pin. Every result includes the node's HTTPS endpoint, TLS pin, and signed relay route; neither mDNS nor the directory is trusted alone.
 
 The directory is a convenience, not a root of trust. It cannot forge a server's manifest, but the 8-digit code is short enough to grind; pin the full `server_id` from a QR code or cached card when first-contact impersonation matters.
 
@@ -126,6 +127,7 @@ serves:
 | `GET` | `/toget/v1/health` | Liveness |
 | `GET` | `/toget/v1/info` | Signed node manifest |
 | `GET` | `/toget/v1/manifest` | Same manifest, explicit name |
+| `GET` | `/toget/v1/identity` | Signed account identity manifest, used for directory-free LAN verification |
 | `POST` | `/toget/v1/invites/redeem` | Redeem an invite, return a join bundle |
 | `POST` | `/toget/v1/rooms/sync` | Pull events after a cursor |
 | `POST` | `/toget/v1/rooms/events` | Submit a sealed event for home-node ordering |

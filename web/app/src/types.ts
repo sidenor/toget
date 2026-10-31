@@ -70,8 +70,20 @@ export type NodeInfo = {
   relay_url?: string;
   relay_connected: boolean;
   directory_url?: string;
+  mdns: boolean;
+  mdns_peers?: number;
   tls_fingerprint: string;
   protocol: number;
+};
+
+export type DiscoveredPeer = {
+  server_id: string;
+  server_code: string;
+  protocol: number;
+  tls_fingerprint: string;
+  port: number;
+  addresses: string[];
+  last_seen: string;
 };
 
 export type RoomEvent = {

@@ -30,6 +30,8 @@ type DirectoryRecord struct {
 	RelayURL       string    `json:"relay_url,omitempty"`
 	TLSFingerprint string    `json:"tls_fingerprint"`
 	UpdatedAt      time.Time `json:"updated_at"`
+	// Source is "directory" or "mdns".
+	Source string `json:"source,omitempty"`
 }
 
 // directoryLoop publishes this node and, when relay is "auto", follows the
@@ -152,8 +154,23 @@ func (s *Service) LookupServer(ctx context.Context, code string) (*DirectoryReco
 			return nil, errors.New("server code must be 8 digits")
 		}
 	}
+	// LAN discovery is tried first: it avoids a public round trip when the
+	// node is on the same network. Discovery advertisements are only hints;
+	// lookupMDNS verifies the node's identity and certificate before
+	// returning a record.
+	var discoveryErr error
+	if s != nil && s.mdnsSetting != "" {
+		record, err := s.lookupMDNS(ctx, code)
+		if err == nil {
+			return record, nil
+		}
+		discoveryErr = err
+	}
 	if s == nil || s.directoryBase == "" {
-		return nil, errors.New("no directory is configured")
+		if discoveryErr != nil {
+			return nil, fmt.Errorf("no directory is configured; %w", discoveryErr)
+		}
+		return nil, errors.New("no directory is configured and no LAN node was discovered")
 	}
 	path := directoryproto.LookupPrefix + url.PathEscape(code)
 	resp, data, err := s.directoryRequest(ctx, http.MethodGet, path, nil)
@@ -211,7 +228,7 @@ func (s *Service) LookupServer(ctx context.Context, code string) (*DirectoryReco
 		ServerID: im.ServerID, ServerCode: im.ServerCode, AccountID: nm.AccountID,
 		Endpoint: nm.Endpoint, URL: relayproto.JoinAddress(direct, relayURL),
 		DirectURL: direct, RelayURL: relayURL, TLSFingerprint: nm.TLSFingerprint,
-		UpdatedAt: out.UpdatedAt,
+		UpdatedAt: out.UpdatedAt, Source: "directory",
 	}, nil
 }
 

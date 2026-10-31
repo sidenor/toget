@@ -95,6 +95,39 @@ but not publicly audited. Remote administration beyond attachments,
 self-leave, and local archival is unsupported rather than securely
 implemented.
 
+### Implemented LAN discovery boundary
+
+`toget serve` advertises `_toget._tcp.local.` over multicast DNS by default.
+The packet carries the full server ID, eight-digit server code, HTTPS port,
+interface addresses, protocol version, and certificate fingerprint. It does
+not carry the account ID, room IDs, room names, messages, or keys. Disable it
+with `--no-mdns` or `"node_mdns": "off"`.
+
+- mDNS is unauthenticated. Any device on the link can announce any ID, code,
+  address, or fingerprint, and can observe every announcement.
+- A lookup treats advertisements as candidates. It connects to the advertised
+  address using the advertised certificate pin, then verifies the signed
+  identity manifest and the node manifest. Both must bind the advertised
+  server ID and code, and the manifest must carry the same certificate
+  fingerprint. A forged advertisement without the server key fails.
+- The discovery list (`toget node discover`, the Settings page, and
+  `GET /api/v1/node/discover`) is not verified. It is self-reported metadata
+  and is labelled as such.
+- The eight-digit code is still a routing hint, not authentication. An
+  attacker can grind a valid identity with the same code and announce it.
+  Compare the full server ID, use an invite code, or pin the identity out of
+  band when first-contact impersonation matters.
+- mDNS is link-local and does not traverse routers or NAT. It is not a
+  substitute for the relay and provides no cross-network discovery.
+
+Residual risk: a passive observer on the local link can inventory Toget
+nodes, their codes, endpoints, certificate fingerprints, and announce times.
+An active attacker can spoof advertisements, suppress multicast, or direct a
+lookup attempt at a host they control; that reveals the querying device's IP
+address and the requested code, but the pinned TLS and manifest checks stop a
+successful impersonation. A host can disable advertisement and browsing when
+the local link is untrusted.
+
 ### Implemented relay and directory boundary
 
 A node behind NAT can register with a relay over outbound pinned HTTPS. The

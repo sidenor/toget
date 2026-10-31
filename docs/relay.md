@@ -19,6 +19,10 @@ node A ──pinned HTTPS──► relay ◄──pinned HTTPS── node B
 The directory is not in the data path. It answers "which signed manifest
 belongs to server code 12345678?" and "what is the default relay?".
 
+Same-LAN nodes can also find each other without a directory over multicast
+DNS. See [discovery.md](discovery.md); mDNS is link-local and is not NAT
+traversal.
+
 ## Running the services
 
 The official process runs a relay on `7719` and a directory on `7720` by

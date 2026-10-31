@@ -58,7 +58,8 @@ toget/
 │   ├── sync/                      # cursors, deltas, snapshots, outbox replay
 │   ├── storage/                   # storage interfaces and SQLite implementation
 │   ├── agent/                     # Agent identity, sessions, supervision, permissions
-│   ├── discovery/                 # directory client, manifest cache, QR/manual addresses
+│   ├── mdns/                      # implemented _toget._tcp.local. advertisement and browse cache
+│   ├── discovery/                 # planned manifest cache, QR/manual addresses (directory client lives in node/)
 │   ├── official/                  # directory, update service, official account host
 │   ├── update/                    # version check, download, verify, switch, rollback
 │   ├── ui/                        # local web UI serving, token, origin checks

@@ -39,6 +39,7 @@ The account host is chosen at registration and cannot be moved silently. Moving 
 | `7718` | Local API and web UI | `127.0.0.1` only |
 | `7719` | Relay (HTTPS, pinned certificate) | Public only for `toget-official` or a self-hosted relay |
 | `7720` | Directory (HTTPS, pinned certificate) | Public only for `toget-official` or a self-hosted directory |
+| `5353/udp` | mDNS discovery (multicast) | Local link only; no router exposure. Enabled by default; `--no-mdns` disables it |
 
 Do not expose `7718` to the network. The local UI is not designed to be a public web app. `7717` is self-authenticated by the certificate pin carried in invite codes; do not put it behind a TLS-terminating proxy, because that changes the certificate the peer pins.
 
@@ -137,6 +138,26 @@ direct connection works on a LAN, a VPN, or a genuinely reachable public
 address. Direct connections are preferred because they are faster and keep
 relays out of the path.
 
+### Same-LAN discovery
+
+`toget serve` advertises `_toget._tcp.local.` over multicast DNS by default.
+`toget node lookup <code>` uses a verified LAN result before asking the
+directory, so a local network without internet can still resolve a server
+code. The advertisement contains the server ID, server code, endpoint, and TLS
+fingerprint; it does not contain account or room data.
+
+```bash
+toget serve --no-mdns        # disable advertisement and browsing
+toget node discover          # list current local advertisements
+toget node lookup 12345678   # verified LAN first, directory fallback
+```
+
+Discovery requires UDP `5353` and IGMP on the local link. It does not cross
+routers, VLANs, or NAT, and many guest Wi-Fi networks block multicast. The
+multicast packet is only a hint: lookup fetches and verifies the signed
+identity and node manifests over the advertised certificate pin. See
+[discovery.md](discovery.md).
+
 ### Relay
 
 If direct fails, the node uses its configured relay. Run the optional relay and
@@ -157,7 +178,8 @@ toget serve \
 
 toget serve --node-directory '...' --node-relay auto
 toget serve --no-relay            # direct only
-toget node info                   # shows direct URL, relay state, directory
+toget serve --no-mdns             # disable same-LAN discovery
+toget node info                   # direct URL, relay state, directory, discovery
 ```
 
 - The directory's advertised relay is the default for `auto`; a node can also use a friend's relay, a community relay, or its own `toget-official`.

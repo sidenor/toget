@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/sidenor/toget/internal/mdns"
 	"github.com/sidenor/toget/internal/node"
 	"github.com/sidenor/toget/internal/room"
 )
@@ -25,6 +26,25 @@ func (s *Server) handleNodeInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, nodeInfoResponse{Enabled: true, Info: info})
+}
+
+type nodeDiscoveryResponse struct {
+	Enabled bool        `json:"enabled"`
+	Peers   []mdns.Peer `json:"peers"`
+}
+
+func (s *Server) handleNodeDiscover(w http.ResponseWriter, r *http.Request) {
+	if s.node == nil {
+		writeJSON(w, http.StatusOK, nodeDiscoveryResponse{Enabled: false, Peers: []mdns.Peer{}})
+		return
+	}
+	peers := s.node.Discover(r.Context())
+	if peers == nil {
+		peers = []mdns.Peer{}
+	}
+	writeJSON(w, http.StatusOK, nodeDiscoveryResponse{
+		Enabled: s.node.MDNSEnabled(), Peers: peers,
+	})
 }
 
 func (s *Server) handleNodeLookup(w http.ResponseWriter, r *http.Request) {

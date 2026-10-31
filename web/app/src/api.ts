@@ -10,6 +10,7 @@ import type {
   Device,
   Invite,
   Member,
+  DiscoveredPeer,
   NodeInfo,
   PairingView,
   PairJoinView,
@@ -107,6 +108,8 @@ export const api = {
   redeemInvite: (secret: string) =>
     request<{ room: Room; member: Member; event?: RoomEvent | null }>("/api/v1/invites/redeem", json({ secret })),
   node: () => request<{ enabled: boolean; info?: NodeInfo }>("/api/v1/node"),
+  nodeDiscover: () =>
+    request<{ enabled: boolean; peers: DiscoveredPeer[] }>("/api/v1/node/discover"),
   syncAllRooms: () => request<{ ok: boolean }>("/api/v1/node/sync", { method: "POST" }),
   syncRoom: (roomID: string) =>
     request<{ imported: number }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/sync`, { method: "POST" }),
