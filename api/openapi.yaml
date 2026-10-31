@@ -42,6 +42,7 @@ tags:
   - name: approvals
   - name: policies
   - name: tools
+  - name: backups
   - name: audit
   - name: search
 security:
@@ -329,6 +330,258 @@ paths:
           $ref: "#/components/responses/OriginDenied"
         "409":
           $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/backups:
+    get:
+      tags: [backups]
+      operationId: listBackups
+      summary: List local backup archives
+      responses:
+        "200":
+          description: Backup files in the node's backup directory.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+    post:
+      tags: [backups]
+      operationId: createBackup
+      summary: Write a new encrypted snapshot
+      responses:
+        "201":
+          description: The new backup.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupArchive"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "500":
+          $ref: "#/components/responses/Internal"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/backups/{name}/download:
+    get:
+      tags: [backups]
+      operationId: downloadBackup
+      summary: Download a local backup archive
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The backup zip archive.
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/backups/{name}:
+    delete:
+      tags: [backups]
+      operationId: deleteBackup
+      summary: Delete a local backup archive
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: The backup was deleted.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/restore/uploads:
+    post:
+      tags: [backups]
+      operationId: uploadRestore
+      summary: Upload and verify a backup for restore
+      description: |
+        Streams a raw zip archive, validates every manifest entry and file
+        checksum, and keeps the verified upload for confirmation. The upload
+        is deleted after staging or cancellation.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "201":
+          description: The verified upload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RestoreUpload"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/restore/uploads/{id}:
+    delete:
+      tags: [backups]
+      operationId: deleteRestoreUpload
+      summary: Discard an inspected restore upload
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: The upload was deleted.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/restore:
+    get:
+      tags: [backups]
+      operationId: getRestore
+      summary: Read the staged restore
+      responses:
+        "200":
+          description: Staged restore state and restart availability.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RestoreStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+    post:
+      tags: [backups]
+      operationId: stageRestore
+      summary: Stage a verified backup for the next restart
+      description: |
+        Re-verifies the archive and stages it. The database, vault key, and
+        attachments are only replaced when the daemon starts again. Existing
+        data is moved to a timestamped `pre-restore-*` directory.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StageRestoreRequest"
+      responses:
+        "201":
+          description: The staged restore.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RestorePending"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+    delete:
+      tags: [backups]
+      operationId: cancelRestore
+      summary: Cancel a staged restore
+      responses:
+        "204":
+          description: No restore is staged.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "423":
+          $ref: "#/components/responses/Locked"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/restore/restart:
+    post:
+      tags: [backups]
+      operationId: restartForRestore
+      summary: Restart the node to apply a staged restore
+      responses:
+        "202":
+          description: The restart command was launched.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RestoreRestartResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "423":
+          $ref: "#/components/responses/Locked"
         "502":
           $ref: "#/components/responses/BadGateway"
         "503":
@@ -2855,6 +3108,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    PayloadTooLarge:
+      description: The uploaded file exceeds the endpoint's size limit.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     CorruptEvent:
       description: An event failed its integrity check.
       content:
@@ -3097,6 +3356,124 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Device"
+
+    BackupFile:
+      type: object
+      additionalProperties: false
+      required: [path, size, sha256]
+      properties:
+        path:
+          type: string
+        size:
+          type: integer
+          format: int64
+        sha256:
+          type: string
+
+    BackupManifest:
+      type: object
+      additionalProperties: false
+      required: [format, version, created_at, schema_version, files]
+      properties:
+        format:
+          type: string
+          const: toget-backup
+        version:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        app_version:
+          type: string
+        schema_version:
+          type: integer
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackupFile"
+
+    BackupArchive:
+      type: object
+      additionalProperties: false
+      required: [name, size, manifest]
+      properties:
+        name:
+          type: string
+        size:
+          type: integer
+          format: int64
+        manifest:
+          $ref: "#/components/schemas/BackupManifest"
+
+    BackupList:
+      type: object
+      additionalProperties: false
+      required: [backups]
+      properties:
+        backups:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackupArchive"
+
+    RestoreUpload:
+      type: object
+      additionalProperties: false
+      required: [id, size, manifest]
+      properties:
+        id:
+          type: string
+        size:
+          type: integer
+          format: int64
+        manifest:
+          $ref: "#/components/schemas/BackupManifest"
+
+    RestorePending:
+      type: object
+      additionalProperties: false
+      required: [manifest, size, staged_at]
+      properties:
+        manifest:
+          $ref: "#/components/schemas/BackupManifest"
+        size:
+          type: integer
+          format: int64
+        staged_at:
+          type: string
+          format: date-time
+
+    RestoreStatus:
+      type: object
+      additionalProperties: false
+      required: [staged, restart_configured, restart_supported]
+      properties:
+        staged:
+          oneOf:
+            - $ref: "#/components/schemas/RestorePending"
+            - type: "null"
+        restart_configured:
+          type: boolean
+        restart_supported:
+          type: boolean
+
+    StageRestoreRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        backup_name:
+          type: string
+          description: Name of a local backup. Mutually exclusive with upload_id.
+        upload_id:
+          type: string
+          description: ID returned by the upload endpoint. Mutually exclusive with backup_name.
+
+    RestoreRestartResponse:
+      type: object
+      additionalProperties: false
+      required: [restarting]
+      properties:
+        restarting:
+          type: boolean
 
     UpdateStatus:
       type: object

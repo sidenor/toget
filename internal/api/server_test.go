@@ -17,6 +17,8 @@ import (
 	"github.com/sidenor/toget/internal/agent"
 	"github.com/sidenor/toget/internal/api"
 	"github.com/sidenor/toget/internal/approval"
+	"github.com/sidenor/toget/internal/backup"
+	"github.com/sidenor/toget/internal/config"
 	"github.com/sidenor/toget/internal/policy"
 	"github.com/sidenor/toget/internal/room"
 	"github.com/sidenor/toget/internal/session"
@@ -31,6 +33,7 @@ const testToken = "test-token-0123456789-abcdefghijklmnop"
 type testNode struct {
 	url   string
 	token string
+	dir   string
 }
 
 func newTestNode(t *testing.T, ui fs.FS) *testNode {
@@ -41,6 +44,10 @@ func newTestNode(t *testing.T, ui fs.FS) *testNode {
 func newTestNodeWithOptions(t *testing.T, ui fs.FS, configure func(*api.Options)) *testNode {
 	t.Helper()
 	dir := t.TempDir()
+	paths, err := config.Resolve(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	v, err := vault.LoadOrCreate(filepath.Join(dir, "vault.key"))
 	if err != nil {
 		t.Fatal(err)
@@ -63,6 +70,7 @@ func newTestNodeWithOptions(t *testing.T, ui fs.FS, configure func(*api.Options)
 		Policies:  policies,
 		Approvals: approvals,
 		Tools:     tool.New(db, rooms, approvals, policies),
+		Backups:   backup.NewService(db, paths),
 		Session:   session.New(session.DefaultTTL),
 		Version:   version.Current(),
 		Token:     testToken,
@@ -76,7 +84,7 @@ func newTestNodeWithOptions(t *testing.T, ui fs.FS, configure func(*api.Options)
 	handler := api.New(opts).Handler()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	return &testNode{url: server.URL, token: testToken}
+	return &testNode{url: server.URL, token: testToken, dir: dir}
 }
 
 func (n *testNode) request(t *testing.T, method, path, token, body string, headers map[string]string) (*http.Response, []byte) {

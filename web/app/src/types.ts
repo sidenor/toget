@@ -449,3 +449,36 @@ export type UpdateApplyView = {
   result: UpdateApplyResult;
   update: UpdateStatusView;
 };
+
+export type BackupManifest = {
+  format: string;
+  version: number;
+  created_at: string;
+  app_version: string;
+  schema_version: number;
+  files: { path: string; size: number; sha256: string }[];
+};
+
+export type BackupArchive = {
+  name: string;
+  size: number;
+  manifest: BackupManifest;
+};
+
+export type RestoreUpload = {
+  id: string;
+  size: number;
+  manifest: BackupManifest;
+};
+
+export type RestorePending = {
+  manifest: BackupManifest;
+  size: number;
+  staged_at: string;
+};
+
+export type RestoreStatus = {
+  staged: RestorePending | null;
+  restart_configured: boolean;
+  restart_supported: boolean;
+};

@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "./api";
-import { formatAccountID, formatTime, shortID } from "./format";
+import { formatAccountID, formatBytes, formatTime, shortID } from "./format";
 import type { Lang, Translate } from "./i18n";
 import { QRCodeImage, QRScanButton } from "./QR";
 import { decodeQRImage, qrScanErrorMessage } from "./qr";
@@ -9,6 +9,8 @@ import type {
   AgentSession,
   Approval,
   AuditResponse,
+  BackupArchive,
+  BackupManifest,
   CardView,
   Device,
   DiscoveredPeer,
@@ -18,6 +20,8 @@ import type {
   PolicyDecision,
   PolicyRule,
   RecoveryStatus,
+  RestoreStatus,
+  RestoreUpload,
   Room,
   SearchHit,
   UpdateStatusView,
@@ -1487,6 +1491,318 @@ export function PoliciesView({ t, rooms, notify, onError }: CommonProps) {
   );
 }
 
+
+type ManifestSummaryProps = {
+  t: Translate;
+  lang: Lang;
+  manifest: BackupManifest;
+  size: number;
+};
+
+function ManifestSummary({ t, lang, manifest, size }: ManifestSummaryProps) {
+  if (!manifest.format) {
+    return <p className="fine-print muted">{t("settings.backupInvalid")}</p>;
+  }
+  const created = manifest.created_at
+    ? new Intl.DateTimeFormat(lang, { dateStyle: "medium", timeStyle: "short" }).format(new Date(manifest.created_at))
+    : "—";
+  return (
+    <p className="fine-print muted">
+      {created} · {formatBytes(size)} · {t("settings.backupMeta", {
+        count: manifest.files.length,
+        schema: manifest.schema_version,
+        app: manifest.app_version || "?",
+      })}
+    </p>
+  );
+}
+
+type BackupPanelProps = Pick<CommonProps, "t" | "lang" | "notify" | "onError">;
+
+type RestoreConfirm = {
+  kind: "backup" | "upload";
+  key: string;
+  manifest: BackupManifest;
+  size: number;
+};
+
+function BackupPanel({ t, lang, notify, onError }: BackupPanelProps) {
+  const [backups, setBackups] = useState<BackupArchive[] | null>(null);
+  const [restore, setRestore] = useState<RestoreStatus | null>(null);
+  const [upload, setUpload] = useState<RestoreUpload | null>(null);
+  const [confirm, setConfirm] = useState<RestoreConfirm | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [busy, setBusy] = useState("");
+  const [message, setMessage] = useState("");
+  const [restarting, setRestarting] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  async function load() {
+    try {
+      const [list, status] = await Promise.all([api.backups(), api.restoreStatus()]);
+      setBackups(list.backups);
+      setRestore(status);
+    } catch (err) {
+      onError(err);
+    }
+  }
+
+  useEffect(() => {
+    void load();
+    // The panel loads once when Settings opens; actions refresh explicitly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function createBackup() {
+    setBusy("create");
+    setMessage("");
+    try {
+      const created = await api.createBackup();
+      setMessage(t("settings.backupCreated", { name: created.name }));
+      await load();
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function chooseFile(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setBusy("upload");
+    setMessage("");
+    setConfirm(null);
+    try {
+      const inspected = await api.uploadRestore(file);
+      setUpload(inspected);
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function discardUpload() {
+    if (!upload) return;
+    setBusy("upload");
+    try {
+      await api.discardRestoreUpload(upload.id);
+      setUpload(null);
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function stageRestore() {
+    if (!confirm) return;
+    setBusy("stage");
+    try {
+      if (confirm.kind === "upload") {
+        await api.stageRestore({ upload_id: confirm.key });
+      } else {
+        await api.stageRestore({ backup_name: confirm.key });
+      }
+      setConfirm(null);
+      setUpload(null);
+      setMessage(t("settings.backupStaged"));
+      await load();
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function cancelRestore() {
+    setBusy("cancel");
+    try {
+      await api.cancelRestore();
+      setMessage(t("settings.backupCancelled"));
+      await load();
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function restartNow() {
+    setRestarting(true);
+    setMessage("");
+    try {
+      await api.restartRestore();
+      setMessage(t("settings.backupRestarting"));
+    } catch (err) {
+      setRestarting(false);
+      onError(err);
+    }
+  }
+
+  async function download(name: string) {
+    try {
+      await api.download(api.backupDownloadURL(name), name);
+    } catch (err) {
+      onError(err);
+    }
+  }
+
+  async function remove(name: string) {
+    setBusy("delete");
+    try {
+      await api.deleteBackup(name);
+      setDeleting(null);
+      notify(t("settings.backupDeleted"));
+      await load();
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  const staged = restore?.staged ?? null;
+
+  return (
+    <article className="panel wide backup-panel">
+      <div className="backup-heading">
+        <div>
+          <h2>{t("settings.backupTitle")}</h2>
+          <p className="muted">{t("settings.backupText")}</p>
+        </div>
+        <button className="button primary" disabled={busy !== ""} onClick={() => void createBackup()}>
+          {busy === "create" ? t("settings.backupCreating") : t("settings.backupCreate")}
+        </button>
+      </div>
+
+      {message && <p className="form-success">{message}</p>}
+
+      {staged && (
+        <div className="backup-callout danger">
+          <div>
+            <strong>{t("settings.backupStagedTitle")}</strong>
+            <p className="muted">{t("settings.backupStagedText")}</p>
+            <ManifestSummary t={t} lang={lang} manifest={staged.manifest} size={staged.size} />
+          </div>
+          <div className="button-row">
+            {restore?.restart_configured && restore.restart_supported ? (
+              <button className="button danger" disabled={restarting} onClick={() => void restartNow()}>
+                {restarting ? t("settings.backupRestartingShort") : t("settings.backupRestart")}
+              </button>
+            ) : (
+              <span className="fine-print muted">{t("settings.backupRestartManual")}</span>
+            )}
+            <button className="button ghost" disabled={busy !== ""} onClick={() => void cancelRestore()}>
+              {t("settings.backupCancelStaged")}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {upload && (
+        <div className="backup-callout">
+          <div>
+            <strong>{t("settings.backupUploadReady")}</strong>
+            <p className="muted">{t("settings.backupUploadReadyText")}</p>
+            <ManifestSummary t={t} lang={lang} manifest={upload.manifest} size={upload.size} />
+          </div>
+          <div className="button-row">
+            <button
+              className="button primary"
+              disabled={busy !== ""}
+              onClick={() => setConfirm({ kind: "upload", key: upload.id, manifest: upload.manifest, size: upload.size })}
+            >
+              {t("settings.backupReviewUpload")}
+            </button>
+            <button className="button ghost" disabled={busy !== ""} onClick={() => void discardUpload()}>
+              {t("common.cancel")}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {confirm && (
+        <div className="backup-callout danger">
+          <div>
+            <strong>{t("settings.backupConfirmTitle")}</strong>
+            <p className="muted">{t("settings.backupConfirmText")}</p>
+            <ManifestSummary t={t} lang={lang} manifest={confirm.manifest} size={confirm.size} />
+          </div>
+          <div className="button-row">
+            <button className="button danger" disabled={busy !== ""} onClick={() => void stageRestore()}>
+              {busy === "stage" ? t("settings.backupStaging") : t("settings.backupStage")}
+            </button>
+            <button className="button ghost" disabled={busy !== ""} onClick={() => setConfirm(null)}>
+              {t("common.cancel")}
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="backup-list">
+        {backups === null ? (
+          <Spinner />
+        ) : backups.length === 0 ? (
+          <p className="muted">{t("settings.backupEmpty")}</p>
+        ) : (
+          backups.map((item) => (
+            <div className="backup-row" key={item.name}>
+              <div className="backup-row-main">
+                <strong className="mono">{item.name}</strong>
+                <ManifestSummary t={t} lang={lang} manifest={item.manifest} size={item.size} />
+              </div>
+              <div className="backup-row-actions">
+                <button className="button ghost small" onClick={() => void download(item.name)}>
+                  {t("settings.backupDownload")}
+                </button>
+                <button
+                  className="button ghost small"
+                  disabled={!item.manifest.format || busy !== ""}
+                  onClick={() => setConfirm({ kind: "backup", key: item.name, manifest: item.manifest, size: item.size })}
+                >
+                  {t("settings.backupRestore")}
+                </button>
+                {deleting === item.name ? (
+                  <>
+                    <button className="button danger small" disabled={busy !== ""} onClick={() => void remove(item.name)}>
+                      {t("settings.backupDeleteConfirm")}
+                    </button>
+                    <button className="button ghost small" onClick={() => setDeleting(null)}>
+                      {t("common.cancel")}
+                    </button>
+                  </>
+                ) : (
+                  <button className="button ghost danger small" onClick={() => setDeleting(item.name)}>
+                    {t("settings.backupDelete")}
+                  </button>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className="backup-upload">
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".toget-backup,application/zip"
+          hidden
+          onChange={(event) => void chooseFile(event)}
+        />
+        <button className="button" disabled={busy !== ""} onClick={() => inputRef.current?.click()}>
+          {busy === "upload" ? t("settings.backupVerifying") : t("settings.backupUpload")}
+        </button>
+        <span className="fine-print muted">{t("settings.backupUploadHint")}</span>
+      </div>
+      <p className="fine-print muted">{t("settings.backupSafety")}</p>
+    </article>
+  );
+}
+
 export function SettingsView({
   t,
   lang,
@@ -2037,10 +2353,7 @@ export function SettingsView({
             </>
           )}
         </article>
-        <article className="panel wide">
-          <h2>{t("settings.backupTitle")}</h2>
-          <p className="muted">{t("settings.backupText")}</p>
-        </article>
+        <BackupPanel t={t} lang={lang} notify={notify} onError={onError} />
         <article className="panel wide">
           <h2>{t("settings.securityTitle")}</h2>
           <p className="muted">{t("settings.securityText")}</p>

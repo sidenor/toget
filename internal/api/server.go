@@ -20,6 +20,7 @@ import (
 	"github.com/sidenor/toget/internal/account"
 	"github.com/sidenor/toget/internal/agent"
 	"github.com/sidenor/toget/internal/approval"
+	"github.com/sidenor/toget/internal/backup"
 	"github.com/sidenor/toget/internal/identity"
 	"github.com/sidenor/toget/internal/node"
 	"github.com/sidenor/toget/internal/policy"
@@ -57,6 +58,7 @@ type Options struct {
 	Tools        *tool.Service
 	Node         *node.Service
 	Updates      *update.Monitor
+	Backups      *backup.Service
 	Session      *session.Manager
 	AgentRuns    AgentRunController
 	AgentStreams AgentStreamProvider
@@ -77,6 +79,7 @@ type Server struct {
 	tools        *tool.Service
 	node         *node.Service
 	updates      *update.Monitor
+	backups      *backup.Service
 	session      *session.Manager
 	agentRuns    AgentRunController
 	agentStreams AgentStreamProvider
@@ -107,6 +110,7 @@ func New(opts Options) *Server {
 		tools:        opts.Tools,
 		node:         opts.Node,
 		updates:      opts.Updates,
+		backups:      opts.Backups,
 		session:      sessions,
 		agentRuns:    opts.AgentRuns,
 		agentStreams: opts.AgentStreams,
@@ -230,6 +234,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/rooms/{id}/tools", s.data(s.handleRequestTool))
 	mux.HandleFunc("GET /api/v1/tools/{id}", s.data(s.handleGetTool))
 	mux.HandleFunc("PATCH /api/v1/tools/{id}", s.data(s.handleCompleteTool))
+
+	// Backups and staged restores. Restore verification runs now; applying a
+	// staged restore happens before the database opens on the next start.
+	mux.HandleFunc("GET /api/v1/backups", s.data(s.handleListBackups))
+	mux.HandleFunc("POST /api/v1/backups", s.data(s.handleCreateBackup))
+	mux.HandleFunc("GET /api/v1/backups/{name}/download", s.data(s.handleDownloadBackup))
+	mux.HandleFunc("DELETE /api/v1/backups/{name}", s.data(s.handleDeleteBackup))
+	mux.HandleFunc("POST /api/v1/restore/uploads", s.data(s.handleUploadRestore))
+	mux.HandleFunc("DELETE /api/v1/restore/uploads/{id}", s.data(s.handleDeleteRestoreUpload))
+	mux.HandleFunc("GET /api/v1/restore", s.data(s.handleGetRestore))
+	mux.HandleFunc("POST /api/v1/restore", s.data(s.handleStageRestore))
+	mux.HandleFunc("DELETE /api/v1/restore", s.data(s.handleCancelRestore))
+	mux.HandleFunc("POST /api/v1/restore/restart", s.data(s.handleRestartRestore))
 
 	mux.HandleFunc("GET /", s.handleUI)
 	return s.recoverer(s.logRequests(mux))

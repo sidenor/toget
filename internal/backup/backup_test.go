@@ -1,11 +1,16 @@
 package backup_test
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sidenor/toget/internal/account"
@@ -232,5 +237,231 @@ func TestRestoreRejectsUnsafeAndInvalidArchives(t *testing.T) {
 	}
 	if _, err := backup.Create(ctx, nil, paths, filepath.Join(t.TempDir(), "x")); err == nil {
 		t.Fatal("nil database backup succeeded")
+	}
+}
+
+func makeTestBackup(t *testing.T) (config.Paths, string) {
+	t.Helper()
+	paths, err := config.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Ensure(paths); err != nil {
+		t.Fatal(err)
+	}
+	db, err := storage.Open(paths.DB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	v, err := vault.LoadOrCreate(paths.VaultKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rooms := room.New(db, v, room.WithDataDir(paths.Home))
+	actor := newKeyedActor(t, "account-verify", "device-verify", "Verifier")
+	created, _, err := rooms.CreateRoom(context.Background(), "Verify room", "", actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rooms.PostMessage(context.Background(), created.ID, actor, room.MessagePostedPayload{Text: "kept"}); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "source.toget-backup")
+	if _, err := backup.Create(context.Background(), db, paths, archive); err != nil {
+		t.Fatal(err)
+	}
+	return paths, archive
+}
+
+func TestVerifyArchive(t *testing.T) {
+	_, archive := makeTestBackup(t)
+	manifest, err := backup.Verify(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.SchemaVersion != storage.CurrentSchemaVersion || len(manifest.Files) < 2 {
+		t.Fatalf("manifest = %#v", manifest)
+	}
+
+	truncated := filepath.Join(t.TempDir(), "truncated.toget-backup")
+	data, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(truncated, data[:len(data)/2], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backup.Verify(truncated); !errors.Is(err, backup.ErrInvalidBackup) {
+		t.Fatalf("truncated verify = %v", err)
+	}
+
+	unsafe := filepath.Join(t.TempDir(), "unsafe.toget-backup")
+	sum := sha256.Sum256([]byte("x"))
+	evil := backup.Manifest{
+		Format: backup.Format, Version: backup.Version, SchemaVersion: storage.CurrentSchemaVersion,
+		Files: []backup.File{{Path: "../evil", Size: 1, SHA256: hex.EncodeToString(sum[:])}},
+	}
+	out, err := os.Create(unsafe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(out)
+	entry, err := zw.Create("manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewEncoder(entry).Encode(evil); err != nil {
+		t.Fatal(err)
+	}
+	body, err := zw.Create("data/../evil")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := body.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := out.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backup.Verify(unsafe); !errors.Is(err, backup.ErrInvalidBackup) {
+		t.Fatalf("unsafe verify = %v", err)
+	}
+}
+
+func TestStageUploadAndApply(t *testing.T) {
+	_, archive := makeTestBackup(t)
+	data, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Stage on a fresh destination.
+	dest, err := config.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Ensure(dest); err != nil {
+		t.Fatal(err)
+	}
+	service := backup.NewService(nil, dest)
+	upload, err := service.SaveUpload(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upload.Size != int64(len(data)) || upload.Manifest.Format != backup.Format {
+		t.Fatalf("upload = %#v", upload)
+	}
+	pending, err := service.StageUpload(upload.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending.Manifest.SchemaVersion != storage.CurrentSchemaVersion {
+		t.Fatalf("staged = %#v", pending)
+	}
+	if _, err := service.UploadPath(upload.ID); !errors.Is(err, backup.ErrBackupNotFound) {
+		t.Fatalf("upload should be gone after staging: %v", err)
+	}
+	if current, err := service.Pending(); err != nil || !current.StagedAt.Equal(pending.StagedAt) {
+		t.Fatalf("pending = %#v, %v", current, err)
+	}
+	manifest, _, err := backup.ApplyPending(context.Background(), dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest == nil || manifest.Format != backup.Format {
+		t.Fatalf("applied manifest = %#v", manifest)
+	}
+	if _, err := service.Pending(); !errors.Is(err, backup.ErrNoPendingRestore) {
+		t.Fatalf("pending after apply = %v", err)
+	}
+	db, err := storage.Open(dest.DB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rooms, err := room.New(db, nil).ListRooms(context.Background())
+	if err != nil || len(rooms) != 1 || rooms[0].Name != "Verify room" {
+		t.Fatalf("restored rooms = %#v, %v", rooms, err)
+	}
+}
+
+func TestStageBackupAndCancel(t *testing.T) {
+	source, archive := makeTestBackup(t)
+	data, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest, err := config.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dest.BackupsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest.BackupsDir, "local.toget-backup"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := backup.NewService(nil, dest)
+	list, err := service.List()
+	if err != nil || len(list) != 1 || list[0].Name != "local.toget-backup" {
+		t.Fatalf("list = %#v, %v", list, err)
+	}
+	if _, err := service.StageBackup("local.toget-backup"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.CancelPending(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Pending(); !errors.Is(err, backup.ErrNoPendingRestore) {
+		t.Fatalf("pending after cancel = %v", err)
+	}
+	_ = source
+}
+
+func TestApplyPendingQuarantinesCorruptArchive(t *testing.T) {
+	_, archive := makeTestBackup(t)
+	data, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest, err := config.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := backup.NewService(nil, dest)
+	upload, err := service.SaveUpload(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.StageUpload(upload.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Corrupt the staged copy after validation, simulating disk damage.
+	pendingPath := filepath.Join(dest.RestoreDir, "pending.toget-backup")
+	if err := os.WriteFile(pendingPath, []byte("not a zip"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := backup.ApplyPending(context.Background(), dest); err == nil {
+		t.Fatal("corrupt pending restore was applied")
+	}
+	if _, err := service.Pending(); !errors.Is(err, backup.ErrNoPendingRestore) {
+		t.Fatalf("corrupt pending was not quarantined: %v", err)
+	}
+	entries, err := os.ReadDir(dest.RestoreDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var quarantined bool
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "failed-") {
+			quarantined = true
+		}
+	}
+	if !quarantined {
+		t.Fatalf("no quarantined archive in %#v", entries)
 	}
 }

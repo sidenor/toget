@@ -7,6 +7,7 @@ import type {
   Approval,
   ApprovalAction,
   Attachment,
+  BackupArchive,
   CardView,
   AuditResponse,
   CreateRoomResponse,
@@ -22,6 +23,8 @@ import type {
   PolicyRule,
   RecoveryCredential,
   RecoveryStatus,
+  RestoreStatus,
+  RestoreUpload,
   Room,
   RoomDevice,
   RoomEvent,
@@ -273,6 +276,25 @@ export const api = {
   audit: (roomID: string) => request<AuditResponse>(`/api/v1/rooms/${encodeURIComponent(roomID)}/audit`),
   verifyAudit: (bundle: unknown) =>
     request<{ verified: boolean; head: string; events: number }>("/api/v1/audit/verify", json(bundle)),
+
+  backups: () => request<{ backups: BackupArchive[] }>("/api/v1/backups"),
+  createBackup: () => request<BackupArchive>("/api/v1/backups", json({})),
+  deleteBackup: (name: string) =>
+    request<void>(`/api/v1/backups/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  backupDownloadURL: (name: string) => `/api/v1/backups/${encodeURIComponent(name)}/download`,
+  restoreStatus: () => request<RestoreStatus>("/api/v1/restore"),
+  uploadRestore: (file: File) =>
+    request<RestoreUpload>("/api/v1/restore/uploads", {
+      method: "POST",
+      body: file,
+      headers: { "Content-Type": "application/octet-stream" },
+    }),
+  discardRestoreUpload: (id: string) =>
+    request<void>(`/api/v1/restore/uploads/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  stageRestore: (body: { backup_name?: string; upload_id?: string }) =>
+    request<RestoreStatus["staged"]>("/api/v1/restore", json(body)),
+  cancelRestore: () => request<void>("/api/v1/restore", { method: "DELETE" }),
+  restartRestore: () => request<{ restarting: boolean }>("/api/v1/restore/restart", json({})),
 
   async download(path: string, filename: string): Promise<void> {
     const response = await fetch(path, { credentials: "same-origin" });

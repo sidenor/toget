@@ -154,6 +154,8 @@ type Paths struct {
 	WebCache       string
 	DownloadsDir   string
 	AttachmentsDir string
+	BackupsDir     string
+	RestoreDir     string
 	UpdateState    string
 }
 
@@ -211,6 +213,8 @@ func Resolve(home string) (Paths, error) {
 		WebCache:       filepath.Join(abs, "web"),
 		DownloadsDir:   filepath.Join(abs, "downloads"),
 		AttachmentsDir: filepath.Join(abs, "attachments"),
+		BackupsDir:     filepath.Join(abs, "backups"),
+		RestoreDir:     filepath.Join(abs, "restore"),
 		UpdateState:    filepath.Join(abs, "update-check.json"),
 	}, nil
 }

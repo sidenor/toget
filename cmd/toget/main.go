@@ -275,6 +275,19 @@ func runServe(ctx context.Context) error {
 		return err
 	}
 
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	if staged, err := backup.ReadPending(paths); err == nil {
+		fmt.Printf("Restoring staged backup from %s...\n", staged.StagedAt.Local().Format(time.RFC3339))
+	}
+	if manifest, rollback, err := backup.ApplyPending(ctx, paths); err != nil {
+		// ApplyPending quarantines a failed archive, so the node still starts
+		// with its existing data and the operator can inspect the failure.
+		logger.Error("staged restore failed", "error", err)
+		fmt.Fprintf(os.Stderr, "Restore failed; continuing with existing data: %v\n", err)
+	} else if manifest != nil {
+		fmt.Printf("Restored %d files (schema v%d). Previous data: %s\n", len(manifest.Files), manifest.SchemaVersion, rollback)
+	}
+
 	db, err := storage.Open(paths.DB)
 	if err != nil {
 		return err
@@ -290,7 +303,6 @@ func runServe(ctx context.Context) error {
 		return err
 	}
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	signalCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	reconcileUpdateOnStartup(logger, cfg)
@@ -410,6 +422,7 @@ func runServe(ctx context.Context) error {
 		defer agentRunner.Close()
 	}
 
+	backupService := backup.NewService(db, paths)
 	handler := api.New(api.Options{
 		Accounts:     accounts,
 		Rooms:        rooms,
@@ -419,6 +432,7 @@ func runServe(ctx context.Context) error {
 		Tools:        tools,
 		Node:         apiNode,
 		Updates:      updateMonitor,
+		Backups:      backupService,
 		Session:      sessions,
 		AgentRuns:    agentRunner,
 		AgentStreams: agentRunner,

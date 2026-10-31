@@ -316,7 +316,18 @@ What matters, in order:
 3. **Configuration** — relay parent, ports, Agent policies.
 4. **Recovery credential** — per device; required to reset a forgotten password while the node is locked. Store it offline.
 
-A backup is only useful if restore is tested. `toget backup` writes an encrypted archive; `toget restore` verifies and restores it. Backups never leave the machine unless the user moves them.
+A backup is only useful if restore is tested. `toget backup` writes an
+encrypted archive, and Settings → Backup and restore can create, download,
+verify, and stage a restore from the browser. `toget restore` remains the
+offline path.
+
+The web restore flow is deliberately two-step: the uploaded archive is checked
+entry by entry, then staged. The running node keeps serving until it restarts;
+the new process applies the staged restore before opening the database, moves
+the previous database, vault key, and attachments into a timestamped
+`pre-restore-*` directory, and removes the staged marker. A corrupt staged
+archive is quarantined under `restore/failed-*` instead of causing a boot loop.
+Backups never leave the machine unless the user moves them.
 
 ## Observability
 

@@ -150,20 +150,20 @@ which do not exist yet. See [account-recovery.md](account-recovery.md) and
 
 **Goal:** make it pleasant enough to use every day.
 
-- [ ] PWA install and mobile approval flow
+- [x] PWA install and mobile approval flow
 - [ ] Notifications with content-free payloads
 - [x] Policy language v1: domains, recipients, amounts, time windows
 - [x] Connector interface for non-Claude Agent runtimes: v1 protocol, Go SDK, example, and `toget connector check`
-- [ ] Audit export with hash-chain proof
+- [x] Audit export with hash-chain proof
 - [ ] Desktop shell with tray and auto-start
 - [x] English and Chinese UI
-- [ ] Backup and restore flow with a tested restore
+- [x] Backup and restore flow with a tested restore
 
 **Status:** policy language v1 is implemented end to end: room and per-Agent
 rules, deny-wins precedence, allow-as-preauthorization, weekday and time
 windows, API endpoints, and a web rule editor/evaluator. The connector
-contract and bilingual UI are also done. PWA install, content-free
-notifications, audit export, desktop shell, and the backup/restore UI remain.
+contract and bilingual UI are also done. Content-free
+notifications and the desktop shell remain.
 See [policies.md](policies.md).
 
 **Done when:** a user can install Toget on a laptop and a phone, run Agents from both, approve actions on the phone, and export a verifiable audit trail.

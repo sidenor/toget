@@ -3248,3 +3248,132 @@ select {
     padding-bottom: calc(40px + env(safe-area-inset-bottom));
   }
 }
+
+/* Backup and restore */
+.backup-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.backup-panel h2 {
+  margin-bottom: 6px;
+}
+
+.backup-panel .button {
+  margin-top: 0;
+}
+
+.backup-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.backup-heading > div {
+  flex: 1 1 320px;
+}
+
+.backup-heading .muted {
+  margin: 0;
+}
+
+.backup-callout {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+  padding: 15px 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+
+.backup-callout.danger {
+  border-color: color-mix(in srgb, var(--danger) 30%, var(--line));
+  background: color-mix(in srgb, var(--danger) 7%, var(--panel));
+}
+
+.backup-callout > div:first-child {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.backup-callout p {
+  margin: 5px 0 0;
+}
+
+.backup-callout .button-row {
+  margin-top: 0;
+  align-items: center;
+}
+
+.backup-list {
+  display: grid;
+  border-top: 1px solid var(--line);
+}
+
+.backup-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.backup-row-main {
+  flex: 1 1 320px;
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.backup-row-main strong {
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.backup-row-main p {
+  margin: 0;
+}
+
+.backup-row-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.backup-upload {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.backup-upload .fine-print {
+  flex: 1 1 280px;
+}
+
+@media (max-width: 760px) {
+  .backup-heading,
+  .backup-callout,
+  .backup-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .backup-heading > button,
+  .backup-callout .button,
+  .backup-row-actions .button {
+    width: 100%;
+  }
+
+  .backup-row-actions {
+    width: 100%;
+  }
+}
