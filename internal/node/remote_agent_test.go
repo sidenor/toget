@@ -222,14 +222,34 @@ func TestRemoteRoomAgentPresence(t *testing.T) {
 		t.Fatalf("mallory presence = %#v", malloryPresence)
 	}
 
-	// Leaving removes the Agent from the projection everywhere.
-	if _, err := agents.LeaveRoom(ctx, created.ID, joined.ID, guestActor); err != nil {
+	// Revocation removes the Agent from every room, so the home projection and
+	// the shared presence view close without the owner issuing a manual leave.
+	if err := agents.Revoke(ctx, created.ID, guestActor); err != nil {
 		t.Fatal(err)
+	}
+	binding, err := host.db.GetRoomAgent(ctx, joined.ID, created.ID)
+	if err != nil || binding.Active {
+		t.Fatalf("host projection after revoke = %#v, %v", binding, err)
+	}
+	hostEvents, err := host.rooms.ListEvents(ctx, joined.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := hostEvents[len(hostEvents)-1]
+	if last.Type != room.EventAgentLeft {
+		t.Fatalf("last host event after revoke = %#v", last)
+	}
+	var left room.AgentLeftPayload
+	if err := json.Unmarshal(last.Payload, &left); err != nil || left.AgentID != created.ID || left.Reason != "revoked" {
+		t.Fatalf("revoke payload = %#v, %v", left, err)
+	}
+	if inRoom, err := guest.db.IsAgentInRoom(ctx, created.ID, joined.ID); err != nil || inRoom {
+		t.Fatalf("guest membership after revoke = %v, %v", inRoom, err)
 	}
 	if presence, err := host.rooms.ListAgentPresence(ctx, joined.ID); err != nil {
 		t.Fatal(err)
 	} else if findPresence(presence, created.ID) != nil {
-		t.Fatalf("host presence after leave = %#v", presence)
+		t.Fatalf("host presence after revoke = %#v", presence)
 	}
 }
 

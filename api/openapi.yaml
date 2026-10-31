@@ -1659,6 +1659,11 @@ paths:
       tags: [agents]
       operationId: revokeAgent
       summary: Revoke an Agent
+      description: |
+        Permanently disables the Agent and removes it from every room with an
+        `agent.left` event whose reason is `revoked`. If a room cannot be
+        reached, the call fails before the Agent is marked revoked; a retry
+        finishes the remaining rooms. Revocation is idempotent.
       parameters:
         - $ref: "#/components/parameters/AgentID"
       responses:
@@ -1666,10 +1671,14 @@ paths:
           description: The Agent is revoked.
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "423":
           $ref: "#/components/responses/Locked"
+        "502":
+          $ref: "#/components/responses/BadGateway"
 
   /api/v1/agents/{id}/rooms:
     get:

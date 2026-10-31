@@ -117,9 +117,23 @@ func (s *Service) validateRemoteAgentLeft(ctx context.Context, plain *Event) (*R
 	if body.AgentID == "" || len(body.AgentID) > maxRemoteAgentIDLength {
 		return nil, fmt.Errorf("%w: agent.left payload is invalid", ErrInvalidEvent)
 	}
-	current, err := s.activeRoomAgent(ctx, plain.RoomID, body.AgentID, plain.AuthorID)
+	current, err := s.store.GetRoomAgent(ctx, plain.RoomID, body.AgentID)
 	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, fmt.Errorf("%w: agent is not joined to this room", ErrForbidden)
+		}
 		return nil, err
+	}
+	if current.AccountID != plain.AuthorID {
+		return nil, fmt.Errorf("%w: agent does not belong to the event author", ErrForbidden)
+	}
+	if !current.Active {
+		// A retry after a lost response, or a revocation that left the Agent
+		// more than once, keeps the original leave sequence.
+		return &RoomAgent{
+			RoomID: current.RoomID, AgentID: current.AgentID, AccountID: current.AccountID,
+			Active: false, JoinedSeq: current.JoinedSeq, LeftSeq: current.LeftSeq,
+		}, nil
 	}
 	return &RoomAgent{
 		RoomID: current.RoomID, AgentID: current.AgentID, AccountID: current.AccountID,

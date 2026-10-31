@@ -88,4 +88,41 @@ func TestAgentMessagesAndSessions(t *testing.T) {
 	if resp.StatusCode != http.StatusConflict || !strings.Contains(string(body), "agent_not_in_room") {
 		t.Fatalf("non-member agent message = %d %s", resp.StatusCode, body)
 	}
+
+	// Revocation removes the Agent from its rooms and records why.
+	resp, body = node.request(t, http.MethodPost, "/api/v1/agents/"+created.ID+"/revoke", testToken, "", nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("revoke agent = %d %s", resp.StatusCode, body)
+	}
+	resp, body = node.request(t, http.MethodGet, "/api/v1/rooms/"+roomID+"/agents", testToken, "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("room agents after revoke = %d %s", resp.StatusCode, body)
+	}
+	if list := decode[struct {
+		Agents []agent.Agent `json:"agents"`
+	}](t, body); len(list.Agents) != 0 {
+		t.Fatalf("room agents after revoke = %s", body)
+	}
+	resp, body = node.request(t, http.MethodGet, "/api/v1/rooms/"+roomID+"/events?type=agent.left", testToken, "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("revoke events = %d %s", resp.StatusCode, body)
+	}
+	events := decode[struct {
+		Events []room.Event `json:"events"`
+	}](t, body)
+	var revoked *room.AgentLeftPayload
+	for _, event := range events.Events {
+		var left room.AgentLeftPayload
+		if err := json.Unmarshal(event.Payload, &left); err == nil && left.AgentID == created.ID {
+			revoked = &left
+			break
+		}
+	}
+	if revoked == nil || revoked.Reason != "revoked" {
+		t.Fatalf("revoke event = %s", body)
+	}
+	resp, body = node.request(t, http.MethodPost, "/api/v1/agents/"+created.ID+"/revoke", testToken, "", nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("second revoke = %d %s", resp.StatusCode, body)
+	}
 }

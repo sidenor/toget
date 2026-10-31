@@ -110,11 +110,16 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRevokeAgent(w http.ResponseWriter, r *http.Request) {
+	actor, _, err := s.actor(r.Context())
+	if err != nil {
+		writeActorError(w, err)
+		return
+	}
 	if _, err := s.ownedAgent(r, r.PathValue("id")); err != nil {
 		writeAgentError(w, err)
 		return
 	}
-	if err := s.agents.Revoke(r.Context(), r.PathValue("id")); err != nil {
+	if err := s.agents.Revoke(r.Context(), r.PathValue("id"), actor); err != nil {
 		writeAgentError(w, err)
 		return
 	}

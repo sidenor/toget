@@ -244,9 +244,9 @@ run.
   local approval list. Agent names, runtime, owner, and status are projected
   from the room log, so every member with the relevant history sees shared
   Agents in the room Agent list and mention detection without querying the
-  owner's node. Revocation is local to the owner's node: it hides the Agent
-  there but does not yet emit `agent.left`, so other members can keep seeing
-  its last announced presence until the owner removes it from the room.
+  owner's node. Revoking an Agent removes it from every room with an
+  `agent.left` event whose reason is `revoked`, so other members and the home
+  node's ownership projection stop admitting it.
 - Replies are posted when the run finishes; partial streaming is not
   implemented.
 - A shared Agent's owner can see what the Agent can see. Joining a shared Agent

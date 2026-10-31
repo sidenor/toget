@@ -83,8 +83,31 @@ func TestAgentLifecycle(t *testing.T) {
 	if _, _, err := svc.SetStatus(ctx, ag.ID, "bogus", "", "", a); err == nil {
 		t.Fatal("invalid status accepted")
 	}
-	if err := svc.Revoke(ctx, ag.ID); err != nil {
+	foreign := a
+	foreign.AccountID = "account-2"
+	if err := svc.Revoke(ctx, ag.ID, foreign); !errors.Is(err, agent.ErrNotAgentOwner) {
+		t.Fatalf("foreign revoke error = %v", err)
+	}
+	if err := svc.Revoke(ctx, ag.ID, a); err != nil {
 		t.Fatal(err)
+	}
+	if inRoom, err := svc.ListInRoom(ctx, r.ID); err != nil || len(inRoom) != 0 {
+		t.Fatalf("room agents after revoke = %#v, err=%v", inRoom, err)
+	}
+	events, err := rooms.ListEvents(ctx, r.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := events[len(events)-1]
+	if last.Type != room.EventAgentLeft {
+		t.Fatalf("last event after revoke = %#v", last)
+	}
+	var left room.AgentLeftPayload
+	if err := json.Unmarshal(last.Payload, &left); err != nil || left.AgentID != ag.ID || left.Reason != "revoked" {
+		t.Fatalf("revoke leave payload = %#v, %v", left, err)
+	}
+	if err := svc.Revoke(ctx, ag.ID, a); err != nil {
+		t.Fatalf("second revoke = %v", err)
 	}
 	if _, _, err := svc.JoinRoom(ctx, ag.ID, r.ID, a); !errors.Is(err, agent.ErrRevoked) {
 		t.Fatalf("revoked join error = %v", err)

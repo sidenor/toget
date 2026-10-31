@@ -239,11 +239,36 @@ func (s *Service) SetStatus(ctx context.Context, agentID, status, detail, roomID
 	return a, event, nil
 }
 
-// Revoke permanently disables an Agent.
-func (s *Service) Revoke(ctx context.Context, agentID string) error {
+// Revoke permanently disables an Agent. It first removes the Agent from every
+// room with an agent.left event carrying reason "revoked", so other members
+// stop seeing it and the home node closes its ownership projection. If a room
+// cannot be reached the call fails without marking the Agent revoked; the
+// membership already removed is not retried, and calling Revoke again finishes
+// the remaining rooms.
+func (s *Service) Revoke(ctx context.Context, agentID string, actor room.Actor) error {
 	a, err := s.store.GetAgent(ctx, agentID)
 	if err != nil {
 		return err
+	}
+	if a.AccountID != actor.AccountID {
+		return ErrNotAgentOwner
+	}
+	if a.RevokedAt != nil {
+		return nil
+	}
+	refs, err := s.store.ListAgentRooms(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	for _, ref := range refs {
+		if _, err := s.rooms.Append(ctx, ref.RoomID, actor, room.EventAgentLeft, room.AgentLeftPayload{
+			AgentID: agentID, Reason: "revoked",
+		}); err != nil {
+			return err
+		}
+		if err := s.store.RemoveAgentRoom(ctx, agentID, ref.RoomID); err != nil {
+			return err
+		}
 	}
 	now := s.now().UTC().Truncate(time.Millisecond)
 	a.Status = StatusRevoked

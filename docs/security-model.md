@@ -82,6 +82,9 @@ Two Toget nodes on the same LAN currently talk over HTTPS on `7717`:
   member who can decrypt that part of the history can see which shared Agents
   are present. This is deliberate: Agents are room participants. No separate
   directory entry or cross-node lookup is involved.
+- Revoking an Agent appends `agent.left` with reason `revoked` to every room
+  before the Agent is marked revoked. A home node that cannot be reached
+  blocks the revocation instead of leaving an active projection elsewhere.
 - Device pairing is explicit and visible. The new device proves possession of
   the keys it submits; the existing device displays a fingerprint and requires
   local approval. The account private key is sealed to the new device with
