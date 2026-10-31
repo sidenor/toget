@@ -342,6 +342,20 @@ func DecodeEncryptionPublicKey(encoded string) ([]byte, error) {
 	return raw, nil
 }
 
+// ParseDeviceCertificate decodes an unverified device certificate. Callers
+// must still verify its signature and expiry before trusting it.
+func ParseDeviceCertificate(data []byte) (*DeviceCertificate, error) {
+	var cert DeviceCertificate
+	if err := json.Unmarshal(data, &cert); err != nil {
+		return nil, fmt.Errorf("decode device certificate: %w", err)
+	}
+	if cert.DeviceID == "" || cert.AccountID == "" || cert.DevicePubKey == "" ||
+		cert.Signature == "" || cert.IssuedAt.IsZero() || cert.ExpiresAt.IsZero() {
+		return nil, errors.New("device certificate is incomplete")
+	}
+	return &cert, nil
+}
+
 // VerifyDeviceCertificate verifies a certificate against an account key.
 func VerifyDeviceCertificate(data []byte, accountPub ed25519.PublicKey) (*DeviceCertificate, error) {
 	var cert DeviceCertificate

@@ -69,16 +69,30 @@ Two Toget nodes on the same LAN currently talk over HTTPS on `7717`:
   joining device's encryption key.
 - Room payloads remain sealed with the room epoch key; the node transport
   does not unwrap them.
-- A remote room is read-only locally except for sending messages. The home
-  node remains the only log writer, preventing a local mutation from forking
-  the append-only hash chain.
+- A remote room is read-only locally except for sending messages, uploading
+  attachments, leaving, and local archival. The home node remains the only log
+  writer, preventing a local mutation from forking the append-only hash chain.
+- Device pairing is explicit and visible. The new device proves possession of
+  the keys it submits; the existing device displays a fingerprint and requires
+  local approval. The account private key is sealed to the new device with
+  X25519 + HKDF-SHA256 + XChaCha20-Poly1305; the pairing code is a bearer
+  secret and is valid for ten minutes.
+- Revocation marks the account device and every known room device revoked,
+  then rotates the room epoch. New messages no longer decrypt to the revoked
+  device. Offline room homes are retried and reported as warnings.
 
 Residual risks: the host sees IP addresses, account and device IDs in request
 headers, room IDs, and timing. The invite code is a bearer secret shown once;
-anyone who obtains it before redemption can join. The certificate is pinned
+anyone who obtains it before redemption can join. The pairing code is also a
+bearer secret: anyone who obtains it can request to add a device, but the
+request must still be approved on an existing device and its fingerprint
+compared. A device that holds the account private key can mint certificates
+for new devices, so compromising one device compromises the account key until
+account-key rotation exists. Revocation only reaches rooms the revoking node
+knows about. The certificate is pinned
 but not publicly audited. There is no relay or multi-hop privacy yet, and
-remote attachments and remote administration are unsupported rather than
-securely implemented.
+remote administration beyond attachments, self-leave, and local archival is
+unsupported rather than securely implemented.
 
 ## Adversaries and threats
 

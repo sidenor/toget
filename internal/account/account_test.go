@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/sidenor/toget/internal/account"
 	"github.com/sidenor/toget/internal/identity"
@@ -124,5 +125,56 @@ func TestAccountPersistsAcrossRestart(t *testing.T) {
 	}
 	if loaded.Device.ID != created.Device.ID {
 		t.Fatalf("device ID changed: %q != %q", loaded.Device.ID, created.Device.ID)
+	}
+}
+
+func TestRefreshCertificatesRenewsNearExpiry(t *testing.T) {
+	dir := t.TempDir()
+	v, err := vault.LoadOrCreate(filepath.Join(dir, "vault.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := storage.Open(filepath.Join(dir, "toget.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	svc := account.New(db, v)
+	ctx := context.Background()
+	snapshot, err := svc.Create(ctx, "Aiden", "testpass123", "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountKey, err := svc.UnsealPrivateKey(snapshot.Account)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A certificate that expires in 25 days is inside the renewal window.
+	old, err := identity.SignDeviceCertificate(snapshot.Device.ID, snapshot.Account.ID,
+		ed25519.PublicKey(snapshot.Device.PublicKey), snapshot.Device.EncryptionPublicKey,
+		accountKey, time.Now().UTC().Add(-340*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Device.Certificate = string(old)
+	if err := svc.UpdateDevice(ctx, snapshot.Device); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RefreshCertificates(ctx); err != nil {
+		t.Fatal(err)
+	}
+	renewed, err := svc.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renewed.Device.Certificate == string(old) {
+		t.Fatal("near-expiry certificate was not renewed")
+	}
+	cert, err := identity.VerifyDeviceCertificate([]byte(renewed.Device.Certificate), ed25519.PublicKey(snapshot.Account.PublicKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cert.ExpiresAt.After(time.Now().Add(300 * 24 * time.Hour)) {
+		t.Fatalf("renewed certificate expires too soon: %s", cert.ExpiresAt)
 	}
 }

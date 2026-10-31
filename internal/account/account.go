@@ -3,11 +3,13 @@
 package account
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -33,6 +35,9 @@ var (
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	// ErrCurrentDevice means the current device cannot revoke itself.
 	ErrCurrentDevice = errors.New("cannot revoke the current device")
+	// ErrInvalidImport means recovered account material is malformed or does
+	// not match its own keys and certificates.
+	ErrInvalidImport = errors.New("invalid account import")
 )
 
 const (
@@ -91,6 +96,9 @@ type Device struct {
 	RevokedAt            *time.Time `json:"revoked_at,omitempty"`
 	LastSeenAt           *time.Time `json:"last_seen_at,omitempty"`
 	CreatedAt            time.Time  `json:"created_at"`
+	// Local marks the device running this node. A paired device stores its
+	// siblings' public certificates but never their private keys.
+	Local bool `json:"local,omitempty"`
 }
 
 // Snapshot is the local account state.
@@ -108,6 +116,7 @@ type Store interface {
 	GetDeviceByID(ctx context.Context, deviceID string) (*Device, error)
 	ListDevices(ctx context.Context, accountID string) ([]Device, error)
 	CreateAccount(ctx context.Context, server *Server, account *Account, device *Device) error
+	ImportAccount(ctx context.Context, server *Server, account *Account, devices []Device) error
 	AddDevice(ctx context.Context, device *Device) error
 	UpdateDevice(ctx context.Context, device *Device) error
 	AccountCodeExists(ctx context.Context, serverID, code string) (bool, error)
@@ -219,6 +228,7 @@ func (s *Service) Create(ctx context.Context, name, password, deviceName string)
 		Certificate:          string(cert),
 		Role:                 "node",
 		CreatedAt:            now,
+		Local:                true,
 	}
 
 	if err := s.store.CreateAccount(ctx, server, account, device); err != nil {
@@ -228,6 +238,174 @@ func (s *Service) Create(ctx context.Context, name, password, deviceName string)
 		return nil, err
 	}
 	return &Snapshot{Account: account, Server: server, Device: device}, nil
+}
+
+// ImportSpec carries account material recovered from a paired device.
+type ImportSpec struct {
+	AccountID         string
+	AccountCode       string
+	Name              string
+	AccountPublicKey  []byte
+	AccountPrivateKey ed25519.PrivateKey
+	PasswordHash      string
+	CreatedAt         time.Time
+	// Device is this machine's new device identity with plaintext keys. The
+	// service seals them with the local vault.
+	Device Device
+	// Siblings are the account's other devices. They carry certificates and
+	// public keys only.
+	Siblings []Device
+}
+
+// Import stores an account recovered through device pairing. It creates a
+// fresh local server identity while preserving the account ID, account code,
+// password, and account signing key. The local server becomes the home for
+// rooms created on this machine; rooms hosted elsewhere keep their own home.
+func (s *Service) Import(ctx context.Context, spec ImportSpec) (*Snapshot, error) {
+	name := strings.TrimSpace(spec.Name)
+	if name == "" || len(name) > 64 {
+		return nil, ErrInvalidName
+	}
+	if !isDigits(spec.AccountID, 14) || !isDigits(spec.AccountCode, 6) ||
+		!strings.HasSuffix(spec.AccountID, spec.AccountCode) {
+		return nil, fmt.Errorf("%w: account id or code is invalid", ErrInvalidImport)
+	}
+	if len(spec.AccountPublicKey) != ed25519.PublicKeySize ||
+		len(spec.AccountPrivateKey) != ed25519.PrivateKeySize ||
+		!bytes.Equal(spec.AccountPrivateKey.Public().(ed25519.PublicKey), spec.AccountPublicKey) {
+		return nil, fmt.Errorf("%w: account key material does not match", ErrInvalidImport)
+	}
+	if _, _, _, _, _, err := parsePasswordHash(spec.PasswordHash); err != nil {
+		return nil, fmt.Errorf("%w: password hash is invalid", ErrInvalidImport)
+	}
+	if spec.CreatedAt.IsZero() {
+		spec.CreatedAt = s.now().UTC().Truncate(time.Millisecond)
+	}
+	if _, err := s.store.GetAccount(ctx); err == nil {
+		return nil, ErrAlreadyExists
+	} else if !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+
+	now := s.now().UTC().Truncate(time.Millisecond)
+	server, err := s.loadOrCreateServer(ctx, now)
+	if err != nil {
+		return nil, err
+	}
+	device := spec.Device
+	device.AccountID = spec.AccountID
+	device.Name = strings.TrimSpace(device.Name)
+	if device.Name == "" || len(device.Name) > 64 {
+		return nil, ErrInvalidName
+	}
+	if device.ID == "" || len(device.PublicKey) != ed25519.PublicKeySize ||
+		len(device.PrivateKey) != ed25519.PrivateKeySize ||
+		!bytes.Equal(ed25519.PrivateKey(device.PrivateKey).Public().(ed25519.PublicKey), device.PublicKey) ||
+		len(device.EncryptionPublicKey) != 32 || len(device.EncryptionPrivateKey) != 32 {
+		return nil, fmt.Errorf("%w: device key material is invalid", ErrInvalidImport)
+	}
+	if device.Role == "" {
+		device.Role = "node"
+	}
+	if device.CreatedAt.IsZero() {
+		device.CreatedAt = now
+	}
+	device.Local = true
+	if device.Certificate == "" {
+		return nil, fmt.Errorf("%w: device certificate is missing", ErrInvalidImport)
+	}
+	devices := []Device{device}
+	seen := map[string]bool{device.ID: true}
+	for i := range spec.Siblings {
+		sibling := spec.Siblings[i]
+		sibling.AccountID = spec.AccountID
+		sibling.Local = false
+		// Sibling private keys never travel during pairing.
+		sibling.PrivateKey = nil
+		sibling.EncryptionPrivateKey = nil
+		if sibling.ID == "" || seen[sibling.ID] ||
+			len(sibling.PublicKey) != ed25519.PublicKeySize ||
+			len(sibling.EncryptionPublicKey) != 32 || sibling.Certificate == "" {
+			return nil, fmt.Errorf("%w: sibling device is invalid", ErrInvalidImport)
+		}
+		if sibling.Role == "" {
+			sibling.Role = "node"
+		}
+		seen[sibling.ID] = true
+		devices = append(devices, sibling)
+	}
+	for i := range devices {
+		if err := verifyDeviceCertificate(&devices[i], spec.AccountPublicKey, spec.AccountID); err != nil {
+			return nil, err
+		}
+	}
+
+	sealedAccountKey, err := s.vault.Seal(spec.AccountPrivateKey, aadAccountKey)
+	if err != nil {
+		return nil, fmt.Errorf("seal account key: %w", err)
+	}
+	sealedDeviceKey, err := s.vault.Seal(device.PrivateKey, aadDeviceKey)
+	if err != nil {
+		return nil, fmt.Errorf("seal device key: %w", err)
+	}
+	sealedEncryptionKey, err := s.vault.Seal(device.EncryptionPrivateKey, aadDeviceEncryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("seal device encryption key: %w", err)
+	}
+	account := &Account{
+		ID:           spec.AccountID,
+		ServerID:     server.ID,
+		Code:         spec.AccountCode,
+		Name:         name,
+		PublicKey:    append([]byte(nil), spec.AccountPublicKey...),
+		PrivateKey:   []byte(sealedAccountKey),
+		PasswordHash: spec.PasswordHash,
+		CreatedAt:    spec.CreatedAt.UTC().Truncate(time.Millisecond),
+	}
+	devices[0].PrivateKey = []byte(sealedDeviceKey)
+	devices[0].EncryptionPrivateKey = []byte(sealedEncryptionKey)
+	if err := s.store.ImportAccount(ctx, server, account, devices); err != nil {
+		if errors.Is(err, ErrAlreadyExists) {
+			return nil, ErrAlreadyExists
+		}
+		return nil, err
+	}
+	device = devices[0]
+	return &Snapshot{Account: account, Server: server, Device: &device}, nil
+}
+
+func verifyDeviceCertificate(device *Device, accountPublicKey ed25519.PublicKey, accountID string) error {
+	if device.AccountID != accountID {
+		return fmt.Errorf("%w: device belongs to another account", ErrInvalidImport)
+	}
+	cert, err := identity.VerifyDeviceCertificate([]byte(device.Certificate), accountPublicKey)
+	if err != nil {
+		return fmt.Errorf("%w: device certificate: %v", ErrInvalidImport, err)
+	}
+	if cert.DeviceID != device.ID || cert.AccountID != accountID {
+		return fmt.Errorf("%w: device certificate identity does not match", ErrInvalidImport)
+	}
+	signingKey, err := identity.DecodePublicKey(cert.DevicePubKey)
+	if err != nil || !bytes.Equal(signingKey, device.PublicKey) {
+		return fmt.Errorf("%w: device signing key does not match its certificate", ErrInvalidImport)
+	}
+	encryptionKey, err := identity.DecodeEncryptionPublicKey(cert.EncryptionPublicKey)
+	if err != nil || !bytes.Equal(encryptionKey, device.EncryptionPublicKey) {
+		return fmt.Errorf("%w: device encryption key does not match its certificate", ErrInvalidImport)
+	}
+	return nil
+}
+
+func isDigits(value string, length int) bool {
+	if len(value) != length {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // Get returns the local account snapshot.
@@ -281,6 +459,49 @@ func (s *Service) AddDevice(ctx context.Context, device *Device) error {
 // UpdateDevice persists mutable device fields.
 func (s *Service) UpdateDevice(ctx context.Context, device *Device) error {
 	return s.store.UpdateDevice(ctx, device)
+}
+
+// RefreshCertificates re-signs device certificates that are missing, invalid,
+// or within 30 days of expiry. Account keys rarely change, but certificates do
+// expire after a year; renewing them keeps paired devices able to register
+// with room homes without asking the user to re-pair.
+func (s *Service) RefreshCertificates(ctx context.Context) error {
+	snapshot, err := s.Get(ctx)
+	if err != nil {
+		return err
+	}
+	accountKey, err := s.UnsealPrivateKey(snapshot.Account)
+	if err != nil {
+		return err
+	}
+	devices, err := s.store.ListDevices(ctx, snapshot.Account.ID)
+	if err != nil {
+		return err
+	}
+	now := s.now().UTC().Truncate(time.Second)
+	renewAfter := now.Add(30 * 24 * time.Hour)
+	for i := range devices {
+		device := &devices[i]
+		if device.RevokedAt != nil {
+			continue
+		}
+		var cert identity.DeviceCertificate
+		parseErr := json.Unmarshal([]byte(device.Certificate), &cert)
+		if parseErr == nil && cert.ExpiresAt.After(renewAfter) && cert.DeviceID == device.ID &&
+			cert.AccountID == snapshot.Account.ID {
+			continue
+		}
+		signed, err := identity.SignDeviceCertificate(device.ID, snapshot.Account.ID, device.PublicKey,
+			device.EncryptionPublicKey, accountKey, now)
+		if err != nil {
+			return err
+		}
+		device.Certificate = string(signed)
+		if err := s.store.UpdateDevice(ctx, device); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // RevokeDevice marks another device on this account as revoked.

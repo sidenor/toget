@@ -231,7 +231,7 @@ func Restore(ctx context.Context, paths config.Paths, archivePath string) (*Mani
 	if err != nil {
 		return nil, "", fmt.Errorf("restore: read schema version: %w", err)
 	}
-	if schema > 3 {
+	if schema > storage.CurrentSchemaVersion {
 		return nil, "", fmt.Errorf("%w: database schema %d is newer than this build", ErrInvalidBackup, schema)
 	}
 	if _, err := os.Stat(filepath.Join(data, "vault.key")); err != nil {

@@ -53,10 +53,12 @@ pnpm --filter @toget/app build   # web/app/dist is also committed
 go run ./cmd/toget serve
 ```
 
-Open <http://127.0.0.1:7718> and create your account. There is no recovery
-flow yet. At this stage the password is an Argon2id verifier for future
-sign-in; it does not yet unlock the local vault, so protect the data directory
-with OS permissions and full-disk encryption on a shared machine.
+Open <http://127.0.0.1:7718> and create your account. There is no password
+recovery service yet, but you can link a second device through pairing (below),
+and an encrypted backup can move an account between machines. At this stage
+the password is an Argon2id verifier for local sign-in; it does not yet unlock
+the local vault, so protect the data directory with OS permissions and
+full-disk encryption on a shared machine.
 
 The same loop from the CLI, while `toget serve` is running:
 
@@ -85,6 +87,30 @@ The web UI has the same flow: **Room details → Invite someone** shows the code
 and **Join with code** in the room sidebar redeems it. If the node advertises
 the wrong interface, set `--node-advertise <host:port>` or
 `node_advertise` in `config.json`. `--no-node` keeps a node local-only.
+
+To use the same account on a **second device**, pair the devices instead of
+copying the data directory. Keep `toget serve` running on the existing device:
+
+```bash
+toget pair create
+# Pairing code (valid for 10 minutes): toget-pair:v1:eyJ...
+```
+
+On the fresh device, run `toget pair join 'toget-pair:v1:eyJ...' --name Laptop`.
+It sends its own new keys and prints a fingerprint. Back on the existing
+device, check that the fingerprint matches, then approve:
+
+```bash
+toget pair list
+toget pair approve <pairing-id>
+```
+
+The new device receives the account record, its own device certificate, and
+the account private key sealed to its encryption key. It also receives room
+membership and epoch keys, then syncs message history from each room's home.
+The pairing code is a short-lived bearer secret, and the account key is never
+transferred in plaintext. The web UI has the same flow under **Devices →
+Link another device**.
 
 Data lives in the per-user data directory (`~/.local/share/toget` on Linux,
 `~/Library/Application Support/Toget` on macOS, `%LOCALAPPDATA%\Toget` on
@@ -115,12 +141,15 @@ has account and device identity, end-to-end encrypted room epochs, an
 encrypted hash-chained event log, attachments, backup and restore, the
 loopback API, the CLI, and a bilingual React web UI. Two nodes on the same
 LAN can join a room with a portable invite code, exchange messages, and sync
-history. Agents can be registered, joined to rooms, and gated through local
-approval and tool-receipt cards.
+history. A second device can pair with an existing one to recover the same
+account without copying private keys, then sync its rooms from their homes.
+Remote rooms support attachments, self-leave, and local archival. Agents can be
+registered, joined to rooms, and gated through local approval and tool-receipt
+cards.
 
-Not implemented yet: a hosted relay or directory, NAT traversal, attachment
-upload into remote rooms, remote room leave/archive administration, and a
-built-in model runtime.
+Not implemented yet: a hosted relay or directory, NAT traversal, public-network
+connectivity, account-key rotation, account-record sync between paired
+devices, multiple accounts on one node, and a built-in model runtime.
 Agents are controlled through the local API; an external runtime has to drive
 them. Many parts will change as we learn.
 That is exactly why the project is open this early. If you care about
@@ -178,7 +207,9 @@ pnpm --filter @toget/app build
 go run ./cmd/toget serve
 ```
 
-打开 <http://127.0.0.1:7718> 创建账号。也可以让服务在后台运行，再用 CLI：
+打开 <http://127.0.0.1:7718> 创建账号。目前还没有密码找回服务，但可以用下面的「设备配对」把同一账号连到第二台设备，也可以用备份把账号迁移到新机器。现阶段密码只作为本地登录的 Argon2id 校验值，还不能解锁本地保险库，请依赖系统权限和全盘加密保护数据目录。
+
+也可以让服务在后台运行，再用 CLI：
 
 ```bash
 go run ./cmd/toget account create --name Aiden
@@ -202,7 +233,23 @@ toget join 'toget-invite:v1:eyJ...'
 
 网页端同样支持：**房间详情 → 邀请新成员** 会显示邀请码，侧边栏的 **用邀请码加入** 可以兑换。如果节点广播了错误的网卡地址，启动时加 `--node-advertise <host:port>`，或在配置里设置 `node_advertise`；`--no-node` 可以只保留本地节点。
 
-数据默认放在用户数据目录（Linux 为 `~/.local/share/toget`），可用 `TOGET_HOME` 指定。私钥和事件内容在本地加密存储，事件日志只可追加、带哈希链。目前密码只保存为 Argon2id 校验值，用于以后的登录，还不能解锁本地保险库；请依赖系统权限和全盘加密保护数据目录。
+**第二台设备**不用拷贝数据目录，走配对即可。旧设备保持 `toget serve` 运行：
+
+```bash
+toget pair create
+# 输出：toget-pair:v1:eyJ...（10 分钟内有效）
+```
+
+新设备执行 `toget pair join 'toget-pair:v1:eyJ...' --name Laptop`，会生成自己的新密钥并显示指纹。回到旧设备核对指纹后批准：
+
+```bash
+toget pair list
+toget pair approve <pairing-id>
+```
+
+新设备会收到账号记录、自己的设备证书，以及用它的加密公钥封装的账号私钥；同时收到房间成员和密钥代次，再从各房间的 home 节点同步历史。配对码是短期 bearer 密钥，账号私钥不会以明文传输。网页端在 **设备 → 连接另一台设备** 里也有同样的流程。
+
+数据默认放在用户数据目录（Linux 为 `~/.local/share/toget`），可用 `TOGET_HOME` 指定。私钥和事件内容在本地加密存储，事件日志只可追加、带哈希链。
 
 ### 文档
 
@@ -216,6 +263,6 @@ toget join 'toget-invite:v1:eyJ...'
 - [代码结构](docs/repo-layout.md)
 - [路线图](docs/roadmap.md)
 
-**早期实现：本地和同局域网房间已经可用。** 当前版本有账号与设备身份、端到端加密的房间密钥代次、加密的哈希链事件日志、附件、备份恢复、本地 API、CLI 和双语 React 网页。同一局域网内的两个节点可以用邀请码加入房间、互发消息并同步历史。Agent 可以注册、加入房间，并通过本地审批和工具回执卡片受控。
+**早期实现：本地和同局域网房间已经可用。** 当前版本有账号与设备身份、端到端加密的房间密钥代次、加密的哈希链事件日志、附件、备份恢复、本地 API、CLI 和双语 React 网页。同一局域网内的两个节点可以用邀请码加入房间、互发消息并同步历史；第二台设备可以通过配对恢复同一账号并同步房间，无需拷贝私钥。远程房间支持附件、自主退出和本地归档。Agent 可以注册、加入房间，并通过本地审批和工具回执卡片受控。
 
-还没有实现：托管中继或目录、NAT 穿透、向远程房间上传附件、远程房间的退出/归档管理、以及内置模型运行时。Agent 通过本地 API 受控，需要外部运行时来驱动。很多地方仍会调整。欢迎开 issue 关注、分享场景，或直接参与建设。项目理念见 [docs/philosophy.md](docs/philosophy.md)，参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+还没有实现：托管中继或目录、NAT 穿透、公网直连、账号密钥轮换、配对设备之间的账号记录同步、同一节点登录多个账号，以及内置模型运行时。Agent 通过本地 API 受控，需要外部运行时来驱动。很多地方仍会调整。欢迎开 issue 关注、分享场景，或直接参与建设。项目理念见 [docs/philosophy.md](docs/philosophy.md)，参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。

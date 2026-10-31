@@ -39,7 +39,7 @@ Toget is at the very beginning. The order below is chosen so that each milestone
 **Goal:** prove the room and identity model across machines.
 
 - [x] Node-to-node handshake over pinned HTTPS on the LAN (QUIC is still planned)
-- [ ] Device enrollment approved by an existing device
+- [x] Device enrollment approved by an existing device, with sealed account-key transfer and room-key snapshots
 - [x] Invite a second account into a room; membership event and epoch rotation
 - [x] End-to-end envelope: sealed payloads, X25519 + HKDF key wrapping, AEAD, AAD binding (HPKE migration optional)
 - [x] Room home node: ordering, replication, per-participant copies, single retry on sequence conflict
@@ -48,8 +48,8 @@ Toget is at the very beginning. The order below is chosen so that each milestone
 - [x] Direct connection only; address and pin carried in the invite code (mDNS and relay pending)
 
 **Status:** the LAN milestone works for message rooms. Remote-room
-attachments, remote leave/archive, device enrollment, mDNS, QUIC, and relay
-fallback are not done. A packet capture still shows metadata (account/device
+attachments, remote leave/archive, and device enrollment are done; mDNS, QUIC,
+and relay fallback are not. A packet capture still shows metadata (account/device
 IDs in signed request headers) and sealed payloads; it does not show message
 plaintext.
 
@@ -97,7 +97,7 @@ program drives those APIs today.
 - Official-hosted accounts: blind ciphertext storage, MK wrapping, PAKE login
 - Recovery credential: generation, forced download, local reset flow
 - Account reset page: static, open source, no third-party scripts, local file read
-- Device management UI: list, rename, revoke
+- [x] Device management UI: list, rename, revoke (local and paired devices)
 - Official room home node (ciphertext only)
 - Signed release manifests, update service, atomic update and rollback
 - Stable and beta channels

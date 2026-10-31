@@ -10,6 +10,8 @@ import type {
   Invite,
   Member,
   NodeInfo,
+  PairingView,
+  PairJoinView,
   Room,
   RoomDevice,
   RoomEvent,
@@ -163,7 +165,21 @@ export const api = {
 
   devices: () => request<{ devices: Device[] }>("/api/v1/devices"),
   revokeDevice: (id: string) =>
-    request<void>(`/api/v1/devices/${encodeURIComponent(id)}`, { method: "DELETE" }),
+    request<{ ok?: boolean; warnings?: string[] } | null>(`/api/v1/devices/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  pairings: () => request<{ pairings: PairingView[] }>("/api/v1/pairings"),
+  createPairing: () => request<PairingView>("/api/v1/pairings", json({})),
+  approvePairing: (id: string) =>
+    request<PairingView>(`/api/v1/pairings/${encodeURIComponent(id)}/approve`, json({})),
+  cancelPairing: (id: string) =>
+    request<void>(`/api/v1/pairings/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  startPairJoin: (code: string, deviceName: string) =>
+    request<PairJoinView>("/api/v1/pairing/join", json({ code, device_name: deviceName })),
+  pairJoinStatus: (id: string) =>
+    request<PairJoinView>(`/api/v1/pairing/join/${encodeURIComponent(id)}`),
+  cancelPairJoin: (id: string) =>
+    request<void>(`/api/v1/pairing/join/${encodeURIComponent(id)}`, { method: "DELETE" }),
 
   attachments: (roomID: string) =>
     request<{ attachments: Attachment[] }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/attachments`),

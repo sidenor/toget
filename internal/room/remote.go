@@ -553,7 +553,9 @@ func (s *Service) ImportSync(ctx context.Context, bundle *SyncBundle, deviceID s
 		}
 	}
 	last, err := s.store.LastEvent(ctx, local.ID)
-	if err != nil {
+	if errors.Is(err, ErrNotFound) {
+		last = nil
+	} else if err != nil {
 		return 0, err
 	}
 	events, err := s.checkBundleEvents(ctx, local, last, EventsFromWire(bundle.Events), keys, devices)
@@ -779,9 +781,13 @@ func (s *Service) GetOpenedEvent(ctx context.Context, roomID, eventID string) (*
 	return s.findEvent(ctx, roomID, eventID)
 }
 
-// LastSeq returns the local head sequence for a room.
+// LastSeq returns the local head sequence for a room. A room imported from a
+// pairing snapshot has no events yet, which is a valid cursor of zero.
 func (s *Service) LastSeq(ctx context.Context, roomID string) (int64, error) {
 	last, err := s.store.LastEvent(ctx, roomID)
+	if errors.Is(err, ErrNotFound) {
+		return 0, nil
+	}
 	if err != nil {
 		return 0, err
 	}

@@ -210,8 +210,23 @@ paths:
           schema:
             type: string
       responses:
+        "200":
+          description: The device is revoked, but some room homes could not be reached.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, warnings]
+                properties:
+                  ok:
+                    type: boolean
+                  warnings:
+                    type: array
+                    items:
+                      type: string
         "204":
-          description: The device is revoked.
+          description: The device is revoked everywhere this node knows about.
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -224,6 +239,213 @@ paths:
                 $ref: "#/components/schemas/Error"
         "423":
           $ref: "#/components/responses/Locked"
+
+  /api/v1/pairings:
+    get:
+      tags: [devices]
+      operationId: listPairings
+      summary: List pairing sessions on this device
+      responses:
+        "200":
+          description: Pairing sessions for the local account, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [pairings]
+                properties:
+                  pairings:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Pairing"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "423":
+          $ref: "#/components/responses/Locked"
+    post:
+      tags: [devices]
+      operationId: createPairing
+      summary: Create a pairing code for a new device
+      description: |
+        The code is valid for ten minutes. It contains the node URL, its pinned
+        TLS fingerprint, the account ID, and a one-time secret. Anyone holding
+        the code can ask to join the account, so it is shown only to the user.
+      responses:
+        "201":
+          description: The pairing session and its portable code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pairing"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: LAN transport or pairing is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/pairings/{id}/approve:
+    post:
+      tags: [devices]
+      operationId: approvePairing
+      summary: Approve the device that submitted a pairing code
+      description: |
+        Compare the device fingerprint on both screens first. Approval signs a
+        device certificate, adds the device to the account, registers it with
+        local rooms, and makes the recovery bundle available to the new device.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The approved pairing; the new device is importing now.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pairing"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The pairing is not waiting for approval.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "410":
+          description: The pairing expired or was canceled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/pairings/{id}:
+    delete:
+      tags: [devices]
+      operationId: cancelPairing
+      summary: Cancel a pairing session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: The pairing is canceled.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/pairing/join:
+    post:
+      tags: [devices]
+      operationId: startPairJoin
+      summary: Recover an account from a pairing code (new device)
+      description: |
+        Only available when this device has no account. Starts a background
+        exchange: the new device submits its keys, waits for approval on the
+        existing device, imports the account and room snapshots, then syncs
+        events from each room home. This route does not require an unlocked
+        session because there is no local account yet.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code]
+              properties:
+                code:
+                  type: string
+                  description: "`toget-pair:v1:` pairing code."
+                device_name:
+                  type: string
+                  maxLength: 64
+      responses:
+        "202":
+          description: Pairing started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PairJoin"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: This device already has an account, or pairing is disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "410":
+          description: The pairing code expired.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/pairing/join/{id}:
+    get:
+      tags: [devices]
+      operationId: getPairJoin
+      summary: Poll a pairing started on this device
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Current import progress and any warnings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PairJoin"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [devices]
+      operationId: cancelPairJoin
+      summary: Cancel a pairing before it imports the account
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: The join is canceled.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The account was already imported.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/v1/node:
     get:
@@ -1768,6 +1990,67 @@ components:
           type: string
         arch:
           type: string
+
+    Pairing:
+      type: object
+      additionalProperties: false
+      required: [id, status, expires_at, created_at]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [waiting, requested, approving, approved, expired, canceled]
+        device_id:
+          type: string
+          description: Present once a new device submits the code.
+        device_name:
+          type: string
+        fingerprint:
+          type: string
+          description: Fingerprint of the requesting device signing key.
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        code:
+          type: string
+          description: Portable `toget-pair:v1:` code, present only while no device has claimed the pairing. Treat it as a bearer secret.
+        warnings:
+          type: array
+          items:
+            type: string
+
+    PairJoin:
+      type: object
+      additionalProperties: false
+      required: [id, status, device_name, fingerprint, account_id, started_at, updated_at]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [waiting, awaiting_approval, importing, ready, failed, canceled, expired]
+        device_name:
+          type: string
+        fingerprint:
+          type: string
+        account_id:
+          type: string
+        error:
+          type: string
+        warnings:
+          type: array
+          items:
+            type: string
+        started_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
 
     Device:
       type: object

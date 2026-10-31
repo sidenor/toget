@@ -110,6 +110,16 @@ func (s *Server) Handler() http.Handler {
 	// Account and device management.
 	mux.HandleFunc("GET /api/v1/devices", s.data(s.handleListDevices))
 	mux.HandleFunc("DELETE /api/v1/devices/{id}", s.data(s.handleRevokeDevice))
+	mux.HandleFunc("GET /api/v1/pairings", s.data(s.handleListPairings))
+	mux.HandleFunc("POST /api/v1/pairings", s.data(s.handleCreatePairing))
+	mux.HandleFunc("POST /api/v1/pairings/{id}/approve", s.data(s.handleApprovePairing))
+	mux.HandleFunc("DELETE /api/v1/pairings/{id}", s.data(s.handleCancelPairing))
+
+	// A device without an account recovers one from a pairing code. These
+	// routes cannot require the account session yet.
+	mux.HandleFunc("POST /api/v1/pairing/join", s.protected(s.handleStartPairJoin))
+	mux.HandleFunc("GET /api/v1/pairing/join/{id}", s.protected(s.handlePairJoinStatus))
+	mux.HandleFunc("DELETE /api/v1/pairing/join/{id}", s.protected(s.handleCancelPairJoin))
 
 	// Rooms, membership, messages, search, and audit.
 	mux.HandleFunc("GET /api/v1/node", s.data(s.handleNodeInfo))
@@ -365,7 +375,14 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
-	if err := s.accounts.RevokeDevice(r.Context(), r.PathValue("id")); err != nil {
+	var warnings []string
+	var err error
+	if s.node != nil {
+		warnings, err = s.node.RevokeAccountDevice(r.Context(), r.PathValue("id"))
+	} else {
+		err = s.accounts.RevokeDevice(r.Context(), r.PathValue("id"))
+	}
+	if err != nil {
 		switch {
 		case errors.Is(err, account.ErrCurrentDevice):
 			writeError(w, http.StatusConflict, "current_device", "the current device cannot revoke itself")
@@ -374,6 +391,10 @@ func (s *Server) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
 		default:
 			writeError(w, http.StatusInternalServerError, "internal", "could not revoke the device")
 		}
+		return
+	}
+	if len(warnings) > 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "warnings": warnings})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

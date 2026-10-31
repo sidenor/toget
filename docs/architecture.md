@@ -63,10 +63,13 @@ Any node can also be its owner's account host. The distinction is a role, not a 
 SQLite log, loopback API (`7718`), and a LAN HTTPS listener (`7717`) with a
 pinned self-signed certificate. Two nodes on the same LAN can share a room
 through a single-use invite code; the home node orders events and peers sync
-incrementally. The official service, relays, directory, phone client, and
-multi-device account sync shown above are still design-only. A LAN node can
-only be reached at an address both machines can route to; there is no relay
-fallback yet.
+incrementally. A second device can join the same account through a pairing
+code: it generates fresh device keys, the existing device approves after
+showing a fingerprint, and the account key arrives sealed to the new device.
+Rooms are copied as membership and key snapshots, then synced from their
+homes. The official service, relays, directory, phone client, and account-key
+rotation shown above are still design-only. A LAN node can only be reached at
+an address both machines can route to; there is no relay fallback yet.
 
 ## Account and device model
 
@@ -100,6 +103,12 @@ The account host is the source of truth for account records and membership. It i
   - **Persistent node:** runs the daemon, is callable, stores room copies, can relay, can host Agents.
   - **Client App:** phone/tablet; can send and receive, but is not callable, does not relay, and cannot be an account root.
   - **Pure CLI:** uses the same `toget` binary but does not run a persistent service; useful on a server or in a script.
+
+Enrollment uses device pairing: an existing device displays a short-lived code,
+the new device submits fresh signing and encryption keys, and the existing
+device signs a certificate after the user compares fingerprints. The account
+private key is sealed to the new device's encryption key; no private key is
+copied in plaintext, and the password hash and account code are preserved.
 
 Switching accounts: log out, wipe local keys and caches, then join the new account as a new device. A device is never a member of two accounts.
 

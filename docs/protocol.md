@@ -47,10 +47,17 @@ The LAN path is real and covered by tests in `internal/node` and
    The departing device installs the event without rotating its own copy and
    archives the room locally.
 
+8. A second device can recover the account by pairing with an existing
+   device. The new device submits its public keys and a one-time secret; the
+   existing device shows a fingerprint, and after the user approves, signs a
+   device certificate and returns the account key sealed to the new device.
+   Room snapshots carry membership and epoch keys (not events), and the new
+   device syncs event history from each room's home.
+
 Still design-only: QUIC, Protobuf framing, relays, the directory, NAT
-traversal, and multi-device account sync. The rest of this document describes
-the target design; sections marked “implemented today” above use HTTPS + JSON
-rather than the future framing.
+traversal, and public-network connectivity. The rest of this document
+describes the target design; sections marked “implemented today” use HTTPS +
+JSON rather than the future framing.
 
 ## Identifiers
 
@@ -321,6 +328,69 @@ Each event carries the room sequence assigned by the home node. Clients treat th
 - A member can also archive a remote room locally for themselves. This writes
   no event and is not overwritten by sync unless the home node itself archives
   the room.
+
+### Device pairing
+
+**Implemented today for LAN nodes.** Pairing is how a second device joins an
+account without copying a data directory or private keys.
+
+1. The existing device creates a `toget-pair:v1:` code: base64url JSON carrying
+   the pairing ID, a 256-bit secret, the node URL with its pinned TLS
+   fingerprint, the server ID, account ID and name, device name, and expiry.
+   The code is a bearer secret and is valid for ten minutes.
+2. The new device generates a fresh Ed25519 signing key and X25519 encryption
+   key, then posts a signed `pair.request` to `/toget/v1/pair/request`. The
+   request binds the pairing ID, secret, account ID, device ID, device name,
+   and both public keys. The approving node stores it in memory; requests
+   from a second key pair against the same session are rejected.
+3. The existing device displays the requesting device name and signing-key
+   fingerprint. The user compares it with the fingerprint shown on the new
+   device and approves through the local API.
+4. Approval signs a one-year device certificate with the account key, adds the
+   device row to the account, registers the device with locally hosted rooms,
+   and refreshes certificates that are close to expiry.
+5. The new device polls `/toget/v1/pair/complete`. Once approved, it receives
+   the account public record (ID, code, name, public key, Argon2id password
+   hash), the account Ed25519 private key sealed to its X25519 key, its own
+   certificate, sibling device certificates, and page(s) of room snapshots.
+6. The sealed box uses ephemeral X25519, HKDF-SHA256 with info
+   `toget:sealbox:v1|<context>`, and XChaCha20-Poly1305. The context binds the
+   pairing ID, device ID, and account ID, so a sealed key cannot be replayed
+   into another pairing.
+7. A room snapshot contains room metadata, members, the device registry, and
+   every epoch key the approving device can unwrap, re-wrapped to the new
+   device. It contains no events: the new device fetches those through the
+   normal signed sync path, preserving hash-chain and signature verification.
+   Bundles are paginated (`has_more`, `next_offset`) and capped by room count
+   and byte size.
+8. The new device imports the account atomically, installs room snapshots,
+   and syncs each room from its home. If the new device is not yet in a room's
+   device set, the home verifies its account-signed certificate, adds it, and
+   wraps the room epoch keys to it on the first sync.
+9. The new device keeps its own local server identity. The account ID, account
+   code, account key, password hash, room roles, and room homes are preserved;
+   rooms created on the old device remain hosted there.
+
+Pairing sessions live only in memory and are lost on restart. Account import
+is one transaction; room imports are idempotent, and transient page failures
+are retried until the join deadline, so an account is never half-imported.
+Room copy failures are warnings rather than a rollback. If the process dies
+after the account import but before every room arrives, there is no resume
+flow yet: the remaining rooms stay absent until a future pairing or sync path
+covers them.
+
+**Revocation.** Revoking another device marks it revoked on the local account
+and, for every room this node knows about, marks the room device revoked and
+rotates the epoch so it cannot read later messages. Remote homes are asked to
+do the same through a signed endpoint. If a home is offline, the local
+revocation still stands and the room revocation is reported as a warning.
+Any device that already holds the account private key can still mint a new
+certificate for itself; a compromised device therefore compromises the
+account key until account-key rotation exists. Rooms a node has never joined
+cannot be revoked from it, because it does not know they exist. Device lists
+are copied at pairing time and are not yet replicated afterward: a device
+added or revoked on one machine may still appear active in another machine's
+account record, although room-level revocation is enforced where it reaches.
 
 ## New-member history
 

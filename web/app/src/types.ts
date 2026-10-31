@@ -208,3 +208,27 @@ export type CreateRoomResponse = {
   room: Room;
   event: RoomEvent;
 };
+
+export type PairingView = {
+  id: string;
+  status: "waiting" | "requested" | "approving" | "approved" | "expired" | "canceled" | string;
+  device_id?: string;
+  device_name?: string;
+  fingerprint?: string;
+  expires_at: string;
+  created_at: string;
+  code?: string;
+  warnings?: string[];
+};
+
+export type PairJoinView = {
+  id: string;
+  status: "waiting" | "awaiting_approval" | "importing" | "ready" | "failed" | "canceled" | "expired" | string;
+  device_name: string;
+  fingerprint: string;
+  account_id: string;
+  error?: string;
+  warnings?: string[];
+  started_at: string;
+  updated_at: string;
+};

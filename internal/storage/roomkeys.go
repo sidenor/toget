@@ -75,11 +75,14 @@ func (d *DB) ListRoomEpochs(ctx context.Context, roomID string) ([]room.RoomEpoc
 	return out, rows.Err()
 }
 
-// SaveRoomMemberKey stores a wrapped room key for one device.
+// SaveRoomMemberKey stores a wrapped room key for one device. Registering the
+// same device twice replaces its wrap instead of failing.
 func (d *DB) SaveRoomMemberKey(ctx context.Context, k *room.RoomMemberKey) error {
 	_, err := d.db.ExecContext(ctx, `
 		INSERT INTO room_member_keys (room_id, epoch, device_id, wrapped_key, created_at)
-		VALUES (?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(room_id, epoch, device_id) DO UPDATE SET
+			wrapped_key = excluded.wrapped_key, created_at = excluded.created_at`,
 		k.RoomID, k.Epoch, k.DeviceID, k.Wrapped, toMillis(k.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("storage: save room member key: %w", err)

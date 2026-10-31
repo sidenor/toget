@@ -323,3 +323,47 @@ func (c *Client) getRaw(ctx context.Context, path string) ([]byte, error) {
 func (c *Client) LeaveRoom(ctx context.Context, event *room.Event) error {
 	return c.do(ctx, http.MethodPost, "/toget/v1/rooms/leave", eventRequest{Event: event.ToWire()}, nil)
 }
+
+// RequestPairing submits a new device's pairing request to the approving node.
+func (c *Client) RequestPairing(ctx context.Context, request PairRequest) error {
+	return c.do(ctx, http.MethodPost, "/toget/v1/pair/request", request, nil)
+}
+
+// CompletePairing polls a pairing until it is approved or ends. offset
+// resumes a recovery bundle that reported HasMore.
+func (c *Client) CompletePairing(ctx context.Context, pairingID string, offset int) (*PairingComplete, error) {
+	var complete PairingComplete
+	payload := map[string]any{"pairing_id": pairingID, "offset": offset}
+	if err := c.do(ctx, http.MethodPost, "/toget/v1/pair/complete", payload, &complete); err != nil {
+		return nil, err
+	}
+	return &complete, nil
+}
+
+// RegisterDevice asks a room's home node to admit a paired account device and
+// share the room's epoch keys with it.
+func (c *Client) RegisterDevice(ctx context.Context, roomID string, certificate []byte) (*room.RoomDevice, error) {
+	var out struct {
+		Device room.RoomDevice `json:"device"`
+	}
+	err := c.do(ctx, http.MethodPost, "/toget/v1/rooms/devices",
+		map[string]any{"room_id": roomID, "certificate": string(certificate)}, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out.Device, nil
+}
+
+// RevokeDevice asks a room's home node to mark a device revoked and rotate the
+// room epoch so the device cannot read later messages.
+func (c *Client) RevokeDevice(ctx context.Context, roomID, deviceID string) (int, error) {
+	var out struct {
+		Epoch int `json:"epoch"`
+	}
+	err := c.do(ctx, http.MethodPost, "/toget/v1/rooms/devices/revoke",
+		map[string]string{"room_id": roomID, "device_id": deviceID}, &out)
+	if err != nil {
+		return 0, err
+	}
+	return out.Epoch, nil
+}

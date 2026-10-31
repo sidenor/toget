@@ -297,6 +297,7 @@ const (
 type Store interface {
 	CreateRoom(ctx context.Context, room *Room, event *Event, member *Member, device *RoomDevice, epoch *RoomEpoch, keys []RoomMemberKey) error
 	ImportRoom(ctx context.Context, room *Room, members []Member, devices []RoomDevice, epochs []RoomEpoch, keys []RoomMemberKey, events []Event) error
+	MergeRoomSnapshot(ctx context.Context, room *Room, members []Member, devices []RoomDevice, epochs []RoomEpoch, keys []RoomMemberKey) error
 	ImportEvents(ctx context.Context, events []Event) error
 	ListRooms(ctx context.Context) ([]Room, error)
 	GetRoom(ctx context.Context, id string) (*Room, error)
@@ -315,6 +316,7 @@ type Store interface {
 	ListRoomDevices(ctx context.Context, roomID string) ([]RoomDevice, error)
 	AddRoomDevice(ctx context.Context, device *RoomDevice) error
 	UpsertRoomDevice(ctx context.Context, device *RoomDevice) error
+	UpdateRoomDevice(ctx context.Context, device *RoomDevice) error
 	CreateInvite(ctx context.Context, invite *Invite, secretHash string) error
 	GetInviteByHash(ctx context.Context, secretHash string) (*Invite, error)
 	MarkInviteUsed(ctx context.Context, id string, at time.Time) error
@@ -682,6 +684,11 @@ func (s *Service) GetRoom(ctx context.Context, id string) (*Room, error) {
 // ListRooms returns rooms, newest first.
 func (s *Service) ListRooms(ctx context.Context) ([]Room, error) {
 	return s.store.ListRooms(ctx)
+}
+
+// GetMember returns one room membership.
+func (s *Service) GetMember(ctx context.Context, roomID, accountID string) (*Member, error) {
+	return s.store.GetMember(ctx, roomID, accountID)
 }
 
 // ListMembers returns active and past members of a room.

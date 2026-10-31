@@ -9,6 +9,7 @@ import type {
   Approval,
   Attachment,
   Member,
+  PairJoinView,
   Room,
   RoomEvent,
   Status,
@@ -441,11 +442,44 @@ function Onboarding({
   setError: (value: string) => void;
   onCreated: () => Promise<void>;
 }) {
+  const [mode, setMode] = useState<"create" | "link">("create");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [deviceName, setDeviceName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [code, setCode] = useState("");
+  const [join, setJoin] = useState<PairJoinView | null>(null);
+  const [linking, setLinking] = useState(false);
+
+  const joinTerminal = !!join && ["ready", "failed", "canceled", "expired"].includes(join.status);
+
+  useEffect(() => {
+    if (!join || joinTerminal) return;
+    let cancelled = false;
+    let finished = false;
+    async function poll() {
+      try {
+        const next = await api.pairJoinStatus(join!.id);
+        if (cancelled) return;
+        setJoin(next);
+        if (next.status === "ready" && !finished) {
+          finished = true;
+          await onCreated();
+        }
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : t("common.error"));
+      }
+    }
+    void poll();
+    const timer = window.setInterval(() => void poll(), 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+    // Polling is keyed by the join id; status labels update from each poll.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [join?.id, join?.status]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -469,53 +503,177 @@ function Onboarding({
     }
   }
 
+  async function link(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    if (!code.trim()) {
+      setError(t("onboard.linkCode"));
+      return;
+    }
+    setLinking(true);
+    try {
+      const started = await api.startPairJoin(code.trim(), deviceName);
+      setJoin(started);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("common.error"));
+    } finally {
+      setLinking(false);
+    }
+  }
+
+  async function resetLink() {
+    if (join && !joinTerminal) {
+      try {
+        await api.cancelPairJoin(join.id);
+      } catch {
+        // The join may already have finished; the local screen still resets.
+      }
+    }
+    setJoin(null);
+    setCode("");
+    setError("");
+  }
+
+  function switchMode(next: "create" | "link") {
+    if (join && !joinTerminal) return;
+    setMode(next);
+    setJoin(null);
+    setError("");
+  }
+
+  function joinStatusLabel(status: string): string {
+    switch (status) {
+      case "waiting":
+      case "awaiting_approval":
+        return t("onboard.linkWaiting");
+      case "importing":
+        return t("onboard.linkImporting");
+      case "ready":
+        return t("onboard.linkImporting");
+      default:
+        return t("onboard.linkWaiting");
+    }
+  }
+
   return (
     <div className="onboarding">
       <div className="onboarding-card">
         <div className="brand-mark">T</div>
         <p className="eyebrow">{t("onboard.eyebrow")}</p>
-        <h1>{t("onboard.title")}</h1>
-        <p className="muted">{t("onboard.subtitle")}</p>
-        {error && <div className="form-error">{error}</div>}
-        <form onSubmit={submit}>
-          <label>
-            {t("onboard.name")}
-            <input autoFocus value={name} onChange={(event) => setName(event.target.value)} maxLength={64} required />
-          </label>
-          <label>
-            {t("onboard.password")}
-            <input
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              minLength={8}
-              required
-            />
-          </label>
-          <label>
-            {t("onboard.confirm")}
-            <input
-              type="password"
-              value={confirm}
-              onChange={(event) => setConfirm(event.target.value)}
-              minLength={8}
-              required
-            />
-          </label>
-          <label>
-            {t("devices.title")} · {t("devices.current")}
-            <input
-              value={deviceName}
-              onChange={(event) => setDeviceName(event.target.value)}
-              placeholder="MacBook · Chrome"
-              maxLength={64}
-            />
-          </label>
-          <button className="button primary wide" type="submit" disabled={busy}>
-            {busy ? t("onboard.creating") : t("onboard.create")}
+        <div className="onboard-tabs" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "create"}
+            className={mode === "create" ? "active" : ""}
+            onClick={() => switchMode("create")}
+          >
+            {t("onboard.tabCreate")}
           </button>
-        </form>
-        <p className="fine-print">{t("onboard.fine")}</p>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "link"}
+            className={mode === "link" ? "active" : ""}
+            onClick={() => switchMode("link")}
+          >
+            {t("onboard.tabLink")}
+          </button>
+        </div>
+        <h1>{mode === "create" ? t("onboard.title") : t("onboard.linkTitle")}</h1>
+        <p className="muted">{mode === "create" ? t("onboard.subtitle") : t("onboard.linkSubtitle")}</p>
+        {error && <div className="form-error">{error}</div>}
+        {mode === "create" ? (
+          <form onSubmit={submit}>
+            <label>
+              {t("onboard.name")}
+              <input autoFocus value={name} onChange={(event) => setName(event.target.value)} maxLength={64} required />
+            </label>
+            <label>
+              {t("onboard.password")}
+              <input
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                minLength={8}
+                required
+              />
+            </label>
+            <label>
+              {t("onboard.confirm")}
+              <input
+                type="password"
+                value={confirm}
+                onChange={(event) => setConfirm(event.target.value)}
+                minLength={8}
+                required
+              />
+            </label>
+            <label>
+              {t("devices.title")} · {t("devices.current")}
+              <input
+                value={deviceName}
+                onChange={(event) => setDeviceName(event.target.value)}
+                placeholder="MacBook · Chrome"
+                maxLength={64}
+              />
+            </label>
+            <button className="button primary wide" type="submit" disabled={busy}>
+              {busy ? t("onboard.creating") : t("onboard.create")}
+            </button>
+          </form>
+        ) : join ? (
+          <div className="pair-link-progress">
+            <p className="pair-status">{joinStatusLabel(join.status)}</p>
+            {join.fingerprint && (
+              <>
+                <p className="fine-print">{t("onboard.linkCompare")}</p>
+                <code className="pair-fingerprint">{join.fingerprint}</code>
+              </>
+            )}
+            {join.error && <div className="form-error">{join.error}</div>}
+            {joinTerminal && join.status !== "ready" && (
+              <button className="button primary wide" type="button" onClick={() => void resetLink()}>
+                {t("onboard.link")}
+              </button>
+            )}
+            {!joinTerminal && (
+              <button className="button ghost wide" type="button" onClick={() => void resetLink()}>
+                {t("common.cancel")}
+              </button>
+            )}
+          </div>
+        ) : (
+          <form onSubmit={link}>
+            <label>
+              {t("onboard.linkCode")}
+              <textarea
+                autoFocus
+                className="pair-code-input"
+                value={code}
+                onChange={(event) => setCode(event.target.value)}
+                placeholder={t("onboard.linkCodePlaceholder")}
+                rows={4}
+                spellCheck={false}
+                required
+              />
+            </label>
+            <label>
+              {t("onboard.linkName")}
+              <input
+                value={deviceName}
+                onChange={(event) => setDeviceName(event.target.value)}
+                placeholder="MacBook · Chrome"
+                maxLength={64}
+              />
+            </label>
+            <button className="button primary wide" type="submit" disabled={linking}>
+              {linking ? t("onboard.linking") : t("onboard.link")}
+            </button>
+            <p className="fine-print">{t("onboard.linkNote")}</p>
+          </form>
+        )}
+        {mode === "create" && <p className="fine-print">{t("onboard.fine")}</p>}
       </div>
     </div>
   );

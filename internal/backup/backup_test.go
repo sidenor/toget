@@ -71,7 +71,7 @@ func TestBackupCreateAndRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Format != backup.Format || manifest.SchemaVersion != 3 || len(manifest.Files) < 3 {
+	if manifest.Format != backup.Format || manifest.SchemaVersion != 4 || len(manifest.Files) < 3 {
 		t.Fatalf("manifest = %#v", manifest)
 	}
 	if got, err := backup.ReadManifest(archive); err != nil || got.Format != backup.Format {

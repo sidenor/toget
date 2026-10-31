@@ -32,7 +32,8 @@ CREATE TABLE devices (
     role                     TEXT NOT NULL DEFAULT 'node',
     revoked_at               INTEGER,
     last_seen_at             INTEGER,
-    created_at               INTEGER NOT NULL
+    created_at               INTEGER NOT NULL,
+    local                    INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX devices_account ON devices(account_id);

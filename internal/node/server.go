@@ -76,6 +76,11 @@ type Service struct {
 
 	nonces *NonceCache
 	syncMu sync.Mutex
+
+	pairMu    sync.Mutex
+	pairings  map[string]*pairSession
+	joinMu    sync.Mutex
+	pairJoins map[string]*pairJoin
 }
 
 // New creates a node service. A listen address of "off" disables it and
@@ -243,6 +248,9 @@ func (s *Service) ServerID(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if snapshot.Server != nil {
+		return snapshot.Server.ID, nil
+	}
 	return snapshot.Account.ServerID, nil
 }
 
@@ -259,7 +267,7 @@ func (s *Service) Info(ctx context.Context) (*Info, error) {
 	endpoint, url, fingerprint := s.endpoint, s.url, s.fingerprint
 	s.mu.RUnlock()
 	return &Info{
-		ServerID: snapshot.Account.ServerID, ServerCode: snapshot.Account.Code,
+		ServerID: snapshot.Server.ID, ServerCode: snapshot.Server.Code,
 		AccountID: snapshot.Account.ID, DeviceID: snapshot.Device.ID,
 		Endpoint: endpoint, URL: url, TLSFingerprint: fingerprint, Protocol: Protocol,
 	}, nil
@@ -282,7 +290,7 @@ func (s *Service) manifest(ctx context.Context) (*Manifest, error) {
 	s.mu.RUnlock()
 	now := time.Now().UTC().Truncate(time.Second)
 	manifest := &Manifest{
-		ServerID: snapshot.Account.ServerID, ServerCode: snapshot.Account.Code,
+		ServerID: snapshot.Server.ID, ServerCode: snapshot.Server.Code,
 		AccountID: snapshot.Account.ID, Endpoint: endpoint, TLSFingerprint: fingerprint,
 		IssuedAt: now, ExpiresAt: now.Add(24 * time.Hour),
 	}
@@ -304,6 +312,10 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("POST /toget/v1/rooms/leave", s.handleLeave)
 	mux.HandleFunc("POST /toget/v1/rooms/attachments", s.handleAttachmentUpload)
 	mux.HandleFunc("GET /toget/v1/attachments/{id}", s.handleAttachmentDownload)
+	mux.HandleFunc("POST /toget/v1/pair/request", s.handlePairRequest)
+	mux.HandleFunc("POST /toget/v1/pair/complete", s.handlePairComplete)
+	mux.HandleFunc("POST /toget/v1/rooms/devices", s.handleRegisterDevice)
+	mux.HandleFunc("POST /toget/v1/rooms/devices/revoke", s.handleRevokeDevice)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeNodeError(w, http.StatusNotFound, "not_found", "unknown node endpoint")
 	})
@@ -839,18 +851,78 @@ func (s *Service) SyncRoom(ctx context.Context, roomID string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	bundle, err := client.Sync(ctx, roomID, last)
+	registered := false
+	total := 0
+	for batch := 0; batch < 100; batch++ {
+		bundle, err := client.Sync(ctx, roomID, last)
+		if err != nil {
+			var remoteErr *RemoteError
+			if !registered && errors.As(err, &remoteErr) && remoteErr.Status == http.StatusForbidden {
+				if regErr := s.registerDeviceAtHome(ctx, client, roomID, snapshot); regErr != nil {
+					return total, err
+				}
+				registered = true
+				continue
+			}
+			return total, err
+		}
+		if bundle.Room.ID != roomID || bundle.Room.HomeServerID != record.HomeServerID {
+			return total, errors.New("sync response does not match the room")
+		}
+		if bundle.After != last {
+			return total, errors.New("sync response starts at the wrong cursor")
+		}
+		encryptionKey, err := s.accounts.UnsealDeviceEncryptionKey(snapshot.Device)
+		if err != nil {
+			return total, err
+		}
+		n, err := s.rooms.ImportSync(ctx, bundle, snapshot.Device.ID, encryptionKey)
+		if err != nil {
+			return total, err
+		}
+		total += n
+		last, err = s.rooms.LastSeq(ctx, roomID)
+		if err != nil {
+			return total, err
+		}
+		if !bundle.HasMore {
+			return total, nil
+		}
+	}
+	return total, errors.New("room has too many events to sync in one pass")
+}
+
+// registerDeviceAtHome lazily registers a paired device with a remote room so
+// the home node can verify its requests and wrap epoch keys to it.
+func (s *Service) registerDeviceAtHome(ctx context.Context, client *Client, roomID string, snapshot *account.Snapshot) error {
+	device, err := s.accounts.GetDeviceByID(ctx, snapshot.Device.ID)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	if bundle.Room.ID != roomID || bundle.Room.HomeServerID != record.HomeServerID {
-		return 0, errors.New("sync response does not match the room")
+	if device.Certificate == "" {
+		if err := s.accounts.RefreshCertificates(ctx); err != nil {
+			return err
+		}
+		device, err = s.accounts.GetDeviceByID(ctx, snapshot.Device.ID)
+		if err != nil {
+			return err
+		}
 	}
-	encryptionKey, err := s.accounts.UnsealDeviceEncryptionKey(snapshot.Device)
-	if err != nil {
-		return 0, err
+	if _, err := client.RegisterDevice(ctx, roomID, []byte(device.Certificate)); err != nil {
+		var remoteErr *RemoteError
+		if errors.As(err, &remoteErr) && remoteErr.Status == http.StatusBadRequest {
+			// The certificate may have expired since the last renewal.
+			if refreshErr := s.accounts.RefreshCertificates(ctx); refreshErr == nil {
+				device, getErr := s.accounts.GetDeviceByID(ctx, snapshot.Device.ID)
+				if getErr == nil {
+					_, retryErr := client.RegisterDevice(ctx, roomID, []byte(device.Certificate))
+					return retryErr
+				}
+			}
+		}
+		return err
 	}
-	return s.rooms.ImportSync(ctx, bundle, snapshot.Device.ID, encryptionKey)
+	return nil
 }
 
 // SyncAll pulls every remote room.

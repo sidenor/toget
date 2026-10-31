@@ -2,8 +2,8 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { formatAccountID, formatTime, shortID } from "./format";
 import type { Lang, Translate } from "./i18n";
-import type { Agent, Approval, AuditResponse, Device, NodeInfo, Room, SearchHit } from "./types";
-import { Badge, Modal, Spinner } from "./ui";
+import type { Agent, Approval, AuditResponse, Device, NodeInfo, PairingView, Room, SearchHit } from "./types";
+import { Badge, CopyButton, Modal, Spinner } from "./ui";
 
 export type CommonProps = {
   t: Translate;
@@ -366,12 +366,21 @@ export function AgentsView({ t, rooms, notify, onError, onRoomsChanged, openRoom
 
 export function DevicesView({ t, notify, onError }: CommonProps) {
   const [devices, setDevices] = useState<Device[]>([]);
+  const [pairings, setPairings] = useState<PairingView[]>([]);
   const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [pairError, setPairError] = useState("");
+  const [pairWarnings, setPairWarnings] = useState<string[]>([]);
+
+  const activePairing = pairings.some((pairing) =>
+    ["waiting", "requested", "approving"].includes(pairing.status),
+  );
 
   async function load() {
     try {
-      const result = await api.devices();
-      setDevices(result.devices);
+      const [deviceResult, pairingResult] = await Promise.all([api.devices(), api.pairings()]);
+      setDevices(deviceResult.devices);
+      setPairings(pairingResult.pairings);
     } catch (err) {
       onError(err);
     } finally {
@@ -384,14 +393,76 @@ export function DevicesView({ t, notify, onError }: CommonProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (!activePairing) return;
+    const timer = window.setInterval(() => void load(), 2000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePairing]);
+
+  async function createPairing() {
+    setPairError("");
+    setPairWarnings([]);
+    setCreating(true);
+    try {
+      const created = await api.createPairing();
+      setPairings((current) => [created, ...current.filter((item) => item.id !== created.id)]);
+    } catch (err) {
+      setPairError(err instanceof Error ? err.message : t("common.error"));
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function approve(pairing: PairingView) {
+    setPairError("");
+    try {
+      const approved = await api.approvePairing(pairing.id);
+      setPairWarnings(approved.warnings || []);
+      notify(t("devices.pairApproved"));
+      await load();
+    } catch (err) {
+      setPairError(err instanceof Error ? err.message : t("common.error"));
+    }
+  }
+
+  async function cancel(pairing: PairingView) {
+    setPairError("");
+    try {
+      await api.cancelPairing(pairing.id);
+      await load();
+    } catch (err) {
+      setPairError(err instanceof Error ? err.message : t("common.error"));
+    }
+  }
+
   async function revoke(device: Device) {
     if (!window.confirm(t("devices.confirm"))) return;
     try {
-      await api.revokeDevice(device.id);
-      notify(t("agents.revoked"));
+      const result = await api.revokeDevice(device.id);
+      const warnings = result?.warnings || [];
+      notify(warnings.length ? warnings.join(" · ") : t("devices.revoke"));
       await load();
     } catch (err) {
       onError(err);
+    }
+  }
+
+  function pairingLabel(pairing: PairingView): string {
+    switch (pairing.status) {
+      case "waiting":
+        return t("devices.pairWaiting");
+      case "requested":
+      case "approving":
+        return t("devices.pairRequested");
+      case "approved":
+        return t("devices.pairApproved");
+      case "expired":
+        return t("approval.expired");
+      case "canceled":
+        return t("devices.pairCancel");
+      default:
+        return pairing.status;
     }
   }
 
@@ -404,6 +475,66 @@ export function DevicesView({ t, notify, onError }: CommonProps) {
           <p className="muted">{t("devices.subtitle")}</p>
         </div>
       </header>
+
+      <div className="pair-panel">
+        <div className="pair-panel-head">
+          <div>
+            <h2>{t("devices.pairTitle")}</h2>
+            <p className="muted">{t("devices.pairText")}</p>
+          </div>
+          <button className="button primary" onClick={() => void createPairing()} disabled={creating}>
+            {creating ? t("onboard.linking") : t("devices.pairCreate")}
+          </button>
+        </div>
+        {pairError && <div className="form-error">{pairError}</div>}
+        {pairWarnings.map((warning) => (
+          <p className="pair-warning" key={warning}>
+            {warning}
+          </p>
+        ))}
+        {pairings.length === 0 && <p className="empty-hint">{t("devices.pairEmpty")}</p>}
+        {pairings.map((pairing) => (
+          <article className={`pair-session status-${pairing.status}`} key={pairing.id}>
+            <div className="pair-session-copy">
+              <h3>
+                {pairingLabel(pairing)}
+                {pairing.device_name && <span className="pair-device-name"> · {pairing.device_name}</span>}
+              </h3>
+              {pairing.code && pairing.status === "waiting" && (
+                <div className="pair-code-row">
+                  <code className="pair-code">{pairing.code}</code>
+                  <CopyButton
+                    value={pairing.code}
+                    labels={{ copy: t("common.copy"), copied: t("common.copied") }}
+                  />
+                </div>
+              )}
+              {pairing.fingerprint && (
+                <>
+                  <p className="fine-print">{t("devices.pairCompare")}</p>
+                  <p className="fingerprint">{pairing.fingerprint}</p>
+                </>
+              )}
+              <p className="fine-print">
+                {t("devices.pairExpires")}: {new Date(pairing.expires_at).toLocaleString()}
+              </p>
+            </div>
+            <div className="pair-session-actions">
+              {pairing.status === "requested" && (
+                <button className="button primary" onClick={() => void approve(pairing)}>
+                  {t("devices.pairApprove")}
+                </button>
+              )}
+              {["waiting", "requested", "approved"].includes(pairing.status) && (
+                <button className="button ghost" onClick={() => void cancel(pairing)}>
+                  {t("devices.pairCancel")}
+                </button>
+              )}
+            </div>
+          </article>
+        ))}
+      </div>
+
       {loading && <Spinner label={t("common.loading")} />}
       <div className="device-table">
         {devices.map((device) => (
