@@ -385,11 +385,17 @@ paths:
       tags: [rooms]
       operationId: archiveRoom
       summary: Archive a room
+      description: |
+        On a room hosted by this node, the owner archives it for everyone and
+        the response includes the `room.archived` event. On a room hosted by
+        another node, this hides the room on this device only: no event is
+        written and `event` is `null`. A member can still use this after
+        leaving a remote room.
       parameters:
         - $ref: "#/components/parameters/RoomID"
       responses:
         "200":
-          description: The archived room and `room.archived` event.
+          description: The archived room and, for a home-node archive, the `room.archived` event.
           content:
             application/json:
               schema:
@@ -400,8 +406,6 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/RoomNotFound"
-        "409":
-          $ref: "#/components/responses/RemoteReadOnly"
         "423":
           $ref: "#/components/responses/Locked"
 
@@ -685,7 +689,12 @@ paths:
       tags: [membership]
       operationId: leaveRoom
       summary: Leave a room
-      description: Not available for rooms hosted by another node yet.
+      description: |
+        On a room hosted by this node, the leave is appended locally and the
+        room epoch rotates. On a room hosted by another node, the device signs
+        a self-leave event, the home node verifies and appends it, rotates the
+        epoch, and rejects future syncs from the departed device. In both cases
+        the room is archived on this device after leaving.
       parameters:
         - $ref: "#/components/parameters/RoomID"
       responses:
@@ -702,7 +711,11 @@ paths:
         "404":
           $ref: "#/components/responses/RoomNotFound"
         "409":
-          $ref: "#/components/responses/RemoteReadOnly"
+          description: The home node log moved; the request was retried or can be retried after syncing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "423":
           $ref: "#/components/responses/Locked"
 
@@ -920,9 +933,12 @@ paths:
       operationId: uploadAttachment
       summary: Upload an attachment encrypted under the room epoch key
       description: |
-        The request body is the raw file (up to 25 MiB). The node stores the
-        ciphertext and returns metadata. Attach the returned ID to a message
-        with `attachments`. Remote rooms do not support attachments yet.
+        The request body is the raw file (up to 25 MiB). The node seals it with
+        the current room-epoch key, stores the ciphertext, and returns
+        metadata. Attach the returned ID to a message with `attachments`.
+        For a room hosted by another node, the same sealed bytes are uploaded
+        to the home node, which stores them without the room key; peers
+        download them lazily on first open.
       parameters:
         - $ref: "#/components/parameters/RoomID"
         - name: name
@@ -955,12 +971,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/RoomNotFound"
-        "409":
-          $ref: "#/components/responses/RemoteReadOnly"
         "413":
           $ref: "#/components/responses/AttachmentTooLarge"
         "423":
           $ref: "#/components/responses/Locked"
+        "502":
+          $ref: "#/components/responses/BadGateway"
 
   /api/v1/attachments/{id}:
     get:

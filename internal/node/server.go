@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,10 +24,11 @@ import (
 )
 
 const (
-	maxRedeemBody = 2 << 20
-	maxSyncBody   = 1 << 20
-	maxEventBody  = 2 << 20
-	defaultSync   = 3 * time.Second
+	maxRedeemBody     = 2 << 20
+	maxSyncBody       = 1 << 20
+	maxEventBody      = 2 << 20
+	maxAttachmentBody = room.MaxAttachmentSize*4/3 + 4096
+	defaultSync       = 3 * time.Second
 )
 
 // Options configures the LAN node transport.
@@ -299,6 +301,9 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("POST /toget/v1/invites/redeem", s.handleRedeem)
 	mux.HandleFunc("POST /toget/v1/rooms/sync", s.handleSync)
 	mux.HandleFunc("POST /toget/v1/rooms/events", s.handleEvent)
+	mux.HandleFunc("POST /toget/v1/rooms/leave", s.handleLeave)
+	mux.HandleFunc("POST /toget/v1/rooms/attachments", s.handleAttachmentUpload)
+	mux.HandleFunc("GET /toget/v1/attachments/{id}", s.handleAttachmentDownload)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeNodeError(w, http.StatusNotFound, "not_found", "unknown node endpoint")
 	})
@@ -449,6 +454,128 @@ func (s *Service) handleEvent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": event.ID, "seq": event.Seq})
 }
 
+func (s *Service) handleLeave(w http.ResponseWriter, r *http.Request) {
+	body, err := readNodeBody(w, r, maxEventBody)
+	if err != nil {
+		writeNodeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	var req struct {
+		Event room.WireEvent `json:"event"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.Event.RoomID == "" || req.Event.ID == "" {
+		writeNodeError(w, http.StatusBadRequest, "invalid_request", "event is required")
+		return
+	}
+	event := req.Event.ToEvent()
+	if event.AuthorDevice != r.Header.Get(HeaderDevice) || event.AuthorID != r.Header.Get(HeaderAccount) {
+		writeNodeError(w, http.StatusForbidden, "forbidden", "event author does not match the request identity")
+		return
+	}
+	device, err := s.requestDevice(r, event.RoomID)
+	if err != nil || device.AccountID != event.AuthorID {
+		writeNodeError(w, http.StatusForbidden, "forbidden", "device is not trusted in this room")
+		return
+	}
+	if err := VerifyRequest(r, body, device.PublicKey, s.nonces, time.Now()); err != nil {
+		writeNodeError(w, http.StatusUnauthorized, "unauthorized", "leave request signature is invalid")
+		return
+	}
+	if err := s.rooms.AcceptRemoteLeave(r.Context(), &event); err != nil {
+		head, _ := s.rooms.LastSeq(r.Context(), event.RoomID)
+		if errors.Is(err, room.ErrInvalidEvent) {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": map[string]string{"code": "conflict", "message": "leave does not continue the room log"},
+				"head":  head,
+			})
+			return
+		}
+		s.writeRoomError(w, err, head)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": event.ID, "seq": event.Seq})
+}
+
+func (s *Service) handleAttachmentUpload(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	roomID := query.Get("room_id")
+	if roomID == "" {
+		writeNodeError(w, http.StatusBadRequest, "invalid_request", "room_id is required")
+		return
+	}
+	body, err := readNodeBody(w, r, maxAttachmentBody)
+	if err != nil {
+		writeNodeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	device, err := s.requestDevice(r, roomID)
+	if err != nil {
+		writeNodeError(w, http.StatusForbidden, "forbidden", "device is not trusted in this room")
+		return
+	}
+	if !ConstantTimeEqual(r.Header.Get(HeaderAccount), device.AccountID) {
+		writeNodeError(w, http.StatusForbidden, "forbidden", "account does not match the device")
+		return
+	}
+	if err := VerifyRequest(r, body, device.PublicKey, s.nonces, time.Now()); err != nil {
+		writeNodeError(w, http.StatusUnauthorized, "unauthorized", "attachment request signature is invalid")
+		return
+	}
+	size, err := strconv.ParseInt(query.Get("size"), 10, 64)
+	if err != nil {
+		writeNodeError(w, http.StatusBadRequest, "invalid_request", "size is invalid")
+		return
+	}
+	epoch, err := strconv.Atoi(query.Get("epoch"))
+	if err != nil {
+		writeNodeError(w, http.StatusBadRequest, "invalid_request", "epoch is invalid")
+		return
+	}
+	attachment := &room.Attachment{
+		ID: query.Get("id"), RoomID: roomID, Name: query.Get("name"),
+		MIME: query.Get("mime"), Size: size, SHA256: query.Get("sha256"),
+		KeySealed: strconv.Itoa(epoch), CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	if err := s.rooms.ImportAttachment(r.Context(), roomID, device.AccountID, device.DeviceID, attachment, body); err != nil {
+		s.writeRoomError(w, err, 0)
+		return
+	}
+	writeJSON(w, http.StatusCreated, attachment.ToWire())
+}
+
+func (s *Service) handleAttachmentDownload(w http.ResponseWriter, r *http.Request) {
+	roomID := r.URL.Query().Get("room_id")
+	attachmentID := r.PathValue("id")
+	if roomID == "" || attachmentID == "" {
+		writeNodeError(w, http.StatusBadRequest, "invalid_request", "room_id and attachment id are required")
+		return
+	}
+	device, err := s.requestDevice(r, roomID)
+	if err != nil {
+		writeNodeError(w, http.StatusForbidden, "forbidden", "device is not trusted in this room")
+		return
+	}
+	if !ConstantTimeEqual(r.Header.Get(HeaderAccount), device.AccountID) {
+		writeNodeError(w, http.StatusForbidden, "forbidden", "account does not match the device")
+		return
+	}
+	if err := VerifyRequest(r, nil, device.PublicKey, s.nonces, time.Now()); err != nil {
+		writeNodeError(w, http.StatusUnauthorized, "unauthorized", "attachment request signature is invalid")
+		return
+	}
+	_, sealed, err := s.rooms.ReadAttachmentCiphertext(r.Context(), roomID, attachmentID, device.AccountID, device.DeviceID)
+	if err != nil {
+		s.writeRoomError(w, err, 0)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.Itoa(len(sealed)))
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(sealed)
+}
+
 func (s *Service) requestDevice(r *http.Request, roomID string) (*room.RoomDevice, error) {
 	deviceID := r.Header.Get(HeaderDevice)
 	if deviceID == "" {
@@ -471,6 +598,14 @@ func (s *Service) writeRoomError(w http.ResponseWriter, err error, head int64) {
 		writeNodeError(w, http.StatusForbidden, "forbidden", "room action is not allowed")
 	case errors.Is(err, room.ErrInviteSecret), errors.Is(err, room.ErrInvalidEvent):
 		writeNodeError(w, http.StatusBadRequest, "invalid_request", "room request is invalid")
+	case errors.Is(err, room.ErrInvalidAttachment):
+		writeNodeError(w, http.StatusBadRequest, "invalid_attachment", "attachment is invalid")
+	case errors.Is(err, room.ErrAttachmentTooLarge):
+		writeNodeError(w, http.StatusRequestEntityTooLarge, "attachment_too_large", "attachment exceeds the size limit")
+	case errors.Is(err, room.ErrAttachmentNotFound):
+		writeNodeError(w, http.StatusNotFound, "attachment_not_found", "attachment was not found")
+	case errors.Is(err, room.ErrAttachmentsDisabled):
+		writeNodeError(w, http.StatusServiceUnavailable, "attachments_disabled", "attachment storage is not configured")
 	case errors.Is(err, room.ErrRemoteReadOnly):
 		writeNodeError(w, http.StatusConflict, "remote_room", "room is hosted by another node")
 	default:
@@ -771,19 +906,7 @@ func (s *Service) PostRemoteMessage(ctx context.Context, roomID string, actor ro
 		if err != nil {
 			return nil, err
 		}
-		record, err := s.rooms.GetRoom(ctx, roomID)
-		if err != nil {
-			return nil, err
-		}
-		snapshot, err := s.accounts.Get(ctx)
-		if err != nil {
-			return nil, err
-		}
-		key, err := s.accounts.UnsealDeviceKey(snapshot.Device)
-		if err != nil {
-			return nil, err
-		}
-		client, err := NewClientForURL(record.HomeAddress, snapshot.Account.ID, snapshot.Device.ID, key)
+		client, err := s.clientForRoom(ctx, roomID)
 		if err != nil {
 			return nil, err
 		}
@@ -808,4 +931,166 @@ func (s *Service) PostRemoteMessage(ctx context.Context, roomID string, actor ro
 		return s.rooms.GetOpenedEvent(ctx, roomID, event.ID)
 	}
 	return nil, lastErr
+}
+
+func (s *Service) clientForRoom(ctx context.Context, roomID string) (*Client, error) {
+	record, err := s.rooms.GetRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if record.HomeAddress == "" {
+		return nil, errors.New("room home address is missing")
+	}
+	snapshot, err := s.accounts.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	key, err := s.accounts.UnsealDeviceKey(snapshot.Device)
+	if err != nil {
+		return nil, err
+	}
+	return NewClientForURL(record.HomeAddress, snapshot.Account.ID, snapshot.Device.ID, key)
+}
+
+// UploadAttachment stores a file in a local room or uploads its sealed
+// ciphertext to the home node for a remote room, keeping a local copy either
+// way.
+func (s *Service) UploadAttachment(ctx context.Context, roomID string, actor room.Actor, name, mime string, data []byte) (*room.Attachment, error) {
+	remote, err := s.IsRemoteRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if !remote {
+		return s.rooms.UploadAttachment(ctx, roomID, actor, name, mime, data)
+	}
+	// Attachments are sealed with the room's epoch key. Pull the current
+	// epoch first so a member who joined since the last sync can still open
+	// the uploaded file.
+	if _, err := s.SyncRoom(ctx, roomID); err != nil {
+		return nil, fmt.Errorf("sync before upload: %w", err)
+	}
+	attachment, sealed, err := s.rooms.PrepareAttachment(ctx, roomID, actor, name, mime, data)
+	if err != nil {
+		return nil, err
+	}
+	client, err := s.clientForRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := client.UploadAttachment(ctx, roomID, attachment.ToWire(), sealed); err != nil {
+		client.Close()
+		return nil, err
+	}
+	client.Close()
+	if err := s.rooms.StoreAttachment(ctx, attachment, sealed); err != nil {
+		return nil, err
+	}
+	return attachment, nil
+}
+
+// FetchAttachment downloads and caches ciphertext for a remote attachment that
+// is not on this device yet.
+func (s *Service) FetchAttachment(ctx context.Context, attachmentID string, actor room.Actor) error {
+	attachment, err := s.rooms.GetAttachment(ctx, attachmentID, actor)
+	if err != nil {
+		return err
+	}
+	if attachment.Path != "" {
+		return nil
+	}
+	remote, err := s.IsRemoteRoom(ctx, attachment.RoomID)
+	if err != nil {
+		return err
+	}
+	if !remote {
+		return room.ErrAttachmentNotFound
+	}
+	client, err := s.clientForRoom(ctx, attachment.RoomID)
+	if err != nil {
+		return err
+	}
+	sealed, err := client.FetchAttachment(ctx, attachment.RoomID, attachmentID)
+	client.Close()
+	if err != nil {
+		return err
+	}
+	return s.rooms.CacheAttachment(ctx, attachment, sealed)
+}
+
+// LeaveRoom leaves a local room directly or asks the home node to record a
+// remote leave event and rotate the room key.
+func (s *Service) LeaveRoom(ctx context.Context, roomID string, actor room.Actor) (*room.Event, error) {
+	remote, err := s.IsRemoteRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if !remote {
+		return s.rooms.Leave(ctx, roomID, actor)
+	}
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if _, err := s.SyncRoom(ctx, roomID); err != nil {
+			return nil, fmt.Errorf("sync before leave: %w", err)
+		}
+		event, err := s.rooms.PrepareLeave(ctx, roomID, actor)
+		if err != nil {
+			return nil, err
+		}
+		client, err := s.clientForRoom(ctx, roomID)
+		if err != nil {
+			return nil, err
+		}
+		postErr := client.LeaveRoom(ctx, event)
+		client.Close()
+		if postErr != nil {
+			lastErr = postErr
+			var remoteErr *RemoteError
+			if errors.As(postErr, &remoteErr) && remoteErr.Status == http.StatusConflict {
+				// The home head moved; sync and prepare a new leave event.
+				continue
+			}
+			return nil, postErr
+		}
+		if err := s.rooms.ApplyRemoteLeave(ctx, event); err != nil {
+			// The leave was accepted remotely even if the local append raced
+			// with another peer's event. Sync it in and finish locally.
+			if _, syncErr := s.SyncRoom(ctx, roomID); syncErr != nil {
+				return nil, err
+			}
+			opened, getErr := s.rooms.GetOpenedEvent(ctx, roomID, event.ID)
+			if getErr != nil {
+				return nil, err
+			}
+			s.archiveAfterLeave(ctx, roomID, actor)
+			return opened, nil
+		}
+		// A left member can no longer read new events. Hide the room from this
+		// device so it does not linger as an unusable conversation.
+		s.archiveAfterLeave(ctx, roomID, actor)
+		return s.rooms.GetOpenedEvent(ctx, roomID, event.ID)
+	}
+	return nil, lastErr
+}
+
+func (s *Service) archiveAfterLeave(ctx context.Context, roomID string, actor room.Actor) {
+	if _, err := s.rooms.ArchiveLocal(ctx, roomID, actor); err != nil {
+		s.logger.Warn("leave: archive remote room", "room", roomID, "error", err)
+	}
+}
+
+// ArchiveRoom archives a room on its home node, or hides a remote room on this
+// device without changing the shared log.
+func (s *Service) ArchiveRoom(ctx context.Context, roomID string, actor room.Actor) (*room.Room, *room.Event, error) {
+	remote, err := s.IsRemoteRoom(ctx, roomID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !remote {
+		return s.rooms.Archive(ctx, roomID, actor)
+	}
+	archived, err := s.rooms.ArchiveLocal(ctx, roomID, actor)
+	if err != nil {
+		return nil, nil, err
+	}
+	return archived, nil, nil
 }

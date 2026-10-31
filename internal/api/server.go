@@ -682,6 +682,23 @@ func writeRoomError(w http.ResponseWriter, err error) {
 	case errors.Is(err, room.ErrCorruptEvent):
 		writeError(w, http.StatusInternalServerError, "corrupt_event", "an event failed its integrity check")
 	default:
+		if errors.Is(err, node.ErrUnreachable) {
+			writeError(w, http.StatusBadGateway, "home_unreachable", "could not reach the room's home node")
+			return
+		}
+		var remoteErr *node.RemoteError
+		if errors.As(err, &remoteErr) {
+			status := remoteErr.Status
+			if status < 400 || status > 599 {
+				status = http.StatusBadGateway
+			}
+			code := remoteErr.Code
+			if code == "" {
+				code = "home_node_error"
+			}
+			writeError(w, status, code, remoteErr.Message)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "internal", "could not complete the room request")
 	}
 }

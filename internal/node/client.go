@@ -5,10 +5,13 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,9 +19,14 @@ import (
 )
 
 const (
-	maxNodeResponse = 32 << 20
+	// maxNodeResponse leaves room for a 25 MiB attachment after base64
+	// expansion by the room ciphertext format.
+	maxNodeResponse = 48 << 20
 	requestTimeout  = 20 * time.Second
 )
+
+// ErrUnreachable means the home node could not be reached over the network.
+var ErrUnreachable = errors.New("home node is unreachable")
 
 // RemoteError is a structured error returned by a node.
 type RemoteError struct {
@@ -166,12 +174,12 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("reach home node: %w", err)
+		return fmt.Errorf("%w: %v", ErrUnreachable, err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxNodeResponse+1))
 	if err != nil {
-		return fmt.Errorf("read node response: %w", err)
+		return fmt.Errorf("%w: %v", ErrUnreachable, err)
 	}
 	if len(data) > maxNodeResponse {
 		return fmt.Errorf("node response is too large")
@@ -206,4 +214,112 @@ func decodeRemoteError(status int, data []byte) error {
 		message = message[:500]
 	}
 	return &RemoteError{Status: status, Code: envelope.Error.Code, Message: message}
+}
+
+// UploadAttachment posts sealed attachment ciphertext to a remote room's home
+// node. Metadata travels in the signed query string; the body stays opaque.
+func (c *Client) UploadAttachment(ctx context.Context, roomID string, a room.WireAttachment, sealed []byte) (*room.WireAttachment, error) {
+	values := url.Values{}
+	values.Set("room_id", roomID)
+	values.Set("id", a.ID)
+	values.Set("name", a.Name)
+	values.Set("mime", a.MIME)
+	values.Set("size", strconv.FormatInt(a.Size, 10))
+	values.Set("sha256", a.SHA256)
+	values.Set("epoch", strconv.Itoa(a.Epoch))
+	path := "/toget/v1/rooms/attachments?" + values.Encode()
+	var out room.WireAttachment
+	if err := c.doRaw(ctx, http.MethodPost, path, sealed, "application/octet-stream", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// FetchAttachment downloads sealed attachment ciphertext from a home node.
+func (c *Client) FetchAttachment(ctx context.Context, roomID, attachmentID string) ([]byte, error) {
+	values := url.Values{}
+	values.Set("room_id", roomID)
+	path := "/toget/v1/attachments/" + url.PathEscape(attachmentID) + "?" + values.Encode()
+	return c.getRaw(ctx, path)
+}
+
+func (c *Client) doRaw(ctx context.Context, method, path string, payload []byte, contentType string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, method, c.endpoint+path, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("build node request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	if c.accountID != "" {
+		req.Header.Set(HeaderAccount, c.accountID)
+	}
+	if c.deviceID != "" {
+		req.Header.Set(HeaderDevice, c.deviceID)
+	}
+	if err := SignRequest(req, payload, c.key, time.Now()); err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUnreachable, err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxNodeResponse+1))
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUnreachable, err)
+	}
+	if len(data) > maxNodeResponse {
+		return fmt.Errorf("node response is too large")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return decodeRemoteError(resp.StatusCode, data)
+	}
+	if out != nil {
+		if len(data) == 0 {
+			return fmt.Errorf("node returned an empty response (status %d)", resp.StatusCode)
+		}
+		if err := json.Unmarshal(data, out); err != nil {
+			return fmt.Errorf("decode node response: %w", err)
+		}
+	}
+	return nil
+}
+
+func (c *Client) getRaw(ctx context.Context, path string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint+path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build node request: %w", err)
+	}
+	if c.accountID != "" {
+		req.Header.Set(HeaderAccount, c.accountID)
+	}
+	if c.deviceID != "" {
+		req.Header.Set(HeaderDevice, c.deviceID)
+	}
+	if err := SignRequest(req, nil, c.key, time.Now()); err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnreachable, err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxNodeResponse+1))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnreachable, err)
+	}
+	if len(data) > maxNodeResponse {
+		return nil, fmt.Errorf("node response is too large")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, decodeRemoteError(resp.StatusCode, data)
+	}
+	return data, nil
+}
+
+// LeaveRoom submits an already prepared and signed self-leave event.
+func (c *Client) LeaveRoom(ctx context.Context, event *room.Event) error {
+	return c.do(ctx, http.MethodPost, "/toget/v1/rooms/leave", eventRequest{Event: event.ToWire()}, nil)
 }

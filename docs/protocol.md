@@ -33,13 +33,23 @@ The LAN path is real and covered by tests in `internal/node` and
    posts it to the home node, and installs the accepted event locally. A
    sequence conflict returns `409` with the current head and the sender
    retries once after syncing.
-5. Remote rooms are read-only locally except for sending messages. Local-only
-   mutations are rejected so the home node remains the single log writer.
+5. Remote rooms are read-only locally except for messages, attachments, and
+   self-leave. Other local-only mutations are rejected so the home node
+   remains the single log writer.
+6. Attachments in remote rooms are sealed with the current room-epoch key on
+   the sender, then uploaded as opaque ciphertext to the home node. Metadata
+   travels in the signed request URI. Other devices sync the metadata and
+   download ciphertext on first open, verifying the SHA-256 and size of the
+   decrypted plaintext.
+7. A remote member can leave: the device prepares and signs `room.member_left`
+   at the next sequence, the home node verifies that the author is leaving
+   themselves, appends the event, marks the member left, and rotates the epoch.
+   The departing device installs the event without rotating its own copy and
+   archives the room locally.
 
 Still design-only: QUIC, Protobuf framing, relays, the directory, NAT
-traversal, multi-device account sync, attachment upload into remote rooms,
-and remote room administration. The rest of this document describes the
-target design; sections marked “implemented today” above use HTTPS + JSON
+traversal, and multi-device account sync. The rest of this document describes
+the target design; sections marked “implemented today” above use HTTPS + JSON
 rather than the future framing.
 
 ## Identifiers
@@ -106,6 +116,9 @@ serves:
 | `POST` | `/toget/v1/invites/redeem` | Redeem an invite, return a join bundle |
 | `POST` | `/toget/v1/rooms/sync` | Pull events after a cursor |
 | `POST` | `/toget/v1/rooms/events` | Submit a sealed event for home-node ordering |
+| `POST` | `/toget/v1/rooms/leave` | Submit a signed self-leave event; home rotates the epoch |
+| `POST` | `/toget/v1/rooms/attachments` | Upload sealed attachment ciphertext; metadata in the signed query |
+| `GET` | `/toget/v1/attachments/{id}` | Download sealed attachment ciphertext for a room member |
 
 Every request except health carries `X-Toget-Timestamp`, `X-Toget-Nonce`,
 `X-Toget-Signature`, `X-Toget-Account`, and `X-Toget-Device`. The signature
@@ -282,6 +295,32 @@ Each event carries the room sequence assigned by the home node. Clients treat th
 - A device far behind can ask for a snapshot plus a delta instead of replaying every event.
 - Every participant stores its own copy; sync repairs gaps, it does not centralize history.
 - If the home node is unreachable, the room is read-only for new ordered events until it returns or a new home is chosen. The failover policy is still open.
+
+### Remote attachments
+
+- The sender seals the file with the current room-epoch key, then uploads the
+  ciphertext to the home node. The home node never sees the plaintext or the
+  key and only stores bytes plus membership-visible metadata.
+- Metadata (`name`, `mime`, `size`, `sha256`, `epoch`) is carried in the signed
+  query string, so the home node can bind it to the uploading device without
+  decrypting the body.
+- Peers receive attachment metadata in join and sync bundles. A file is
+  downloaded lazily on first open and cached locally.
+- After decryption the reader verifies the plaintext size and SHA-256 from the
+  event metadata. A mismatch is treated as a failed download, not a warning.
+
+### Remote leave and archive
+
+- Leaving is a self-service action: a device signs `room.member_left` naming
+  its own account. The home node rejects a leave event whose signature, device,
+  or author identity does not match.
+- The home node appends the event, marks the member left, and rotates the room
+  epoch. Future sync requests from the departed device are rejected.
+- `room.archived` is a room-wide decision by the owner on the home node and
+  propagates to members through sync.
+- A member can also archive a remote room locally for themselves. This writes
+  no event and is not overwritten by sync unless the home node itself archives
+  the room.
 
 ## New-member history
 

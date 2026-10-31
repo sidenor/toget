@@ -114,7 +114,13 @@ func (s *Server) handleArchiveRoom(w http.ResponseWriter, r *http.Request) {
 		writeActorError(w, err)
 		return
 	}
-	archived, event, err := s.rooms.Archive(r.Context(), r.PathValue("id"), actor)
+	var archived *room.Room
+	var event *room.Event
+	if s.node != nil {
+		archived, event, err = s.node.ArchiveRoom(r.Context(), r.PathValue("id"), actor)
+	} else {
+		archived, event, err = s.rooms.Archive(r.Context(), r.PathValue("id"), actor)
+	}
 	if err != nil {
 		writeRoomError(w, err)
 		return
@@ -297,7 +303,12 @@ func (s *Server) handleLeaveRoom(w http.ResponseWriter, r *http.Request) {
 		writeActorError(w, err)
 		return
 	}
-	event, err := s.rooms.Leave(r.Context(), r.PathValue("id"), actor)
+	var event *room.Event
+	if s.node != nil {
+		event, err = s.node.LeaveRoom(r.Context(), r.PathValue("id"), actor)
+	} else {
+		event, err = s.rooms.Leave(r.Context(), r.PathValue("id"), actor)
+	}
 	if err != nil {
 		writeRoomError(w, err)
 		return

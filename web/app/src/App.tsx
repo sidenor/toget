@@ -1106,6 +1106,7 @@ function RoomInfo({
   const [invite, setInvite] = useState<string>("");
   const [busy, setBusy] = useState(false);
   const remote = Boolean(room.home_server_id && room.home_server_id !== account.server_id);
+  const isOwner = room.created_by === account.id;
 
   async function createInvite() {
     setBusy(true);
@@ -1124,7 +1125,7 @@ function RoomInfo({
     if (!window.confirm(t("roomInfo.leave") + "?")) return;
     try {
       await api.leaveRoom(room.id);
-      notify(t("event.left", { name: "" }));
+      notify(t("roomInfo.left"));
       await onRoomGone();
     } catch (err) {
       onError(err);
@@ -1135,7 +1136,7 @@ function RoomInfo({
     if (!window.confirm(t("roomInfo.archive") + "?")) return;
     try {
       await api.archiveRoom(room.id);
-      notify(t("roomInfo.archived"));
+      notify(t(remote ? "roomInfo.archivedLocal" : "roomInfo.archived"));
       await onRoomGone();
     } catch (err) {
       onError(err);
@@ -1219,16 +1220,16 @@ function RoomInfo({
               <dd>{remote ? t("roomInfo.remote") : t("roomInfo.local")}</dd>
             </div>
           </dl>
-          {!remote && (
-            <div className="danger-actions">
-              <button className="button ghost" onClick={() => void leave()}>
-                {t("roomInfo.leave")}
-              </button>
+          <div className="danger-actions">
+            <button className="button ghost" onClick={() => void leave()}>
+              {t("roomInfo.leave")}
+            </button>
+            {(remote || isOwner) && (
               <button className="button ghost danger" onClick={() => void archive()}>
-                {t("roomInfo.archive")}
+                {t(remote ? "roomInfo.archiveLocal" : "roomInfo.archive")}
               </button>
-            </div>
-          )}
+            )}
+          </div>
         </section>
       </div>
     </Modal>

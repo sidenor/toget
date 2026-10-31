@@ -55,7 +55,12 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid_request", "could not read attachment body")
 		return
 	}
-	attachment, err := s.rooms.UploadAttachment(r.Context(), r.PathValue("id"), actor, name, mimeType, data)
+	var attachment *room.Attachment
+	if s.node != nil {
+		attachment, err = s.node.UploadAttachment(r.Context(), r.PathValue("id"), actor, name, mimeType, data)
+	} else {
+		attachment, err = s.rooms.UploadAttachment(r.Context(), r.PathValue("id"), actor, name, mimeType, data)
+	}
 	if err != nil {
 		writeRoomError(w, err)
 		return
@@ -84,6 +89,17 @@ func (s *Server) handleAttachmentContent(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	attachment, data, err := s.rooms.OpenAttachment(r.Context(), r.PathValue("id"), actor)
+	if errors.Is(err, room.ErrAttachmentNotFound) && s.node != nil {
+		fetchErr := s.node.FetchAttachment(r.Context(), r.PathValue("id"), actor)
+		switch {
+		case fetchErr == nil:
+			attachment, data, err = s.rooms.OpenAttachment(r.Context(), r.PathValue("id"), actor)
+		case !errors.Is(fetchErr, room.ErrAttachmentNotFound):
+			// Surface an unreachable or rejecting home node instead of the
+			// less useful "not on this device" error.
+			err = fetchErr
+		}
+	}
 	if err != nil {
 		writeRoomError(w, err)
 		return

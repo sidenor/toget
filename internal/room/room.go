@@ -328,6 +328,8 @@ type Store interface {
 	GetRoomMemberKey(ctx context.Context, roomID string, epoch int, deviceID string) (*RoomMemberKey, error)
 	ListRoomMemberKeys(ctx context.Context, roomID string, epoch int) ([]RoomMemberKey, error)
 	CreateAttachment(ctx context.Context, a *Attachment) error
+	UpsertAttachment(ctx context.Context, a *Attachment) error
+	SetAttachmentPath(ctx context.Context, id, path string) error
 	GetAttachment(ctx context.Context, id string) (*Attachment, error)
 	ListAttachments(ctx context.Context, roomID string) ([]Attachment, error)
 	AttachToEvent(ctx context.Context, eventID string, attachmentIDs []string) error
@@ -582,12 +584,15 @@ func (s *Service) Append(ctx context.Context, roomID string, actor Actor, eventT
 // synchronize ordering with the home node; this function verifies the event's
 // chain, author device, and signature before persisting it.
 func (s *Service) AppendRemote(ctx context.Context, event *Event) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.appendRemoteLocked(ctx, event)
+}
+
+func (s *Service) appendRemoteLocked(ctx context.Context, event *Event) error {
 	if event == nil || event.RoomID == "" || event.ID == "" || event.Seq <= 0 || event.Type == "" {
 		return ErrInvalidEvent
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if _, err := s.store.GetRoom(ctx, event.RoomID); err != nil {
 		return err
 	}
@@ -632,6 +637,20 @@ func (s *Service) AppendRemote(ctx context.Context, event *Event) error {
 	if err := VerifyEvent(&plain, device.PublicKey); err != nil {
 		return err
 	}
+	var attachmentIDs []string
+	if event.Type == EventMessagePosted {
+		var body MessagePostedPayload
+		if err := json.Unmarshal(plain.Payload, &body); err != nil {
+			return fmt.Errorf("%w: message payload is invalid", ErrInvalidEvent)
+		}
+		if len(body.Attachments) > 0 {
+			ids, err := s.validateAttachmentRefs(ctx, event.RoomID, body.Attachments)
+			if err != nil {
+				return err
+			}
+			attachmentIDs = ids
+		}
+	}
 	stored := event
 	if !isRoomPayload(event.Payload) {
 		epoch, key, err := s.latestRoomKeyLocked(ctx, event.RoomID)
@@ -644,7 +663,15 @@ func (s *Service) AppendRemote(ctx context.Context, event *Event) error {
 		}
 		stored = storedCopy
 	}
-	return s.store.AppendEvent(ctx, stored)
+	if err := s.store.AppendEvent(ctx, stored); err != nil {
+		return err
+	}
+	if len(attachmentIDs) > 0 {
+		if err := s.store.AttachToEvent(ctx, stored.ID, attachmentIDs); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // GetRoom returns one room.
@@ -891,6 +918,30 @@ func (s *Service) Archive(ctx context.Context, roomID string, actor Actor) (*Roo
 		return nil, nil, err
 	}
 	return current, event, nil
+}
+
+// ArchiveLocal hides a room on this device without recording an event. Members
+// use it to retire a remote room without asking the home node to archive it for
+// everyone; the shared log and other devices are unaffected.
+func (s *Service) ArchiveLocal(ctx context.Context, roomID string, actor Actor) (*Room, error) {
+	if !actor.Valid() {
+		return nil, ErrForbidden
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, err := s.store.GetRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if current.ArchivedAt != nil {
+		return current, nil
+	}
+	now := s.now().UTC().Truncate(time.Millisecond)
+	current.ArchivedAt = &now
+	if err := s.store.UpdateRoom(ctx, current); err != nil {
+		return nil, err
+	}
+	return current, nil
 }
 
 // Audit returns a verifiable snapshot of a room's history.

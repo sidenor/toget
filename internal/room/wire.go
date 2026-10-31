@@ -2,6 +2,7 @@ package room
 
 import (
 	"encoding/json"
+	"strconv"
 	"time"
 )
 
@@ -163,6 +164,50 @@ func DevicesFromWire(devices []WireDevice) []RoomDevice {
 	out := make([]RoomDevice, len(devices))
 	for i := range devices {
 		out[i] = devices[i].ToDevice()
+	}
+	return out
+}
+
+// WireAttachment is attachment metadata without a local filesystem path. The
+// ciphertext stays on the home node; members download it on demand and verify
+// the plaintext digest after decrypting it with the room epoch key.
+type WireAttachment struct {
+	ID        string    `json:"id"`
+	RoomID    string    `json:"room_id"`
+	EventID   string    `json:"event_id,omitempty"`
+	Name      string    `json:"name"`
+	MIME      string    `json:"mime"`
+	Size      int64     `json:"size"`
+	SHA256    string    `json:"sha256"`
+	Epoch     int       `json:"epoch"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// ToWire converts attachment metadata for transport.
+func (a Attachment) ToWire() WireAttachment {
+	epoch, _ := strconv.Atoi(a.KeySealed)
+	return WireAttachment{
+		ID: a.ID, RoomID: a.RoomID, EventID: a.EventID, Name: a.Name,
+		MIME: a.MIME, Size: a.Size, SHA256: a.SHA256, Epoch: epoch,
+		CreatedAt: a.CreatedAt,
+	}
+}
+
+// ToAttachment converts transported metadata back to its local form. The path
+// is intentionally empty until the ciphertext is fetched.
+func (w WireAttachment) ToAttachment() Attachment {
+	return Attachment{
+		ID: w.ID, RoomID: w.RoomID, EventID: w.EventID, Name: w.Name,
+		MIME: w.MIME, Size: w.Size, SHA256: w.SHA256,
+		KeySealed: strconv.Itoa(w.Epoch), CreatedAt: w.CreatedAt,
+	}
+}
+
+// WireAttachments converts metadata for transport.
+func WireAttachments(items []Attachment) []WireAttachment {
+	out := make([]WireAttachment, len(items))
+	for i := range items {
+		out[i] = items[i].ToWire()
 	}
 	return out
 }

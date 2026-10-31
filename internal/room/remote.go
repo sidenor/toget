@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +28,8 @@ const (
 	MaxBundleMembers = 5000
 	// MaxBundleDevices bounds devices included in one bundle.
 	MaxBundleDevices = 20000
+	// MaxBundleAttachments bounds attachment metadata included in one bundle.
+	MaxBundleAttachments = 2000
 )
 
 // RemoteJoiner is the identity a remote node asks the home node to admit.
@@ -82,31 +85,33 @@ type BundleKey struct {
 // key; opaque events preserve sequence and hash-chain continuity without
 // revealing their contents.
 type JoinBundle struct {
-	Room       Room         `json:"room"`
-	Member     Member       `json:"member"`
-	Members    []WireMember `json:"members"`
-	Devices    []WireDevice `json:"devices"`
-	Keys       []BundleKey  `json:"keys"`
-	Events     []WireEvent  `json:"events"`
-	FromSeq    int64        `json:"from_seq"`
-	Head       int64        `json:"head"`
-	History    string       `json:"history"`
-	InviteID   string       `json:"invite_id"`
-	JoinedAt   time.Time    `json:"joined_at"`
-	ServerTime time.Time    `json:"server_time"`
+	Room        Room             `json:"room"`
+	Member      Member           `json:"member"`
+	Members     []WireMember     `json:"members"`
+	Devices     []WireDevice     `json:"devices"`
+	Keys        []BundleKey      `json:"keys"`
+	Events      []WireEvent      `json:"events"`
+	Attachments []WireAttachment `json:"attachments,omitempty"`
+	FromSeq     int64            `json:"from_seq"`
+	Head        int64            `json:"head"`
+	History     string           `json:"history"`
+	InviteID    string           `json:"invite_id"`
+	JoinedAt    time.Time        `json:"joined_at"`
+	ServerTime  time.Time        `json:"server_time"`
 }
 
 // SyncBundle is an incremental view of a room from its home node.
 type SyncBundle struct {
-	Room       Room         `json:"room"`
-	Members    []WireMember `json:"members"`
-	Devices    []WireDevice `json:"devices"`
-	Keys       []BundleKey  `json:"keys"`
-	Events     []WireEvent  `json:"events"`
-	After      int64        `json:"after"`
-	Head       int64        `json:"head"`
-	HasMore    bool         `json:"has_more"`
-	ServerTime time.Time    `json:"server_time"`
+	Room        Room             `json:"room"`
+	Members     []WireMember     `json:"members"`
+	Devices     []WireDevice     `json:"devices"`
+	Keys        []BundleKey      `json:"keys"`
+	Events      []WireEvent      `json:"events"`
+	Attachments []WireAttachment `json:"attachments,omitempty"`
+	After       int64            `json:"after"`
+	Head        int64            `json:"head"`
+	HasMore     bool             `json:"has_more"`
+	ServerTime  time.Time        `json:"server_time"`
 }
 
 // RedeemInviteFor admits a remote account/device and returns the invite so
@@ -292,18 +297,23 @@ func (s *Service) ExportJoinBundle(ctx context.Context, roomID, deviceID, histor
 	if err != nil {
 		return nil, err
 	}
+	attachments, err := s.bundleAttachments(ctx, roomID, events, keys)
+	if err != nil {
+		return nil, err
+	}
 	return &JoinBundle{
-		Room:       *room,
-		Member:     *member,
-		Members:    limitMembers(WireMembers(members)),
-		Devices:    limitDevices(WireDevices(devices)),
-		Keys:       keys,
-		Events:     WireEvents(events),
-		FromSeq:    from,
-		Head:       last.Seq,
-		History:    history,
-		JoinedAt:   member.JoinedAt,
-		ServerTime: s.now().UTC(),
+		Room:        *room,
+		Member:      *member,
+		Members:     limitMembers(WireMembers(members)),
+		Devices:     limitDevices(WireDevices(devices)),
+		Keys:        keys,
+		Events:      WireEvents(events),
+		Attachments: attachments,
+		FromSeq:     from,
+		Head:        last.Seq,
+		History:     history,
+		JoinedAt:    member.JoinedAt,
+		ServerTime:  s.now().UTC(),
 	}, nil
 }
 
@@ -356,16 +366,21 @@ func (s *Service) ExportSync(ctx context.Context, roomID, deviceID string, after
 	if hasMore {
 		events = events[:limit]
 	}
+	attachments, err := s.bundleAttachments(ctx, roomID, events, keys)
+	if err != nil {
+		return nil, err
+	}
 	return &SyncBundle{
-		Room:       *room,
-		Members:    limitMembers(WireMembers(members)),
-		Devices:    limitDevices(WireDevices(devices)),
-		Keys:       keys,
-		Events:     WireEvents(events),
-		After:      after,
-		Head:       last.Seq,
-		HasMore:    hasMore,
-		ServerTime: s.now().UTC(),
+		Room:        *room,
+		Members:     limitMembers(WireMembers(members)),
+		Devices:     limitDevices(WireDevices(devices)),
+		Keys:        keys,
+		Events:      WireEvents(events),
+		Attachments: attachments,
+		After:       after,
+		Head:        last.Seq,
+		HasMore:     hasMore,
+		ServerTime:  s.now().UTC(),
 	}, nil
 }
 
@@ -393,6 +408,24 @@ func (s *Service) deviceKeysLocked(ctx context.Context, roomID, deviceID string)
 // local device whose wrapped room keys are being imported. Events for epochs
 // we hold are decrypted and signature-checked; older opaque chapters are kept
 // as chain anchors only.
+func checkBundleAttachments(roomID string, items []WireAttachment) ([]Attachment, error) {
+	if len(items) > MaxBundleAttachments {
+		return nil, fmt.Errorf("%w: join bundle has too many attachments", ErrInvalidEvent)
+	}
+	out := make([]Attachment, 0, len(items))
+	for i := range items {
+		wire := items[i]
+		if wire.ID == "" || wire.RoomID != roomID || wire.Size <= 0 || wire.Size > MaxAttachmentSize || len(wire.SHA256) != 64 || wire.Epoch <= 0 {
+			return nil, fmt.Errorf("%w: bundled attachment metadata is invalid", ErrInvalidEvent)
+		}
+		if _, err := hex.DecodeString(wire.SHA256); err != nil {
+			return nil, fmt.Errorf("%w: bundled attachment digest is invalid", ErrInvalidEvent)
+		}
+		out = append(out, wire.ToAttachment())
+	}
+	return out, nil
+}
+
 func (s *Service) ImportJoinBundle(ctx context.Context, bundle *JoinBundle, deviceID string, encryptionPrivateKey []byte) (*Room, error) {
 	if bundle == nil || bundle.Room.ID == "" || bundle.Room.HomeServerID == "" {
 		return nil, fmt.Errorf("%w: join bundle is incomplete", ErrInvalidEvent)
@@ -427,6 +460,10 @@ func (s *Service) ImportJoinBundle(ctx context.Context, bundle *JoinBundle, devi
 	if err != nil {
 		return nil, err
 	}
+	attachments, err := checkBundleAttachments(bundle.Room.ID, bundle.Attachments)
+	if err != nil {
+		return nil, err
+	}
 	now := s.now().UTC().Truncate(time.Millisecond)
 	epochs := make([]RoomEpoch, 0, len(keys))
 	for _, epoch := range sortedEpochs(keys) {
@@ -445,6 +482,11 @@ func (s *Service) ImportJoinBundle(ctx context.Context, bundle *JoinBundle, devi
 	}
 	if err := s.store.ImportRoom(ctx, &bundle.Room, members, devices, epochs, memberKeys, events); err != nil {
 		return nil, err
+	}
+	for i := range attachments {
+		if err := s.store.UpsertAttachment(ctx, &attachments[i]); err != nil {
+			return nil, err
+		}
 	}
 	return s.store.GetRoom(ctx, bundle.Room.ID)
 }
@@ -518,6 +560,10 @@ func (s *Service) ImportSync(ctx context.Context, bundle *SyncBundle, deviceID s
 	if err != nil {
 		return 0, err
 	}
+	attachments, err := checkBundleAttachments(local.ID, bundle.Attachments)
+	if err != nil {
+		return 0, err
+	}
 	for i := range members {
 		if err := s.store.UpsertMember(ctx, &members[i]); err != nil {
 			return 0, err
@@ -525,6 +571,11 @@ func (s *Service) ImportSync(ctx context.Context, bundle *SyncBundle, deviceID s
 	}
 	for i := range devices {
 		if err := s.store.UpsertRoomDevice(ctx, &devices[i]); err != nil {
+			return 0, err
+		}
+	}
+	for i := range attachments {
+		if err := s.store.UpsertAttachment(ctx, &attachments[i]); err != nil {
 			return 0, err
 		}
 	}
@@ -539,6 +590,11 @@ func (s *Service) ImportSync(ctx context.Context, bundle *SyncBundle, deviceID s
 	updated.Epoch = bundle.Room.Epoch
 	updated.HomeNode = bundle.Room.HomeNode
 	updated.HomeAddress = bundle.Room.HomeAddress
+	// A member may archive a remote room for themselves; sync must not clear
+	// that local choice just because the home node has not archived the room.
+	if bundle.Room.ArchivedAt != nil {
+		updated.ArchivedAt = bundle.Room.ArchivedAt
+	}
 	if err := s.store.UpdateRoom(ctx, &updated); err != nil {
 		return 0, err
 	}
@@ -657,7 +713,11 @@ func (s *Service) PrepareMessage(ctx context.Context, roomID string, actor Actor
 		return nil, ErrMessageTooLong
 	}
 	if len(body.Attachments) > 0 {
-		return nil, fmt.Errorf("%w: attachments cannot be sent to a remote room yet", ErrInvalidEvent)
+		ids, err := s.validateAttachmentRefs(ctx, roomID, body.Attachments)
+		if err != nil {
+			return nil, err
+		}
+		body.Attachments = ids
 	}
 	if body.Format == "" {
 		body.Format = "plain"
@@ -728,6 +788,55 @@ func (s *Service) LastSeq(ctx context.Context, roomID string) (int64, error) {
 	return last.Seq, nil
 }
 
+// bundleAttachments returns metadata for attachments referenced by messages
+// the receiving device can actually decrypt. Hidden epochs stay hidden: their
+// filenames are metadata too.
+func (s *Service) bundleAttachments(ctx context.Context, roomID string, events []Event, keys []BundleKey) ([]WireAttachment, error) {
+	allowed := make(map[int]bool, len(keys))
+	for _, key := range keys {
+		allowed[key.Epoch] = true
+	}
+	ids := make(map[string]bool)
+	for i := range events {
+		event := &events[i]
+		if event.Type != EventMessagePosted || !allowed[event.Epoch] {
+			continue
+		}
+		key, err := s.roomKeyLocked(ctx, roomID, event.Epoch)
+		if err != nil {
+			continue
+		}
+		plain, err := openRoomPayload(key, event.Payload, payloadAAD(roomID, event.Epoch, "event"))
+		if err != nil {
+			continue
+		}
+		var body MessagePostedPayload
+		if err := json.Unmarshal(plain, &body); err != nil {
+			continue
+		}
+		for _, id := range body.Attachments {
+			ids[id] = true
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	all, err := s.store.ListAttachments(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]WireAttachment, 0, len(ids))
+	for i := range all {
+		if ids[all[i].ID] {
+			out = append(out, all[i].ToWire())
+		}
+	}
+	if len(out) > MaxBundleAttachments {
+		out = out[len(out)-MaxBundleAttachments:]
+	}
+	return out, nil
+}
+
 func sortedEpochs(keys map[int][]byte) []int {
 	out := make([]int, 0, len(keys))
 	for epoch := range keys {
@@ -758,4 +867,102 @@ func limitDevices(devices []WireDevice) []WireDevice {
 		devices = devices[len(devices)-MaxBundleDevices:]
 	}
 	return devices
+}
+
+// PrepareLeave builds and seals a self-leave event at the next local sequence
+// without appending it.
+func (s *Service) PrepareLeave(ctx context.Context, roomID string, actor Actor) (*Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.RequireMember(ctx, roomID, actor); err != nil {
+		return nil, err
+	}
+	last, err := s.store.LastEvent(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(MemberLeftPayload{AccountID: actor.AccountID, Reason: "left"})
+	if err != nil {
+		return nil, fmt.Errorf("encode member.left: %w", err)
+	}
+	epoch, key, err := s.latestRoomKeyLocked(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	now := s.now().UTC().Truncate(time.Millisecond)
+	event, err := s.buildEvent(roomID, last.Seq+1, last, EventMemberLeft, actor, raw, now)
+	if err != nil {
+		return nil, err
+	}
+	event.Epoch = epoch
+	return s.sealEvent(event, epoch, key)
+}
+
+// AcceptRemoteLeave appends a member's own leave event, marks the member left,
+// and rotates the room key so the departing device cannot read what follows.
+func (s *Service) AcceptRemoteLeave(ctx context.Context, event *Event) error {
+	if event == nil || event.Type != EventMemberLeft || event.AuthorID == "" || event.AuthorDevice == "" {
+		return ErrInvalidEvent
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	member, err := s.store.GetMember(ctx, event.RoomID, event.AuthorID)
+	if err != nil || member.Status != "active" {
+		return ErrNotMember
+	}
+	device, err := s.store.GetRoomDevice(ctx, event.RoomID, event.AuthorDevice)
+	if err != nil || device.AccountID != event.AuthorID || device.RevokedAt != nil {
+		return ErrForbidden
+	}
+	epoch := event.Epoch
+	if epoch <= 0 {
+		epoch = 1
+	}
+	key, err := s.roomKeyLocked(ctx, event.RoomID, epoch)
+	if err != nil {
+		return err
+	}
+	plain, err := openRoomPayload(key, event.Payload, payloadAAD(event.RoomID, epoch, "event"))
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidEvent, err)
+	}
+	var body MemberLeftPayload
+	if err := json.Unmarshal(plain, &body); err != nil || body.AccountID != event.AuthorID {
+		return fmt.Errorf("%w: leave payload does not match its author", ErrInvalidEvent)
+	}
+	if err := s.appendRemoteLocked(ctx, event); err != nil {
+		return err
+	}
+	now := s.now().UTC().Truncate(time.Millisecond)
+	member.Status = "left"
+	member.LeftAt = &now
+	if err := s.store.UpdateMember(ctx, member); err != nil {
+		return err
+	}
+	if _, err := s.rotateEpochLocked(ctx, event.RoomID); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ApplyRemoteLeave installs an already accepted leave event on the departing
+// device without rotating the local key again. The home node owns the new
+// epoch; this device is no longer a member and will not receive it.
+func (s *Service) ApplyRemoteLeave(ctx context.Context, event *Event) error {
+	if event == nil || event.Type != EventMemberLeft {
+		return ErrInvalidEvent
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.appendRemoteLocked(ctx, event); err != nil {
+		return err
+	}
+	member, err := s.store.GetMember(ctx, event.RoomID, event.AuthorID)
+	if err != nil {
+		return err
+	}
+	now := s.now().UTC().Truncate(time.Millisecond)
+	member.Status = "left"
+	member.LeftAt = &now
+	return s.store.UpdateMember(ctx, member)
 }

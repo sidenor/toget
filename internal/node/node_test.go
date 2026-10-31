@@ -265,3 +265,308 @@ func TestRequestReplayAndClockSkew(t *testing.T) {
 		t.Fatalf("tampered request error = %v", err)
 	}
 }
+
+func TestRemoteAttachmentRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	host := newNode(t, "Host")
+	guest1 := newNode(t, "GuestOne")
+	guest2 := newNode(t, "GuestTwo")
+	hostActor, err := host.node.LocalActor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roomRecord, _, err := host.rooms.CreateRoom(ctx, "Files", "", hostActor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.node.EnsureRoomHome(ctx, roomRecord.ID); err != nil {
+		t.Fatal(err)
+	}
+	join := func(n *testNode) *room.Room {
+		t.Helper()
+		invite, _, err := host.rooms.CreateInvite(ctx, roomRecord.ID, hostActor, room.HistoryNone, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		code, err := host.node.InviteCode(ctx, roomRecord.ID, invite.Secret, roomRecord.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		joined, err := n.node.Join(ctx, code)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return joined
+	}
+	joined1 := join(guest1)
+	joined2 := join(guest2)
+	guest1Actor, err := guest1.node.LocalActor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	payload := []byte("remote attachment payload")
+	attachment, err := guest1.node.UploadAttachment(ctx, joined1.ID, guest1Actor, "note.txt", "text/plain", payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attachment.ID == "" || attachment.Path == "" {
+		t.Fatalf("sender attachment = %#v", attachment)
+	}
+	if _, err := guest1.node.PostRemoteMessage(ctx, joined1.ID, guest1Actor, room.MessagePostedPayload{
+		Text: "with a file", Attachments: []string{attachment.ID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := guest2.node.SyncRoom(ctx, joined2.ID); err != nil {
+		t.Fatal(err)
+	}
+	guest2Actor, err := guest2.node.LocalActor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetchedMeta, err := guest2.rooms.GetAttachment(ctx, attachment.ID, guest2Actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetchedMeta.EventID == "" || fetchedMeta.Path != "" {
+		t.Fatalf("synced attachment = %#v", fetchedMeta)
+	}
+	if _, _, err := guest2.rooms.OpenAttachment(ctx, attachment.ID, guest2Actor); !errors.Is(err, room.ErrAttachmentNotFound) {
+		t.Fatalf("uncached open = %v, want ErrAttachmentNotFound", err)
+	}
+	if err := guest2.node.FetchAttachment(ctx, attachment.ID, guest2Actor); err != nil {
+		t.Fatal(err)
+	}
+	_, got, err := guest2.rooms.OpenAttachment(ctx, attachment.ID, guest2Actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("downloaded payload = %q", got)
+	}
+
+	hostActor, err = host.node.LocalActor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, hostBytes, err := host.rooms.OpenAttachment(ctx, attachment.ID, hostActor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(hostBytes, payload) {
+		t.Fatalf("home payload = %q", hostBytes)
+	}
+
+	// A remote device cannot read an attachment from a room it never joined.
+	if _, _, err := host.rooms.ReadAttachmentCiphertext(ctx, roomRecord.ID, attachment.ID, guest2.snapshot.Account.ID, "not-a-device"); err == nil {
+		t.Fatal("unknown device read home attachment")
+	}
+}
+
+func TestRemoteLeaveRotatesAndRevokes(t *testing.T) {
+	ctx := context.Background()
+	host := newNode(t, "Host")
+	guest := newNode(t, "Guest")
+	other := newNode(t, "Other")
+	hostActor, err := host.node.LocalActor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roomRecord, _, err := host.rooms.CreateRoom(ctx, "Leave", "", hostActor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.node.EnsureRoomHome(ctx, roomRecord.ID); err != nil {
+		t.Fatal(err)
+	}
+	join := func(n *testNode) *room.Room {
+		t.Helper()
+		invite, _, err := host.rooms.CreateInvite(ctx, roomRecord.ID, hostActor, room.HistoryNone, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		code, err := host.node.InviteCode(ctx, roomRecord.ID, invite.Secret, roomRecord.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		joined, err := n.node.Join(ctx, code)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return joined
+	}
+	joined := join(guest)
+	otherJoined := join(other)
+	guestActor, err := guest.node.LocalActor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeEpoch := joined.Epoch
+	left, err := guest.node.LeaveRoom(ctx, joined.ID, guestActor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left.Type != room.EventMemberLeft {
+		t.Fatalf("leave event = %#v", left)
+	}
+	hostActor, err = host.node.LocalActor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.rooms.PostMessage(ctx, roomRecord.ID, hostActor, room.MessagePostedPayload{Text: "after leave"}); err != nil {
+		t.Fatal(err)
+	}
+	hostRoom, err := host.rooms.GetRoom(ctx, roomRecord.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hostRoom.Epoch <= beforeEpoch {
+		t.Fatalf("home epoch did not rotate: %d -> %d", beforeEpoch, hostRoom.Epoch)
+	}
+	members, err := host.rooms.ListMembers(ctx, roomRecord.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, member := range members {
+		if member.AccountID == guest.snapshot.Account.ID && member.Status != "left" {
+			t.Fatalf("guest member status = %q", member.Status)
+		}
+	}
+	if _, err := guest.node.PostRemoteMessage(ctx, joined.ID, guestActor, room.MessagePostedPayload{Text: "should fail"}); err == nil {
+		t.Fatal("left member could still post")
+	}
+	if _, err := guest.node.SyncRoom(ctx, joined.ID); err == nil {
+		t.Fatal("left member could still sync")
+	}
+	leftRoom, err := guest.rooms.GetRoom(ctx, joined.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leftRoom.ArchivedAt == nil {
+		t.Fatal("left remote room was not archived on the leaving device")
+	}
+	otherActor, err := other.node.LocalActor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.node.SyncRoom(ctx, otherJoined.ID); err != nil {
+		t.Fatal(err)
+	}
+	events, err := other.rooms.ListEvents(ctx, otherJoined.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundLeave, foundAfter := false, false
+	for _, event := range events {
+		if event.Type == room.EventMemberLeft && event.AuthorID == guest.snapshot.Account.ID {
+			foundLeave = true
+		}
+		if event.Type == room.EventMessagePosted && strings.Contains(string(event.Payload), "after leave") {
+			foundAfter = true
+		}
+	}
+	if !foundLeave || !foundAfter {
+		t.Fatalf("other member events leave=%v after=%v", foundLeave, foundAfter)
+	}
+	if _, err := other.node.PostRemoteMessage(ctx, otherJoined.ID, otherActor, room.MessagePostedPayload{Text: "still here"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRemoteArchiveStaysLocalAndPropagates(t *testing.T) {
+	ctx := context.Background()
+	host := newNode(t, "Host")
+	guest := newNode(t, "Guest")
+	hostActor, err := host.node.LocalActor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joinRoom := func(name string) *room.Room {
+		t.Helper()
+		record, _, err := host.rooms.CreateRoom(ctx, name, "", hostActor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := host.node.EnsureRoomHome(ctx, record.ID); err != nil {
+			t.Fatal(err)
+		}
+		invite, _, err := host.rooms.CreateInvite(ctx, record.ID, hostActor, room.HistoryNone, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		code, err := host.node.InviteCode(ctx, record.ID, invite.Secret, record.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		joined, err := guest.node.Join(ctx, code)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return joined
+	}
+	guestActor, err := guest.node.LocalActor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	local := joinRoom("Local archive")
+	if _, _, err := guest.node.ArchiveRoom(ctx, local.ID, guestActor); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := guest.node.SyncRoom(ctx, local.ID); err != nil {
+		t.Fatal(err)
+	}
+	guestRoom, err := guest.rooms.GetRoom(ctx, local.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if guestRoom.ArchivedAt == nil {
+		t.Fatal("local archive was cleared by sync")
+	}
+	hostRecord, err := host.rooms.GetRoom(ctx, local.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hostRecord.ArchivedAt != nil {
+		t.Fatal("guest archive changed the home room")
+	}
+	if _, err := guest.node.SyncRoom(ctx, local.ID); err != nil {
+		t.Fatal(err)
+	}
+	guestRoom, err = guest.rooms.GetRoom(ctx, local.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if guestRoom.ArchivedAt == nil {
+		t.Fatal("local archive did not survive a second sync")
+	}
+
+	shared := joinRoom("Shared archive")
+	if _, _, err := host.node.ArchiveRoom(ctx, shared.ID, hostActor); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := guest.node.SyncRoom(ctx, shared.ID); err != nil {
+		t.Fatal(err)
+	}
+	guestRoom, err = guest.rooms.GetRoom(ctx, shared.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if guestRoom.ArchivedAt == nil {
+		t.Fatal("home archive did not propagate to the guest")
+	}
+	events, err := guest.rooms.ListEvents(ctx, shared.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Type == room.EventRoomArchived {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("guest did not import room.archived")
+	}
+}

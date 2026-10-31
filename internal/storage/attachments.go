@@ -93,3 +93,41 @@ func scanAttachment(row scanner) (*room.Attachment, error) {
 	a.CreatedAt = fromMillis(created)
 	return &a, nil
 }
+
+// UpsertAttachment inserts or refreshes metadata received from a home node.
+// A locally cached ciphertext path is preserved; an event binding is only
+// added, never cleared.
+func (d *DB) UpsertAttachment(ctx context.Context, a *room.Attachment) error {
+	_, err := d.db.ExecContext(ctx, `
+		INSERT INTO attachments (id, room_id, event_id, name, mime, size, sha256, path, key_sealed, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			event_id = CASE WHEN excluded.event_id <> '' THEN excluded.event_id ELSE attachments.event_id END,
+			name = excluded.name,
+			mime = excluded.mime,
+			size = excluded.size,
+			sha256 = excluded.sha256,
+			key_sealed = excluded.key_sealed,
+			path = CASE WHEN attachments.path <> '' THEN attachments.path ELSE excluded.path END`,
+		a.ID, a.RoomID, a.EventID, a.Name, a.MIME, a.Size, a.SHA256, a.Path, a.KeySealed, toMillis(a.CreatedAt))
+	if err != nil {
+		return fmt.Errorf("storage: upsert attachment: %w", err)
+	}
+	return nil
+}
+
+// SetAttachmentPath records the local ciphertext path after a download.
+func (d *DB) SetAttachmentPath(ctx context.Context, id, path string) error {
+	res, err := d.db.ExecContext(ctx, `UPDATE attachments SET path = ? WHERE id = ?`, path, id)
+	if err != nil {
+		return fmt.Errorf("storage: set attachment path: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("storage: set attachment path rows: %w", err)
+	}
+	if n != 1 {
+		return room.ErrAttachmentNotFound
+	}
+	return nil
+}
