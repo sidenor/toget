@@ -200,8 +200,10 @@ export TOGET_HOST_SMTP_PASSWORD='...'
 
 - `--host-public-url` is the browser-facing HTTPS origin used in verification
   and reset links, and is also the origin of the proxy identity URL described
-  below. Without it, the host falls back to the listen address, which only
-  works for loopback testing; email recovery needs a public origin.
+  below. It must be set whenever `--host-smtp-addr` is set: without an explicit
+  origin the host would generate unreachable links. Without either, startup
+  prints `Public: not configured` and the host still supports password login,
+  device sessions, and key rotation.
 - `--host-direct-address` is the public `host:port` advertised in the startup
   `Accounts:` line for direct certificate-pinned clients. Set it when the host
   is behind NAT or listens on a wildcard address. Without it, a wildcard

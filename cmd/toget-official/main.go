@@ -125,7 +125,11 @@ func newRootCommand() *cobra.Command {
 				if host.identityURL != "" {
 					fmt.Printf("Proxy:     %s\n", host.identityURL)
 				}
-				fmt.Printf("Public:    %s\n", host.publicURL)
+				if host.publicURL != "" {
+					fmt.Printf("Public:    %s\n", host.publicURL)
+				} else {
+					fmt.Println("Public:    not configured (set --host-public-url)")
+				}
 			}
 
 			if updateDir != "" {
@@ -212,7 +216,7 @@ func newRootCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&noQUIC, "no-quic", false, "disable HTTP/3 on the relay")
 	cmd.Flags().BoolVar(&noHost, "no-host", false, "do not run the official account host")
 	cmd.Flags().StringVar(&hostListen, "host-listen", "0.0.0.0:7722", "official account host listen address")
-	cmd.Flags().StringVar(&hostPublicURL, "host-public-url", "", "browser-facing HTTPS origin for account emails (defaults to the listen address)")
+	cmd.Flags().StringVar(&hostPublicURL, "host-public-url", "", "browser-facing HTTPS origin for account email links (required with --host-smtp-addr)")
 	cmd.Flags().StringVar(&hostDirectAddress, "host-direct-address", "", "public host:port advertised for direct pinned clients (required behind NAT)")
 	cmd.Flags().StringVar(&hostName, "host-name", "Toget Official Accounts", "account host display name")
 	cmd.Flags().StringVar(&hostTLSCert, "host-tls-cert", "", "TLS certificate for the account host (default: <home>/host/tls.crt)")

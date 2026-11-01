@@ -63,6 +63,69 @@ func TestPublicUnicastIP(t *testing.T) {
 	}
 }
 
+func TestAccountHostAddresses(t *testing.T) {
+	cases := []struct {
+		listen     string
+		publicURL  string
+		smtpAddr   string
+		wantHost   string
+		wantOrigin string
+		wantErr    bool
+	}{
+		{
+			listen:   "127.0.0.1:7722",
+			wantHost: "127.0.0.1:7722",
+		},
+		{
+			listen: "127.0.0.1:7722", publicURL: "accounts.example.com",
+			wantHost: "accounts.example.com:443", wantOrigin: "https://accounts.example.com",
+		},
+		{
+			listen: "127.0.0.1:7722", publicURL: "https://accounts.example.com/",
+			wantHost: "accounts.example.com:443", wantOrigin: "https://accounts.example.com",
+		},
+		{
+			listen: "127.0.0.1:7722", publicURL: "https://accounts.example.com:8443",
+			smtpAddr: "smtp.example.com:587",
+			wantHost: "accounts.example.com:8443", wantOrigin: "https://accounts.example.com:8443",
+		},
+		{
+			listen: "127.0.0.1:7722", smtpAddr: "smtp.example.com:587",
+			wantErr: true,
+		},
+		{
+			listen: "127.0.0.1:7722", publicURL: "  ", smtpAddr: "smtp.example.com:587",
+			wantErr: true,
+		},
+		{
+			listen: "127.0.0.1:7722", publicURL: "https://accounts.example.com/path",
+			smtpAddr: "smtp.example.com:587",
+			wantErr:  true,
+		},
+		{
+			listen: "127.0.0.1:7722", smtpAddr: "  ",
+			wantHost: "127.0.0.1:7722",
+		},
+	}
+	for _, test := range cases {
+		host, origin, err := accountHostAddresses(test.listen, test.publicURL, test.smtpAddr)
+		if test.wantErr {
+			if err == nil {
+				t.Fatalf("accountHostAddresses(%q, %q, %q) = (%q, %q), want error",
+					test.listen, test.publicURL, test.smtpAddr, host, origin)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("accountHostAddresses(%q, %q, %q): %v", test.listen, test.publicURL, test.smtpAddr, err)
+		}
+		if host != test.wantHost || origin != test.wantOrigin {
+			t.Fatalf("accountHostAddresses(%q, %q, %q) = (%q, %q), want (%q, %q)",
+				test.listen, test.publicURL, test.smtpAddr, host, origin, test.wantHost, test.wantOrigin)
+		}
+	}
+}
+
 func TestAccountHostAddress(t *testing.T) {
 	cases := []struct {
 		listen    string

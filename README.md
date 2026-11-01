@@ -48,7 +48,7 @@ and directory:
 go run ./cmd/toget-official
 # Accounts:  https://<origin>:7722#fp=...  (when a direct address is known or configured)
 # Proxy:     https://<public-host>#id=...  (when --host-public-url is set)
-# Public:    https://<public-host>
+# Public:    https://<public-host>  (when --host-public-url is set)
 # Relay:     https://<host>:7719#fp=...
 # Directory: https://<host>:7720#fp=...
 ```
@@ -381,7 +381,7 @@ Toget 以本地节点的方式运行。单机上可以创建账号、创建房�
 go run ./cmd/toget-official
 # Accounts:  https://<origin>:7722#fp=...  (when a direct address is known or configured)
 # Proxy:     https://<public-host>#id=...  (when --host-public-url is set)
-# Public:    https://<public-host>
+# Public:    https://<public-host>  (when --host-public-url is set)
 # Relay:     https://<host>:7719#fp=...
 # Directory: https://<host>:7720#fp=...
 ```

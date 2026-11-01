@@ -82,17 +82,9 @@ func startAccountHost(parent context.Context, paths config.Paths, options hostOp
 	if err != nil {
 		return nil, err
 	}
-	publicHost, err := accountHostAddress(listen, options.PublicURL)
+	publicHost, publicURL, err := accountHostAddresses(listen, options.PublicURL, options.SMTPAddr)
 	if err != nil {
 		return nil, err
-	}
-	publicURL := "https://" + publicHost
-	if strings.TrimSpace(options.PublicURL) != "" {
-		parsed := strings.TrimSpace(options.PublicURL)
-		if !strings.Contains(parsed, "://") {
-			parsed = "https://" + parsed
-		}
-		publicURL = strings.TrimSuffix(parsed, "/")
 	}
 	trustedProxies, err := hosted.ParseTrustedProxies(options.TrustedProxies)
 	if err != nil {
@@ -222,6 +214,29 @@ func (h *accountHost) Close(ctx context.Context) error {
 		err = closeErr
 	}
 	return err
+}
+
+// accountHostAddresses returns the host:port used for the host identity and
+// the browser-facing origin used in account email links. The origin is only
+// set when --host-public-url is explicit: deriving one from the listen address
+// can produce unreachable links behind NAT.
+func accountHostAddresses(listen, publicURL, smtpAddr string) (string, string, error) {
+	publicHost, err := accountHostAddress(listen, publicURL)
+	if err != nil {
+		return "", "", err
+	}
+	origin := ""
+	if strings.TrimSpace(publicURL) != "" {
+		parsed := strings.TrimSpace(publicURL)
+		if !strings.Contains(parsed, "://") {
+			parsed = "https://" + parsed
+		}
+		origin = strings.TrimSuffix(parsed, "/")
+	}
+	if origin == "" && strings.TrimSpace(smtpAddr) != "" {
+		return "", "", errors.New("--host-smtp-addr requires --host-public-url so verification and reset links are reachable")
+	}
+	return publicHost, origin, nil
 }
 
 func accountHostAddress(listen, publicURL string) (string, error) {
