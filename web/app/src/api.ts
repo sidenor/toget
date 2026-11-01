@@ -127,7 +127,8 @@ export const api = {
     request<SessionInfo>("/api/v1/account/reset-password", json({ local: true, new_password: newPassword })),
 
   rooms: () => request<{ rooms: Room[] }>("/api/v1/rooms"),
-  createRoom: (name: string, topic = "") => request<CreateRoomResponse>("/api/v1/rooms", json({ name, topic })),
+  createRoom: (name: string, topic = "", official = false) =>
+    request<CreateRoomResponse>("/api/v1/rooms", json({ name, topic, home: official ? "official" : "node" })),
   room: (id: string) => request<Room>(`/api/v1/rooms/${encodeURIComponent(id)}`),
   updateRoom: (id: string, patch: { name?: string; topic?: string }) =>
     request<{ room: Room; event: RoomEvent }>(`/api/v1/rooms/${encodeURIComponent(id)}`, {

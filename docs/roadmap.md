@@ -135,7 +135,7 @@ and [cards.md](cards.md).
 - [x] Official recovery credential: required before onboarding continues
 - [x] Account reset page: static, open source, no third-party scripts, local file read
 - [x] Device management UI: list, rename, revoke (local and paired devices)
-- [ ] Official room home node (ciphertext only)
+- [x] Official room home: blind ciphertext ordering, membership, invites, per-device keys, rotation
 - [x] Signed release manifests, update service, atomic update and rollback
 - [x] Stable and beta channels
 - [x] Periodic update checks, in-app banner, notify/auto/off modes, bounded postponement for forced releases
@@ -148,8 +148,10 @@ and [cards.md](cards.md).
 flow are implemented: OPAQUE registration and login, blind master-key storage,
 device-signed host sessions, email verification and recovery, required
 recovery-file download, key rotation, and the embedded browser reset page.
-The official room home node remains design-only; hosted accounts currently use
-their own devices or a self-hosted node as room homes. Signed release keys,
+The official room home is implemented: the host orders sealed envelopes,
+enforces membership and history windows, stores per-device wrapped epoch keys,
+and never receives room names, topics, message text, or unwrapped keys.
+Attachments are not supported in official rooms yet. Signed release keys,
 manifests, channels, a signed release index, a static update service, atomic
 install, startup reconciliation, CLI rollback, periodic checks, and an in-app
 update prompt are implemented. The forced level is honored by the UI but is

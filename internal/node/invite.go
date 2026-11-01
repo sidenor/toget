@@ -27,8 +27,14 @@ var (
 	ErrInvalidInviteCode = errors.New("invalid Toget invite code")
 )
 
+// Invite kinds. An empty Kind is the historical node-hosted invite.
+const (
+	InviteKindNode     = "node"
+	InviteKindOfficial = "official"
+)
+
 // InviteCode carries a single-use secret and everything a peer needs to reach
-// the home node. The URL fragment contains the TLS certificate fingerprint;
+// the room home. The URL fragment contains the TLS certificate fingerprint;
 // it is never sent over the wire as part of an HTTP request.
 type InviteCode struct {
 	Protocol int    `json:"protocol"`
@@ -37,6 +43,9 @@ type InviteCode struct {
 	ServerID string `json:"server_id"`
 	RoomID   string `json:"room_id"`
 	RoomName string `json:"room_name,omitempty"`
+	// HomeKind is "node" or "official". Older codes omit it.
+	HomeKind  string `json:"home_kind,omitempty"`
+	RoomTopic string `json:"room_topic,omitempty"`
 }
 
 // EncodeInvite serializes an invite code for messaging.
@@ -46,6 +55,12 @@ func EncodeInvite(code InviteCode) (string, error) {
 	}
 	if code.Protocol != Protocol {
 		return "", fmt.Errorf("%w: unsupported protocol", ErrInvalidInviteCode)
+	}
+	if code.HomeKind == "" {
+		code.HomeKind = InviteKindNode
+	}
+	if code.HomeKind != InviteKindNode && code.HomeKind != InviteKindOfficial {
+		return "", fmt.Errorf("%w: unsupported home kind", ErrInvalidInviteCode)
 	}
 	if len(code.Secret) < 16 {
 		return "", fmt.Errorf("%w: secret is too short", ErrInvalidInviteCode)
@@ -89,6 +104,12 @@ func DecodeInvite(raw string) (*InviteCode, error) {
 	}
 	if code.Protocol != Protocol {
 		return nil, fmt.Errorf("%w: unsupported protocol", ErrInvalidInviteCode)
+	}
+	if code.HomeKind == "" {
+		code.HomeKind = InviteKindNode
+	}
+	if code.HomeKind != InviteKindNode && code.HomeKind != InviteKindOfficial {
+		return nil, fmt.Errorf("%w: unsupported home kind", ErrInvalidInviteCode)
 	}
 	if len(code.Secret) < 16 || code.ServerID == "" || code.RoomID == "" {
 		return nil, fmt.Errorf("%w: missing fields", ErrInvalidInviteCode)

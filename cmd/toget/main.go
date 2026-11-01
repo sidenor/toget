@@ -1567,6 +1567,7 @@ func newRoomCommand() *cobra.Command {
 
 func newRoomCreateCommand() *cobra.Command {
 	var name, topic string
+	var official bool
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create a room",
@@ -1585,18 +1586,28 @@ func newRoomCreateCommand() *cobra.Command {
 				Room  room.Room  `json:"room"`
 				Event room.Event `json:"event"`
 			}
-			if err := c.Post(cmd.Context(), "/api/v1/rooms", map[string]string{"name": name, "topic": topic}, &created); err != nil {
+			home := room.HomeKindNode
+			if official {
+				home = room.HomeKindOfficial
+			}
+			if err := c.Post(cmd.Context(), "/api/v1/rooms",
+				map[string]string{"name": name, "topic": topic, "home": home}, &created); err != nil {
 				return err
 			}
 			if jsonFlag {
 				return printJSON(created)
 			}
-			fmt.Printf("Room created.\n\nID:   %s\nName: %s\n", created.Room.ID, created.Room.Name)
+			homeLabel := ""
+			if created.Room.HomeKind == room.HomeKindOfficial {
+				homeLabel = " (official blind home)"
+			}
+			fmt.Printf("Room created%s.\n\nID:   %s\nName: %s\n", homeLabel, created.Room.ID, created.Room.Name)
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "room name")
 	cmd.Flags().StringVar(&topic, "topic", "", "room topic")
+	cmd.Flags().BoolVar(&official, "official", false, "host the room on the official blind room home")
 	return cmd
 }
 
@@ -1629,8 +1640,11 @@ func newRoomListCommand() *cobra.Command {
 			}
 			for _, r := range result.Rooms {
 				suffix := ""
+				if r.HomeKind == room.HomeKindOfficial {
+					suffix = " (official)"
+				}
 				if r.ArchivedAt != nil {
-					suffix = " (archived)"
+					suffix += " (archived)"
 				}
 				fmt.Printf("%s  %s%s\n", r.ID, r.Name, suffix)
 			}

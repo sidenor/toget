@@ -57,6 +57,10 @@ var (
 	// ErrRemoteReadOnly means the room is hosted by another node. Messages
 	// are forwarded to the home node; local-only mutations are not allowed.
 	ErrRemoteReadOnly = errors.New("room is hosted by another node")
+	// ErrRoomLeft means this device left the room. The home blocks the same
+	// device from redeeming a new invite, so restoring the archived copy would
+	// only produce a room that cannot sync.
+	ErrRoomLeft = errors.New("this device has left the room")
 )
 
 const (
@@ -70,17 +74,26 @@ const (
 
 // Room is a private conversation.
 type Room struct {
-	ID           string     `json:"id"`
-	Name         string     `json:"name"`
-	Topic        string     `json:"topic,omitempty"`
-	HomeNode     string     `json:"home_node"`
-	HomeServerID string     `json:"home_server_id,omitempty"`
-	HomeAddress  string     `json:"home_address,omitempty"`
-	CreatedBy    string     `json:"created_by"`
-	Epoch        int        `json:"epoch"`
-	CreatedAt    time.Time  `json:"created_at"`
-	ArchivedAt   *time.Time `json:"archived_at,omitempty"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Topic        string `json:"topic,omitempty"`
+	HomeNode     string `json:"home_node"`
+	HomeServerID string `json:"home_server_id,omitempty"`
+	HomeAddress  string `json:"home_address,omitempty"`
+	// HomeKind distinguishes a room hosted by a Toget node from a blind
+	// official room home. Empty means a node (the historical default).
+	HomeKind   string     `json:"home_kind,omitempty"`
+	CreatedBy  string     `json:"created_by"`
+	Epoch      int        `json:"epoch"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ArchivedAt *time.Time `json:"archived_at,omitempty"`
 }
+
+// Home kinds.
+const (
+	HomeKindNode     = "node"
+	HomeKindOfficial = "official"
+)
 
 // Member is an account's membership in a room.
 type Member struct {
@@ -137,6 +150,12 @@ type Event struct {
 	PrevHash     string          `json:"prev_hash,omitempty"`
 	Hash         string          `json:"hash"`
 	Signature    string          `json:"signature,omitempty"`
+	// EnvelopeHash, EnvelopePrevHash, and EnvelopeSignature cover the sealed
+	// payload and can be checked by a blind home that never holds a room key.
+	// Node-hosted rooms leave them empty.
+	EnvelopeHash      string `json:"envelope_hash,omitempty"`
+	EnvelopePrevHash  string `json:"envelope_prev_hash,omitempty"`
+	EnvelopeSignature string `json:"envelope_signature,omitempty"`
 }
 
 // Event types. Names are past tense and stable.
@@ -633,7 +652,7 @@ func (s *Service) Append(ctx context.Context, roomID string, actor Actor, eventT
 		}
 		return nil, err
 	}
-	plain, sealed, err := s.prepareLocalLocked(ctx, roomID, actor, eventType, payload)
+	plain, sealed, err := s.prepareLocalLocked(ctx, roomID, actor, eventType, payload, nil)
 	if err == nil {
 		err = s.store.AppendEvent(ctx, sealed)
 	}
@@ -657,15 +676,36 @@ func (s *Service) Prepare(ctx context.Context, roomID string, actor Actor, event
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, sealed, err := s.prepareLocalLocked(ctx, roomID, actor, eventType, payload)
+	_, sealed, err := s.prepareLocalLocked(ctx, roomID, actor, eventType, payload, nil)
 	return sealed, err
 }
 
-func (s *Service) prepareLocalLocked(ctx context.Context, roomID string, actor Actor, eventType string, payload any) (*Event, *Event, error) {
+// lastEventForPrepare returns the local head. An official room whose invite
+// hid earlier history has no local head yet; the caller passes the host's
+// signed head anchor so the new event can link to the hidden chain without
+// receiving its plaintext.
+func (s *Service) lastEventForPrepare(ctx context.Context, roomID string, anchor *Event) (*Event, error) {
+	last, err := s.store.LastEvent(ctx, roomID)
+	if err == nil {
+		return last, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	if anchor == nil {
+		return nil, err
+	}
+	if anchor.RoomID != roomID || anchor.Seq <= 0 || anchor.ID == "" || anchor.Hash == "" {
+		return nil, ErrInvalidEvent
+	}
+	return anchor, nil
+}
+
+func (s *Service) prepareLocalLocked(ctx context.Context, roomID string, actor Actor, eventType string, payload any, anchor *Event) (*Event, *Event, error) {
 	if err := s.RequireMember(ctx, roomID, actor); err != nil {
 		return nil, nil, err
 	}
-	last, err := s.store.LastEvent(ctx, roomID)
+	last, err := s.lastEventForPrepare(ctx, roomID, anchor)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -713,21 +753,34 @@ func (s *Service) appendRemoteLocked(ctx context.Context, event *Event, validate
 		return err
 	}
 	last, err := s.store.LastEvent(ctx, event.RoomID)
-	if err != nil {
+	if errors.Is(err, ErrNotFound) {
+		// An official invite can hide every event before the joiner's window,
+		// leaving no local head. The host still gives the joiner the hidden
+		// head's id and plaintext hash as a chain anchor.
+		last = nil
+	} else if err != nil {
 		return err
 	}
-	if event.Seq <= last.Seq {
-		// Idempotent replay by event ID.
-		if existing, err := s.findEvent(ctx, event.RoomID, event.ID); err == nil && existing.Seq == event.Seq {
-			return nil
+	if last != nil {
+		if event.Seq <= last.Seq {
+			// Idempotent replay by event ID.
+			if existing, err := s.findEvent(ctx, event.RoomID, event.ID); err == nil && existing.Seq == event.Seq {
+				return nil
+			}
+			return fmt.Errorf("%w: sequence is not after the local head", ErrInvalidEvent)
 		}
-		return fmt.Errorf("%w: sequence is not after the local head", ErrInvalidEvent)
-	}
-	if event.Seq != last.Seq+1 {
-		return fmt.Errorf("%w: gap in room sequence", ErrInvalidEvent)
-	}
-	if event.PrevID != last.ID || event.PrevHash != last.Hash {
-		return fmt.Errorf("%w: chain does not link to the local head", ErrInvalidEvent)
+		if event.Seq != last.Seq+1 {
+			return fmt.Errorf("%w: gap in room sequence", ErrInvalidEvent)
+		}
+		if event.PrevID != last.ID || event.PrevHash != last.Hash {
+			return fmt.Errorf("%w: chain does not link to the local head", ErrInvalidEvent)
+		}
+	} else if event.Seq == 1 {
+		if event.PrevID != "" || event.PrevHash != "" {
+			return fmt.Errorf("%w: first event has a predecessor", ErrInvalidEvent)
+		}
+	} else if event.PrevID == "" || event.PrevHash == "" {
+		return fmt.Errorf("%w: truncated room log has no chain anchor", ErrInvalidEvent)
 	}
 	device, err := s.store.GetRoomDevice(ctx, event.RoomID, event.AuthorDevice)
 	if err != nil {
@@ -957,6 +1010,35 @@ func (s *Service) Rename(ctx context.Context, roomID string, actor Actor, name, 
 	return current, event, nil
 }
 
+// ApplyOfficialRoomMetadata updates the local name and topic after the
+// official host has accepted a signed settings event. The caller posts that
+// event; this only refreshes the local projection and never emits another.
+func (s *Service) ApplyOfficialRoomMetadata(ctx context.Context, roomID, name, topic string) (*Room, error) {
+	name = strings.TrimSpace(name)
+	topic = strings.TrimSpace(topic)
+	if name == "" || len(name) > MaxNameLength {
+		return nil, ErrInvalidName
+	}
+	if len(topic) > MaxTopicLength {
+		return nil, ErrInvalidTopic
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, err := s.store.GetRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if current.HomeKind != HomeKindOfficial {
+		return nil, ErrNotOfficialRoom
+	}
+	current.Name = name
+	current.Topic = topic
+	if err := s.store.UpdateRoom(ctx, current); err != nil {
+		return nil, err
+	}
+	return s.store.GetRoom(ctx, roomID)
+}
+
 // CreateInvite creates a single-use invitation to a room.
 func (s *Service) CreateInvite(ctx context.Context, roomID string, actor Actor, history string, ttl time.Duration) (*Invite, *Event, error) {
 	switch history {
@@ -1077,6 +1159,33 @@ func (s *Service) ArchiveLocal(ctx context.Context, roomID string, actor Actor) 
 		return nil, err
 	}
 	return current, nil
+}
+
+// RestoreLocal unhides a room that this account still belongs to. Redeeming a
+// fresh invite for a room that was only archived on this device brings it back
+// without touching the shared log. A member who has left stays archived.
+func (s *Service) RestoreLocal(ctx context.Context, roomID string, actor Actor) (*Room, error) {
+	if !actor.Valid() {
+		return nil, ErrForbidden
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, err := s.store.GetRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	member, err := s.store.GetMember(ctx, roomID, actor.AccountID)
+	if err != nil || member.Status != "active" {
+		return nil, ErrNotMember
+	}
+	if current.ArchivedAt == nil {
+		return current, nil
+	}
+	current.ArchivedAt = nil
+	if err := s.store.UpdateRoom(ctx, current); err != nil {
+		return nil, err
+	}
+	return s.store.GetRoom(ctx, roomID)
 }
 
 // Audit returns a verifiable snapshot of a room's history.
@@ -1331,6 +1440,8 @@ func (s *Service) buildEvent(roomID string, seq int64, prev *Event, eventType st
 	if prev != nil {
 		event.PrevID = prev.ID
 		event.PrevHash = prev.Hash
+		// Node-hosted events have no envelope, so this stays empty there.
+		event.EnvelopePrevHash = prev.EnvelopeHash
 	}
 	event.Hash = ComputeEventHash(event)
 	if len(actor.SigningKey) == ed25519.PrivateKeySize {
@@ -1412,6 +1523,12 @@ func roomEpochAAD(roomID string, epoch int) string {
 
 func isRoomPayload(payload []byte) bool {
 	return len(payload) >= len(sealedKeyPrefix) && string(payload[:len(sealedKeyPrefix)]) == sealedKeyPrefix
+}
+
+// IsSealedPayload reports whether payload is room-key ciphertext. A blind
+// home uses it to reject plaintext events without needing the key.
+func IsSealedPayload(payload []byte) bool {
+	return isRoomPayload(payload)
 }
 
 func (s *Service) roomKey(ctx context.Context, roomID string, epoch int) ([]byte, error) {
@@ -1595,12 +1712,72 @@ func ComputeEventHash(event *Event) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// VerifyEvent checks the event hash and, when present, its author signature.
+// ComputeEnvelopeHash returns the canonical hash of the sealed event that a
+// blind home stores. Unlike ComputeEventHash it never looks at plaintext, so a
+// host without a room key can verify integrity and ordering.
+func ComputeEnvelopeHash(event *Event) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "toget:event-envelope:v1\n%s\n%s\n%d\n%d\n%s\n%s\n%s\n%d\n%s\n%s\n",
+		event.RoomID,
+		event.ID,
+		event.Seq,
+		event.Epoch,
+		event.Type,
+		event.AuthorID,
+		event.AuthorDevice,
+		event.CreatedAt.UnixMilli(),
+		event.Hash,
+		event.EnvelopePrevHash,
+	)
+	h.Write(event.Payload)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// SignEnvelope fills the sealed-envelope hash and signature. The event's
+// ordinary Hash and Signature must already be set.
+func SignEnvelope(event *Event, key ed25519.PrivateKey) error {
+	if len(key) != ed25519.PrivateKeySize {
+		return fmt.Errorf("%w: signing key is invalid", ErrInvalidEvent)
+	}
+	event.EnvelopeHash = ComputeEnvelopeHash(event)
+	event.EnvelopeSignature = base64.RawStdEncoding.EncodeToString(
+		ed25519.Sign(key, []byte(event.EnvelopeHash)))
+	return nil
+}
+
+// VerifyEnvelope checks the sealed-envelope hash, chain field, and author
+// signature without opening the payload.
+func VerifyEnvelope(event *Event, publicKey ed25519.PublicKey) error {
+	if event.EnvelopeHash == "" || event.EnvelopeSignature == "" {
+		return fmt.Errorf("%w: missing sealed envelope signature", ErrCorruptEvent)
+	}
+	if ComputeEnvelopeHash(event) != event.EnvelopeHash {
+		return fmt.Errorf("%w: sealed envelope hash mismatch", ErrCorruptEvent)
+	}
+	sig, err := base64.RawStdEncoding.DecodeString(event.EnvelopeSignature)
+	if err != nil {
+		return fmt.Errorf("%w: bad sealed envelope signature encoding", ErrCorruptEvent)
+	}
+	if len(publicKey) != ed25519.PublicKeySize || !ed25519.Verify(publicKey, []byte(event.EnvelopeHash), sig) {
+		return fmt.Errorf("%w: sealed envelope signature is invalid", ErrCorruptEvent)
+	}
+	return nil
+}
+
+// VerifyEvent checks the event hash and its author signature.
 func VerifyEvent(event *Event, publicKey ed25519.PublicKey) error {
 	if ComputeEventHash(event) != event.Hash {
 		return fmt.Errorf("%w: hash mismatch", ErrCorruptEvent)
 	}
-	if event.Signature == "" {
+	return VerifyEventSignature(event, publicKey)
+}
+
+// VerifyEventSignature checks the author signature over the stored plaintext
+// event hash without recomputing that hash. A blind room home uses it to
+// confirm that the author signed the same hash that the envelope commits to,
+// even though the host cannot open the sealed payload.
+func VerifyEventSignature(event *Event, publicKey ed25519.PublicKey) error {
+	if event == nil || event.Hash == "" || event.Signature == "" {
 		return fmt.Errorf("%w: missing signature", ErrCorruptEvent)
 	}
 	sig, err := base64.RawStdEncoding.DecodeString(event.Signature)

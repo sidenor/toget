@@ -482,6 +482,39 @@ p {
   font-size: 13px;
 }
 
+.official-toggle {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.official-toggle input {
+  width: auto;
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.official-toggle span {
+  display: grid;
+  gap: 3px;
+}
+
+.official-toggle strong {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.official-toggle small {
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
 .new-room-actions {
   display: flex;
   justify-content: flex-end;

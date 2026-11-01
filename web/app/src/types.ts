@@ -90,6 +90,7 @@ export type Room = {
   home_node: string;
   home_server_id?: string;
   home_address?: string;
+  home_kind?: "node" | "official";
   created_by: string;
   epoch: number;
   created_at: string;

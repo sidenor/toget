@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	hostSchemaVersion = 1
+	hostSchemaVersion = 2
 
 	// SessionTTL bounds an authenticated host session.
 	SessionTTL = 12 * time.Hour
@@ -121,6 +121,93 @@ var hostSchema = []string{
 		last_used_at INTEGER NOT NULL
 	)`,
 	`CREATE INDEX IF NOT EXISTS hosted_sessions_account ON hosted_sessions(account_id)`,
+	`CREATE TABLE IF NOT EXISTS hosted_rooms (
+		id TEXT PRIMARY KEY,
+		owner_account_id TEXT NOT NULL REFERENCES hosted_accounts(id) ON DELETE CASCADE,
+		epoch INTEGER NOT NULL,
+		head INTEGER NOT NULL DEFAULT 0,
+		head_envelope_hash TEXT NOT NULL DEFAULT '',
+		rotation_required INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	)`,
+	`CREATE TABLE IF NOT EXISTS hosted_room_members (
+		room_id TEXT NOT NULL REFERENCES hosted_rooms(id) ON DELETE CASCADE,
+		account_id TEXT NOT NULL REFERENCES hosted_accounts(id) ON DELETE CASCADE,
+		role TEXT NOT NULL,
+		status TEXT NOT NULL,
+		history TEXT NOT NULL DEFAULT 'none',
+		joined_at INTEGER NOT NULL,
+		left_at INTEGER,
+		PRIMARY KEY (room_id, account_id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS hosted_room_members_account ON hosted_room_members(account_id, status)`,
+	`CREATE TABLE IF NOT EXISTS hosted_room_devices (
+		room_id TEXT NOT NULL REFERENCES hosted_rooms(id) ON DELETE CASCADE,
+		device_id TEXT NOT NULL,
+		account_id TEXT NOT NULL,
+		display_name TEXT NOT NULL DEFAULT '',
+		signing_public_key BLOB NOT NULL,
+		encryption_public_key BLOB NOT NULL,
+		history TEXT NOT NULL DEFAULT 'none',
+		from_seq INTEGER NOT NULL DEFAULT 1,
+		joined_at INTEGER NOT NULL,
+		revoked_at INTEGER,
+		PRIMARY KEY (room_id, device_id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS hosted_room_devices_account ON hosted_room_devices(room_id, account_id)`,
+	`CREATE TABLE IF NOT EXISTS hosted_room_events (
+		room_id TEXT NOT NULL REFERENCES hosted_rooms(id) ON DELETE CASCADE,
+		seq INTEGER NOT NULL,
+		event_id TEXT NOT NULL,
+		type TEXT NOT NULL,
+		epoch INTEGER NOT NULL,
+		author_id TEXT NOT NULL,
+		author_device TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		payload TEXT NOT NULL,
+		prev_id TEXT NOT NULL DEFAULT '',
+		prev_hash TEXT NOT NULL DEFAULT '',
+		hash TEXT NOT NULL,
+		signature TEXT NOT NULL DEFAULT '',
+		envelope_hash TEXT NOT NULL,
+		envelope_prev_hash TEXT NOT NULL DEFAULT '',
+		envelope_signature TEXT NOT NULL,
+		PRIMARY KEY (room_id, seq),
+		UNIQUE (room_id, event_id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS hosted_room_events_epoch ON hosted_room_events(room_id, epoch, seq)`,
+	`CREATE TABLE IF NOT EXISTS hosted_room_keys (
+		room_id TEXT NOT NULL REFERENCES hosted_rooms(id) ON DELETE CASCADE,
+		epoch INTEGER NOT NULL,
+		device_id TEXT NOT NULL,
+		wrapped BLOB NOT NULL,
+		created_at INTEGER NOT NULL,
+		PRIMARY KEY (room_id, epoch, device_id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS hosted_room_keys_device ON hosted_room_keys(room_id, device_id, epoch)`,
+	`CREATE TABLE IF NOT EXISTS hosted_room_invites (
+		room_id TEXT NOT NULL REFERENCES hosted_rooms(id) ON DELETE CASCADE,
+		invite_id TEXT NOT NULL,
+		secret_hash BLOB NOT NULL UNIQUE,
+		history TEXT NOT NULL,
+		created_by TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL,
+		used_at INTEGER,
+		used_by TEXT,
+		revoked_at INTEGER,
+		PRIMARY KEY (room_id, invite_id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS hosted_room_invites_room ON hosted_room_invites(room_id, expires_at)`,
+	`CREATE TABLE IF NOT EXISTS hosted_room_invite_keys (
+		room_id TEXT NOT NULL,
+		invite_id TEXT NOT NULL,
+		epoch INTEGER NOT NULL,
+		wrapped BLOB NOT NULL,
+		PRIMARY KEY (room_id, invite_id, epoch),
+		FOREIGN KEY (room_id, invite_id) REFERENCES hosted_room_invites(room_id, invite_id) ON DELETE CASCADE
+	)`,
 }
 
 // HostState is the persistent identity of an account host.
@@ -256,7 +343,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	if version > hostSchemaVersion {
 		return fmt.Errorf("hosted: database schema %d is newer than this binary (%d)", version, hostSchemaVersion)
 	}
-	if version == 0 {
+	if version < hostSchemaVersion {
+		// Every statement is idempotent, so upgrading from an older version
+		// simply adds whatever tables and indexes are missing.
 		for _, statement := range hostSchema {
 			if _, err := s.db.ExecContext(ctx, statement); err != nil {
 				return fmt.Errorf("hosted: create schema: %w", err)

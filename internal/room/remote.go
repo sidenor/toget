@@ -436,7 +436,8 @@ func (s *Service) ImportJoinBundle(ctx context.Context, bundle *JoinBundle, devi
 	if bundle.FromSeq < 1 {
 		return nil, fmt.Errorf("%w: join bundle has no starting sequence", ErrInvalidEvent)
 	}
-	if bundle.Head > 0 && len(bundle.Events) == 0 {
+	if bundle.Head > 0 && len(bundle.Events) == 0 &&
+		!(bundle.Room.HomeKind == HomeKindOfficial && bundle.FromSeq == bundle.Head+1) {
 		return nil, fmt.Errorf("%w: join bundle has no events", ErrInvalidEvent)
 	}
 	if len(bundle.Events) > 0 {
@@ -453,12 +454,21 @@ func (s *Service) ImportJoinBundle(ctx context.Context, bundle *JoinBundle, devi
 	if err != nil {
 		return nil, err
 	}
-	if _, ok := keys[bundle.Room.Epoch]; !ok {
+	// An official invite may have been created before a rotation, so it can
+	// carry no key for the current epoch. The joiner can still store the
+	// membership and opaque history, then request the missing key from peers.
+	if _, ok := keys[bundle.Room.Epoch]; !ok && bundle.Room.HomeKind != HomeKindOfficial {
 		return nil, fmt.Errorf("%w: current room key is missing", ErrInvalidEvent)
 	}
 	events, err := s.checkBundleEvents(ctx, &bundle.Room, nil, EventsFromWire(bundle.Events), keys, devices)
 	if err != nil {
 		return nil, err
+	}
+	// The invite code carries the room name and topic at invite time. For an
+	// official room, replay any visible settings events so a rename between
+	// invite creation and redemption is reflected before the first sync.
+	if bundle.Room.HomeKind == HomeKindOfficial {
+		applyRoomMetadata(&bundle.Room, events, keys)
 	}
 	attachments, err := checkBundleAttachments(bundle.Room.ID, bundle.Attachments)
 	if err != nil {
@@ -515,12 +525,29 @@ func (s *Service) ImportSync(ctx context.Context, bundle *SyncBundle, deviceID s
 	if _, ok := findDevice(devices, deviceID); !ok {
 		return 0, ErrForbidden
 	}
-	keys, sealedKeys, memberKeys, err := s.importKeys(ctx, local.ID, bundle.Keys, deviceID, encryptionPrivateKey)
-	if err != nil {
-		return 0, err
-	}
-	if _, ok := keys[bundle.Room.Epoch]; !ok {
-		return 0, fmt.Errorf("%w: current room key is missing", ErrInvalidEvent)
+	// An official room may add a device before any peer has wrapped the
+	// current epoch key to it. That device can still store the ciphertext and
+	// membership snapshot; it simply cannot open events until keys arrive.
+	// Node-hosted rooms still require the current key.
+	var keys map[int][]byte
+	var sealedKeys map[int]BundleKey
+	var memberKeys []RoomMemberKey
+	if len(bundle.Keys) == 0 && local.HomeKind == HomeKindOfficial {
+		keys = make(map[int][]byte)
+		sealedKeys = make(map[int]BundleKey)
+	} else {
+		keys, sealedKeys, memberKeys, err = s.importKeys(ctx, local.ID, bundle.Keys, deviceID, encryptionPrivateKey)
+		if err != nil {
+			return 0, err
+		}
+		// An official room may deliver a partial key set while a peer is still
+		// wrapping older epochs. The ciphertext remains safe to store; the
+		// affected events stay opaque until the missing keys arrive.
+		if local.HomeKind != HomeKindOfficial {
+			if _, ok := keys[bundle.Room.Epoch]; !ok {
+				return 0, fmt.Errorf("%w: current room key is missing", ErrInvalidEvent)
+			}
+		}
 	}
 	now := s.now().UTC().Truncate(time.Millisecond)
 	for _, epoch := range sortedEpochs(keys) {
@@ -562,6 +589,9 @@ func (s *Service) ImportSync(ctx context.Context, bundle *SyncBundle, deviceID s
 	if err != nil {
 		return 0, err
 	}
+	if local.HomeKind == HomeKindOfficial {
+		applyRoomMetadata(local, events, keys)
+	}
 	attachments, err := checkBundleAttachments(local.ID, bundle.Attachments)
 	if err != nil {
 		return 0, err
@@ -587,8 +617,20 @@ func (s *Service) ImportSync(ctx context.Context, bundle *SyncBundle, deviceID s
 		}
 	}
 	updated := *local
-	updated.Name = bundle.Room.Name
-	updated.Topic = bundle.Room.Topic
+	if local.HomeKind != HomeKindOfficial {
+		updated.Name = bundle.Room.Name
+		updated.Topic = bundle.Room.Topic
+	}
+	// The official host can transfer ownership when the owner leaves. Follow
+	// the host's current owner so owner-only UI stays correct for the heir.
+	if local.HomeKind == HomeKindOfficial && bundle.Room.CreatedBy != "" {
+		for i := range members {
+			if members[i].AccountID == bundle.Room.CreatedBy && members[i].Status == "active" {
+				updated.CreatedBy = bundle.Room.CreatedBy
+				break
+			}
+		}
+	}
 	updated.Epoch = bundle.Room.Epoch
 	updated.HomeNode = bundle.Room.HomeNode
 	updated.HomeAddress = bundle.Room.HomeAddress
@@ -633,6 +675,48 @@ func (s *Service) importKeys(ctx context.Context, roomID string, bundleKeys []Bu
 	return keys, sealed, rows, nil
 }
 
+// applyRoomMetadata applies decrypted created/settings events in sequence
+// order. A blind home never stores the room name or topic, so official room
+// metadata travels only inside the signed event log.
+func applyRoomMetadata(rm *Room, events []Event, keys map[int][]byte) {
+	for i := range events {
+		event := &events[i]
+		if event.Type != EventRoomCreated && event.Type != EventRoomSettingsChanged {
+			continue
+		}
+		key, ok := keys[event.Epoch]
+		if !ok {
+			continue
+		}
+		plain, err := openRoomPayload(key, event.Payload, payloadAAD(event.RoomID, event.Epoch, "event"))
+		if err != nil {
+			continue
+		}
+		var name, topic string
+		switch event.Type {
+		case EventRoomCreated:
+			var body RoomCreatedPayload
+			if json.Unmarshal(plain, &body) != nil {
+				continue
+			}
+			name, topic = body.Name, body.Topic
+		case EventRoomSettingsChanged:
+			var body RoomSettingsChangedPayload
+			if json.Unmarshal(plain, &body) != nil {
+				continue
+			}
+			name, topic = body.Name, body.Topic
+		}
+		name = strings.TrimSpace(name)
+		topic = strings.TrimSpace(topic)
+		if name == "" || len(name) > MaxNameLength || len(topic) > MaxTopicLength {
+			continue
+		}
+		rm.Name = name
+		rm.Topic = topic
+	}
+}
+
 // checkBundleEvents validates ordering and, when possible, contents. The
 // returned events are ready to store. Events before the first shared epoch
 // are intentionally opaque: the sequence and hash link are preserved so later
@@ -659,6 +743,14 @@ func (s *Service) checkBundleEvents(ctx context.Context, room *Room, last *Event
 		if !ok || device.AccountID != event.AuthorID {
 			return nil, fmt.Errorf("%w: event author is not a room device", ErrInvalidEvent)
 		}
+		if room.HomeKind == HomeKindOfficial && event.EnvelopeHash == "" {
+			return nil, fmt.Errorf("%w: official room event has no envelope", ErrInvalidEvent)
+		}
+		if event.EnvelopeHash != "" {
+			if err := VerifyEnvelope(&event, device.PublicKey); err != nil {
+				return nil, fmt.Errorf("%w: bundled event envelope failed verification: %v", ErrInvalidEvent, err)
+			}
+		}
 		if prev != nil {
 			if event.Seq != prev.Seq+1 {
 				return nil, fmt.Errorf("%w: bundle contains a sequence gap", ErrInvalidEvent)
@@ -666,12 +758,18 @@ func (s *Service) checkBundleEvents(ctx context.Context, room *Room, last *Event
 			if event.PrevID != prev.ID || event.PrevHash != prev.Hash {
 				return nil, fmt.Errorf("%w: bundle chain is broken", ErrInvalidEvent)
 			}
+			if prev.EnvelopeHash != "" && event.EnvelopePrevHash != prev.EnvelopeHash {
+				return nil, fmt.Errorf("%w: bundle envelope chain is broken", ErrInvalidEvent)
+			}
 		} else if event.Seq == 1 {
-			if event.PrevID != "" || event.PrevHash != "" {
+			if event.PrevID != "" || event.PrevHash != "" || event.EnvelopePrevHash != "" {
 				return nil, fmt.Errorf("%w: first event has a predecessor", ErrInvalidEvent)
 			}
 		} else if event.PrevID == "" || event.PrevHash == "" {
 			return nil, fmt.Errorf("%w: truncated bundle has no chain anchor", ErrInvalidEvent)
+		}
+		if room.HomeKind == HomeKindOfficial && event.Seq > 1 && event.EnvelopePrevHash == "" {
+			return nil, fmt.Errorf("%w: truncated official bundle has no envelope anchor", ErrInvalidEvent)
 		}
 		if event.Epoch <= 0 {
 			event.Epoch = 1

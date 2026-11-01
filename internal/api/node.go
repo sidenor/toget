@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/sidenor/toget/internal/hosted"
 	"github.com/sidenor/toget/internal/mdns"
 	"github.com/sidenor/toget/internal/node"
 	"github.com/sidenor/toget/internal/room"
@@ -152,6 +153,7 @@ func (s *Server) redeemRemoteInvite(w http.ResponseWriter, r *http.Request, raw 
 
 func writeNodeJoinError(w http.ResponseWriter, err error) {
 	var remote *node.RemoteError
+	var apiErr *hosted.APIError
 	switch {
 	case errors.As(err, &remote):
 		switch remote.Status {
@@ -170,6 +172,25 @@ func writeNodeJoinError(w http.ResponseWriter, err error) {
 		}
 	case errors.Is(err, node.ErrInvalidInviteCode), errors.Is(err, node.ErrNotInviteCode):
 		writeError(w, http.StatusBadRequest, "invalid_invite", "invitation code is invalid")
+	case errors.Is(err, node.ErrOfficialAccountRequired):
+		writeError(w, http.StatusConflict, "official_account_required", "connect an official account before joining this official room")
+	case errors.Is(err, node.ErrOfficialAccountUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "official_account_unavailable", "the official account host could not refresh this device")
+	case errors.As(err, &apiErr):
+		switch apiErr.Status {
+		case http.StatusBadRequest, http.StatusUnauthorized:
+			writeError(w, http.StatusBadRequest, "invalid_invite", "invitation was rejected by the official home")
+		case http.StatusForbidden:
+			writeError(w, http.StatusForbidden, "forbidden", "the official home rejected this device")
+		case http.StatusNotFound:
+			writeError(w, http.StatusNotFound, "room_not_found", "room or invitation was not found")
+		case http.StatusConflict:
+			writeError(w, http.StatusConflict, "invite_unavailable", "invitation is no longer available")
+		case http.StatusGone:
+			writeError(w, http.StatusGone, "invite_expired", "invitation has expired")
+		default:
+			writeError(w, http.StatusBadGateway, "official_home_unreachable", "the official room home could not complete the invitation")
+		}
 	default:
 		writeError(w, http.StatusBadGateway, "home_unreachable", "could not reach the home node")
 	}

@@ -22,7 +22,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const schemaVersion = 12
+const schemaVersion = 13
 
 // CurrentSchemaVersion is the newest database schema this build understands.
 // Backup/restore uses it to reject archives from newer builds.
@@ -94,7 +94,7 @@ func (d *DB) migrate(ctx context.Context) error {
 	}
 	migrations := []func(context.Context) error{
 		d.migrateV1, d.migrateV2, d.migrateV3, d.migrateV4, d.migrateV5, d.migrateV6, d.migrateV7,
-		d.migrateV8, d.migrateV9, d.migrateV10, d.migrateV11,
+		d.migrateV8, d.migrateV9, d.migrateV10, d.migrateV11, d.migrateV12,
 	}
 	for from := version; from < schemaVersion; from++ {
 		if from < 1 || from > len(migrations) {
@@ -453,6 +453,43 @@ func (d *DB) migrateV11(ctx context.Context) error {
 	return nil
 }
 
+// migrateV12 adds the blind room-home marker and the sealed envelope fields.
+func (d *DB) migrateV12(ctx context.Context) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("storage: begin v12 migration: %w", err)
+	}
+	defer tx.Rollback()
+	statements := []struct {
+		table     string
+		statement string
+	}{
+		{"rooms", `ALTER TABLE rooms ADD COLUMN home_kind TEXT NOT NULL DEFAULT ''`},
+		{"events", `ALTER TABLE events ADD COLUMN envelope_hash TEXT NOT NULL DEFAULT ''`},
+		{"events", `ALTER TABLE events ADD COLUMN envelope_prev_hash TEXT NOT NULL DEFAULT ''`},
+		{"events", `ALTER TABLE events ADD COLUMN envelope_signature TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, item := range statements {
+		// Very old fixtures may predate a table entirely; the schema created by
+		// an older binary is upgraded by the migrations that introduce it.
+		exists, err := tableExists(ctx, tx, item.table)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, item.statement); err != nil &&
+			!strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("storage: migrate v12: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storage: commit v12 migration: %w", err)
+	}
+	return nil
+}
+
 func tableExists(ctx context.Context, tx *sql.Tx, name string) (bool, error) {
 	var n int
 	if err := tx.QueryRowContext(ctx,
@@ -775,10 +812,10 @@ func (d *DB) CreateRoom(ctx context.Context, r *room.Room, event *room.Event, me
 	defer tx.Rollback()
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO rooms (id, name, topic, home_node, home_server_id, home_address, created_by,
+		INSERT INTO rooms (id, name, topic, home_node, home_server_id, home_address, home_kind, created_by,
 			epoch, created_at, archived_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.Name, r.Topic, r.HomeNode, r.HomeServerID, r.HomeAddress, r.CreatedBy,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.Name, r.Topic, r.HomeNode, r.HomeServerID, r.HomeAddress, r.HomeKind, r.CreatedBy,
 		r.Epoch, toMillis(r.CreatedAt), nullableMillis(r.ArchivedAt)); err != nil {
 		return fmt.Errorf("storage: insert room: %w", err)
 	}
@@ -818,10 +855,10 @@ func (d *DB) ImportRoom(ctx context.Context, r *room.Room, members []room.Member
 	defer tx.Rollback()
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO rooms (id, name, topic, home_node, home_server_id, home_address, created_by,
+		INSERT INTO rooms (id, name, topic, home_node, home_server_id, home_address, home_kind, created_by,
 			epoch, created_at, archived_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.Name, r.Topic, r.HomeNode, r.HomeServerID, r.HomeAddress, r.CreatedBy,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.Name, r.Topic, r.HomeNode, r.HomeServerID, r.HomeAddress, r.HomeKind, r.CreatedBy,
 		r.Epoch, toMillis(r.CreatedAt), nullableMillis(r.ArchivedAt)); err != nil {
 		return fmt.Errorf("storage: import room: %w", err)
 	}
@@ -881,7 +918,7 @@ func (d *DB) ImportEvents(ctx context.Context, events []room.Event) error {
 // ListRooms returns rooms newest first.
 func (d *DB) ListRooms(ctx context.Context) ([]room.Room, error) {
 	rows, err := d.db.QueryContext(ctx, `
-		SELECT id, name, topic, home_node, home_server_id, home_address, created_by, epoch,
+		SELECT id, name, topic, home_node, home_server_id, home_address, home_kind, created_by, epoch,
 		       created_at, archived_at
 		FROM rooms ORDER BY created_at DESC`)
 	if err != nil {
@@ -905,7 +942,7 @@ func (d *DB) ListRooms(ctx context.Context) ([]room.Room, error) {
 // GetRoom returns one room.
 func (d *DB) GetRoom(ctx context.Context, id string) (*room.Room, error) {
 	row := d.db.QueryRowContext(ctx, `
-		SELECT id, name, topic, home_node, home_server_id, home_address, created_by, epoch,
+		SELECT id, name, topic, home_node, home_server_id, home_address, home_kind, created_by, epoch,
 		       created_at, archived_at
 		FROM rooms WHERE id = ?`, id)
 	r, err := scanRoom(row)
@@ -921,9 +958,10 @@ func (d *DB) GetRoom(ctx context.Context, id string) (*room.Room, error) {
 // UpdateRoom updates mutable room settings.
 func (d *DB) UpdateRoom(ctx context.Context, r *room.Room) error {
 	_, err := d.db.ExecContext(ctx, `
-		UPDATE rooms SET name = ?, topic = ?, epoch = ?, home_server_id = ?, home_address = ?,
-			archived_at = ? WHERE id = ?`,
-		r.Name, r.Topic, r.Epoch, r.HomeServerID, r.HomeAddress, nullableMillis(r.ArchivedAt), r.ID)
+		UPDATE rooms SET name = ?, topic = ?, epoch = ?, home_server_id = ?, home_address = ?, home_kind = ?,
+			created_by = ?, archived_at = ? WHERE id = ?`,
+		r.Name, r.Topic, r.Epoch, r.HomeServerID, r.HomeAddress, r.HomeKind, r.CreatedBy,
+		nullableMillis(r.ArchivedAt), r.ID)
 	if err != nil {
 		return fmt.Errorf("storage: update room: %w", err)
 	}
@@ -934,7 +972,7 @@ func (d *DB) UpdateRoom(ctx context.Context, r *room.Room) error {
 func (d *DB) LastEvent(ctx context.Context, roomID string) (*room.Event, error) {
 	row := d.db.QueryRowContext(ctx, `
 		SELECT id, room_id, seq, epoch, type, author_id, author_device, payload, created_at,
-		       prev_id, prev_hash, hash, signature
+		       prev_id, prev_hash, hash, signature, envelope_hash, envelope_prev_hash, envelope_signature
 		FROM events WHERE room_id = ? ORDER BY seq DESC LIMIT 1`, roomID)
 	event, err := scanEvent(row)
 	if err != nil {
@@ -950,7 +988,7 @@ func (d *DB) LastEvent(ctx context.Context, roomID string) (*room.Event, error) 
 func (d *DB) GetEvent(ctx context.Context, eventID string) (*room.Event, error) {
 	row := d.db.QueryRowContext(ctx, `
 		SELECT id, room_id, seq, epoch, type, author_id, author_device, payload, created_at,
-		       prev_id, prev_hash, hash, signature
+		       prev_id, prev_hash, hash, signature, envelope_hash, envelope_prev_hash, envelope_signature
 		FROM events WHERE id = ?`, eventID)
 	event, err := scanEvent(row)
 	if err != nil {
@@ -997,7 +1035,7 @@ func (d *DB) FirstEventSeqForEpoch(ctx context.Context, roomID string, epoch int
 func (d *DB) ListEvents(ctx context.Context, roomID string, after int64, limit int) ([]room.Event, error) {
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT id, room_id, seq, epoch, type, author_id, author_device, payload, created_at,
-		       prev_id, prev_hash, hash, signature
+		       prev_id, prev_hash, hash, signature, envelope_hash, envelope_prev_hash, envelope_signature
 		FROM events WHERE room_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?`,
 		roomID, after, limit)
 	if err != nil {
@@ -1034,7 +1072,7 @@ func (d *DB) ListEventsByTypes(ctx context.Context, roomID string, types []strin
 	}
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT id, room_id, seq, epoch, type, author_id, author_device, payload, created_at,
-		       prev_id, prev_hash, hash, signature
+		       prev_id, prev_hash, hash, signature, envelope_hash, envelope_prev_hash, envelope_signature
 		FROM events WHERE room_id = ? AND type IN (`+strings.Join(placeholders, ", ")+`)
 		ORDER BY seq ASC`, args...)
 	if err != nil {
@@ -1108,8 +1146,8 @@ func (d *DB) UpdateMember(ctx context.Context, member *room.Member) error {
 			account_public_key = ?, encryption_public_key = ?, left_at = ?
 		WHERE room_id = ? AND account_id = ?`,
 		member.DeviceID, member.DisplayName, member.Role, member.Status,
-		member.AccountPublicKey, member.EncryptionPublicKey, nullableMillis(member.LeftAt),
-		member.RoomID, member.AccountID)
+		nonNilBytes(member.AccountPublicKey), nonNilBytes(member.EncryptionPublicKey),
+		nullableMillis(member.LeftAt), member.RoomID, member.AccountID)
 	if err != nil {
 		return fmt.Errorf("storage: update member: %w", err)
 	}
@@ -1239,15 +1277,15 @@ func (d *DB) MergeRoomSnapshot(ctx context.Context, r *room.Room, members []room
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO rooms (id, name, topic, home_node, home_server_id, home_address, created_by,
+		INSERT INTO rooms (id, name, topic, home_node, home_server_id, home_address, home_kind, created_by,
 			epoch, created_at, archived_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name, topic = excluded.topic, home_node = excluded.home_node,
-			home_server_id = excluded.home_server_id, home_address = excluded.home_address,
+			home_server_id = excluded.home_server_id, home_address = excluded.home_address, home_kind = excluded.home_kind,
 			epoch = MAX(rooms.epoch, excluded.epoch),
 			archived_at = COALESCE(excluded.archived_at, rooms.archived_at)`,
-		r.ID, r.Name, r.Topic, r.HomeNode, r.HomeServerID, r.HomeAddress, r.CreatedBy,
+		r.ID, r.Name, r.Topic, r.HomeNode, r.HomeServerID, r.HomeAddress, r.HomeKind, r.CreatedBy,
 		r.Epoch, toMillis(r.CreatedAt), nullableMillis(r.ArchivedAt)); err != nil {
 		return fmt.Errorf("storage: merge room: %w", err)
 	}
@@ -1391,11 +1429,11 @@ func (d *DB) GetReadCursor(ctx context.Context, roomID, deviceID string) (int64,
 func insertEvent(ctx context.Context, tx *sql.Tx, event *room.Event) error {
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO events (id, room_id, seq, epoch, type, author_id, author_device, payload, created_at,
-			prev_id, prev_hash, hash, signature)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			prev_id, prev_hash, hash, signature, envelope_hash, envelope_prev_hash, envelope_signature)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		event.ID, event.RoomID, event.Seq, event.Epoch, event.Type, event.AuthorID, event.AuthorDevice,
 		event.Payload, toMillis(event.CreatedAt), event.PrevID, event.PrevHash,
-		event.Hash, event.Signature); err != nil {
+		event.Hash, event.Signature, event.EnvelopeHash, event.EnvelopePrevHash, event.EnvelopeSignature); err != nil {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("storage: event sequence conflict: %w", err)
 		}
@@ -1439,7 +1477,8 @@ func scanEvent(row rowScanner) (*room.Event, error) {
 	var created int64
 	if err := row.Scan(&event.ID, &event.RoomID, &event.Seq, &event.Epoch, &event.Type, &event.AuthorID,
 		&event.AuthorDevice, &event.Payload, &created, &event.PrevID, &event.PrevHash,
-		&event.Hash, &event.Signature); err != nil {
+		&event.Hash, &event.Signature, &event.EnvelopeHash, &event.EnvelopePrevHash,
+		&event.EnvelopeSignature); err != nil {
 		return nil, err
 	}
 	event.CreatedAt = fromMillis(created)
@@ -1451,7 +1490,7 @@ func scanRoom(row rowScanner) (*room.Room, error) {
 	var created int64
 	var archived sql.NullInt64
 	if err := row.Scan(&r.ID, &r.Name, &r.Topic, &r.HomeNode, &r.HomeServerID, &r.HomeAddress,
-		&r.CreatedBy, &r.Epoch, &created, &archived); err != nil {
+		&r.HomeKind, &r.CreatedBy, &r.Epoch, &created, &archived); err != nil {
 		return nil, err
 	}
 	r.CreatedAt = fromMillis(created)
@@ -1474,6 +1513,8 @@ func scanMember(row rowScanner) (*room.Member, error) {
 		}
 		return nil, err
 	}
+	member.AccountPublicKey = nonNilBytes(member.AccountPublicKey)
+	member.EncryptionPublicKey = nonNilBytes(member.EncryptionPublicKey)
 	member.JoinedAt = fromMillis(joined)
 	if left.Valid {
 		t := fromMillis(left.Int64)

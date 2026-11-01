@@ -90,9 +90,10 @@ The host stores OPAQUE password records and sealed blobs, never the password or
 the account key. Registration returns the official recovery file once; store it
 offline. If the password is forgotten, request a reset email, open `/reset/` on
 the account host, and supply that file locally in the browser. Without it, the
-host cannot decrypt the account and cannot reset it. The official room home
-node is still design-only: an official-hosted account's rooms live on its
-devices or a self-hosted node. See
+host cannot decrypt the account and cannot reset it. Official rooms use the
+host as a blind home: it orders sealed events and stores keys wrapped per
+device, but cannot read the room name, topic, or messages. Attachments are not
+supported in official rooms yet. See
 [Account recovery](docs/account-recovery.md#official-hosted-accounts).
 
 Requirements: Go 1.27+, Node 24, and pnpm 9. Or install the pinned toolchain
@@ -300,16 +301,19 @@ Official-hosted accounts are implemented end to end: `toget-official` runs an
 OPAQUE account host that stores only password records and ciphertext, devices
 register and sign in without sending the password, and the embedded Go/WASM
 reset page restores a forgotten password with the offline recovery file plus
-an email link. The host cannot read account keys. The official room home node
-is not implemented.
+an email link. The host cannot read account keys. It can also act as a blind
+official room home: sealed events, membership, invites, and per-device wrapped
+keys are stored, but room names, topics, message text, and unwrapped keys never
+reach it. Official rooms do not support attachments yet.
 
 Releases are signed and reproducible, ship with SPDX SBOMs, and can be
 verified as a complete tree before publication. Nodes check for updates on a
 schedule, show an in-app banner, stage a release without restarting, and roll
 back on failure. Gateway port mapping (PCP, NAT-PMP, UPnP) is available as an
 optional public alternate, but UDP hole punching is not implemented. Also not
-implemented yet: multiple accounts on one node, a bundled model, the official
-room home, and server-enforced forced updates for official-hosted accounts. The daemon runs
+implemented yet: multiple accounts on one node, a bundled model, attachments
+in official rooms, and server-enforced forced updates for official-hosted
+accounts. The daemon runs
 Agents locally on a mention, through Claude Code or any command that speaks the
 runtime protocol. Many parts will change as we learn.
 That is exactly why the project is open this early. If you care about
@@ -397,7 +401,7 @@ toget account login --host 'https://accounts.example.com#fp=<hex>' \
   --account-id 48392017174628
 ```
 
-官方托管只保存 OPAQUE 密码记录和密封密文，拿不到密码、账号私钥或房间密钥。注册时只会返回一次官方恢复文件，请离线保存；忘记密码时申请邮件链接，在账号托管的 `/reset/` 页面本地读取恢复文件完成重置。没有这个文件，官方服务无法解密账号，也无法重置。官方房间首页节点还没有实现：官方托管账号的房间目前放在自己的设备或自建节点上。详见 [账号找回](docs/account-recovery.md#official-hosted-accounts)。
+官方托管只保存 OPAQUE 密码记录和密封密文，拿不到密码、账号私钥或房间密钥。注册时只会返回一次官方恢复文件，请离线保存；忘记密码时申请邮件链接，在账号托管的 `/reset/` 页面本地读取恢复文件完成重置。没有这个文件，官方服务无法解密账号，也无法重置。官方房间使用托管服务作为「盲房间首页」：它只排序密封事件、保存按设备封装的密钥，读不到房间名、话题或消息内容；官方房间暂不支持附件。详见 [账号找回](docs/account-recovery.md#official-hosted-accounts)。
 
 ```bash
 pnpm install

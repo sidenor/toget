@@ -35,6 +35,8 @@ type hostOptions struct {
 	SMTPFrom        string
 	SMTPFromName    string
 	SMTPImplicitTLS bool
+	RoomMemberLimit int
+	RoomDeviceLimit int
 }
 
 type accountHost struct {
@@ -127,6 +129,8 @@ func startAccountHost(parent context.Context, paths config.Paths, options hostOp
 	service, err := hosted.New(hosted.Options{
 		Store: store, Mailer: mailer, Logger: logger,
 		PublicURL: publicURL, ResetFS: resetFS,
+		RoomMemberLimit: options.RoomMemberLimit,
+		RoomDeviceLimit: options.RoomDeviceLimit,
 	})
 	if err != nil {
 		cleanup()

@@ -1205,6 +1205,16 @@ func writeRoomError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusServiceUnavailable, "attachments_disabled", "attachment storage is not configured")
 	case errors.Is(err, room.ErrRemoteReadOnly):
 		writeError(w, http.StatusConflict, "remote_room", "this room is hosted by another node; make that change there")
+	case errors.Is(err, room.ErrRoomLeft):
+		writeError(w, http.StatusConflict, "room_left", "this device has left the room; use a new device and a fresh invite")
+	case errors.Is(err, room.ErrOfficialAttachmentsUnsupported):
+		writeError(w, http.StatusConflict, "attachments_unsupported", "official rooms do not support attachments yet")
+	case errors.Is(err, room.ErrNotOfficialRoom):
+		writeError(w, http.StatusConflict, "not_official_room", "this operation needs an officially hosted room")
+	case errors.Is(err, node.ErrOfficialAccountRequired):
+		writeError(w, http.StatusConflict, "official_account_required", "connect an official account before using official rooms")
+	case errors.Is(err, node.ErrOfficialAccountUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "official_account_unavailable", "the official account host could not refresh this device")
 	case errors.Is(err, room.ErrKeyUnavailable):
 		writeError(w, http.StatusForbidden, "key_unavailable", "this node does not have the key for that history")
 	case errors.Is(err, room.ErrCorruptEvent):
@@ -1235,6 +1245,23 @@ func writeRemoteFailure(w http.ResponseWriter, err error) bool {
 			code = "home_node_error"
 		}
 		writeError(w, status, code, remoteErr.Message)
+		return true
+	}
+	var apiErr *hosted.APIError
+	if errors.As(err, &apiErr) {
+		status := apiErr.Status
+		if status < 400 || status > 599 {
+			status = http.StatusBadGateway
+		}
+		code := apiErr.Code
+		if code == "" {
+			code = "official_home_error"
+		}
+		message := apiErr.Message
+		if message == "" {
+			message = "the official room home rejected the request"
+		}
+		writeError(w, status, code, message)
 		return true
 	}
 	return false

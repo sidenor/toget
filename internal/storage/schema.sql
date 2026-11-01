@@ -50,6 +50,7 @@ CREATE TABLE rooms (
     home_node       TEXT NOT NULL,
     home_server_id  TEXT NOT NULL DEFAULT '',
     home_address    TEXT NOT NULL DEFAULT '',
+    home_kind       TEXT NOT NULL DEFAULT '',
     created_by      TEXT NOT NULL,
     epoch           INTEGER NOT NULL,
     created_at      INTEGER NOT NULL,
@@ -114,6 +115,9 @@ CREATE TABLE events (
     prev_hash     TEXT NOT NULL DEFAULT '',
     hash          TEXT NOT NULL,
     signature     TEXT NOT NULL DEFAULT '',
+    envelope_hash       TEXT NOT NULL DEFAULT '',
+    envelope_prev_hash  TEXT NOT NULL DEFAULT '',
+    envelope_signature  TEXT NOT NULL DEFAULT '',
     UNIQUE(room_id, seq)
 );
 

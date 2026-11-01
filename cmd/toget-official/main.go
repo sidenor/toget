@@ -67,6 +67,8 @@ func newRootCommand() *cobra.Command {
 		hostSMTPFrom        string
 		hostSMTPFromName    string
 		hostSMTPImplicitTLS bool
+		hostRoomMembers     int
+		hostRoomDevices     int
 	)
 	cmd := &cobra.Command{
 		Use:   "toget-official",
@@ -101,6 +103,7 @@ func newRootCommand() *cobra.Command {
 					ResetDir: hostResetDir, SMTPAddr: hostSMTPAddr, SMTPUser: hostSMTPUser,
 					SMTPPassword: hostSMTPPassword, SMTPFrom: hostSMTPFrom,
 					SMTPFromName: hostSMTPFromName, SMTPImplicitTLS: hostSMTPImplicitTLS,
+					RoomMemberLimit: hostRoomMembers, RoomDeviceLimit: hostRoomDevices,
 				}, logger)
 				if err != nil {
 					return err
@@ -210,6 +213,8 @@ func newRootCommand() *cobra.Command {
 	cmd.Flags().StringVar(&hostSMTPFrom, "host-smtp-from", "", "sender address for account email")
 	cmd.Flags().StringVar(&hostSMTPFromName, "host-smtp-from-name", "Toget Accounts", "sender display name for account email")
 	cmd.Flags().BoolVar(&hostSMTPImplicitTLS, "host-smtp-implicit-tls", false, "use implicit TLS (SMTPS, usually port 465)")
+	cmd.Flags().IntVar(&hostRoomMembers, "host-room-member-limit", 0, "maximum active members per official room (default 5000)")
+	cmd.Flags().IntVar(&hostRoomDevices, "host-room-device-limit", 0, "maximum devices per official room (default 20000)")
 	cmd.Flags().StringVar(&updateDir, "update-dir", "", "release tree to serve (channels/, manifests/, daemon/, sbom/)")
 	cmd.Flags().StringVar(&updateListen, "update-listen", "127.0.0.1:7721", "update service listen address")
 	cmd.Flags().StringVar(&updateTLSCert, "update-tls-cert", "", "TLS certificate for the update service")

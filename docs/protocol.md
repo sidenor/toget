@@ -1,9 +1,8 @@
 # Protocol (Draft)
 
 > Status: working implementation across the local API, LAN node protocol,
-> relay, directory, and official account host. The official room home remains
-> design-only. Nothing here is frozen; the versioning rules are the part we
-> intend to keep stable.
+> relay, directory, official account host, and official room home. Nothing
+> here is frozen; the versioning rules are the part we intend to keep stable.
 
 Toget has one protocol with several surfaces:
 
@@ -617,9 +616,130 @@ wrapped values and OPAQUE messages are sent. The page is served with
 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none';
 form-action 'none'; frame-ancestors 'none'`.
 
-The host does not implement the room protocol. An official-hosted account's
-rooms use a device or a self-hosted node as their home; the official room home
-is design-only.
+## Official room home
+
+An official-hosted account can create a room with `home_kind: official`. The
+official account host then acts as a blind room home under `/host/v1/room/`.
+A room created with `home_kind: node` continues to use a device or
+self-hosted node.
+
+Every room request is a POST signed by the calling device key. The account and
+device IDs are sent in request headers, the device certificate is checked
+against the host's account record, and the exact JSON body is covered by the
+device signature. Room mutations additionally require active membership.
+
+The host stores only:
+
+- the room ID, owner account ID, epoch, head sequence, rotation flag, and
+  timestamps;
+- membership: account ID, role, status, history policy, join/leave times;
+- devices: IDs, display name, signing and encryption public keys, readable
+  history window, revocation time;
+- events: sequence, type, epoch, author IDs, timestamps, sealed payload,
+  plaintext event hash, envelope hash/signature, and chain fields;
+- per-device wrapped epoch keys and invite-secret-wrapped keys;
+- invites: secret hash, history policy, creator, expiry, and use state.
+
+It never stores the room name, topic, message text, attachments, plaintext
+event payloads, or any unwrapped epoch key. It sees event type, epoch,
+sequence, size, and timing.
+
+### Creating and posting
+
+The creator prepares a sealed `room.created` event and one current-epoch key
+package wrapped to its own device, then calls `POST /host/v1/room/create`.
+The host checks the device identity, event signature, envelope, shape, and
+that the event is sequence 1 in epoch 1.
+
+A sender syncs first, prepares the next event at `head + 1`, signs the
+plaintext event (`hash`, `signature`), and signs a sealed envelope
+(`envelope_hash`, `envelope_prev_hash`, `envelope_signature`). The envelope
+hash covers the sealed bytes, sequence, epoch, type, author, timestamp, and
+the previous envelope hash, so a host without a room key can still enforce
+integrity and ordering. `POST /host/v1/room/event` verifies the author
+device, active membership, epoch, sequence, plaintext predecessor
+(`prev_id`, `prev_hash`), envelope predecessor, and envelope signature. A
+stale head returns `409 conflict`; the client syncs and retries.
+
+Room settings are ordinary sealed `room.settings_changed` events, but the
+host accepts them only from the current owner. A rename therefore travels
+through the same signed, sequenced log as messages; the host sees an event
+type and ciphertext, not the new name or topic.
+
+### Sync and keys
+
+`POST /host/v1/room/sync` takes the local cursor (`after`) and the epochs the
+device needs. It returns visible events, members, devices, every key package
+wrapped to the caller, key requests for peers missing keys, and a
+`rotation_required` flag. Event visibility starts at the device's
+`from_seq`, fixed by the invite's history policy:
+
+- `all` starts at sequence 1;
+- `recent` starts at the first event of the current epoch;
+- `none` starts after the current head.
+
+A device that joined with `none` has no local predecessor for its first
+visible event. The sync response therefore includes the hidden head's event
+ID and plaintext hash as a chain anchor; the first new event links to that
+anchor without revealing the hidden plaintext.
+
+The host enforces the same window when storing wrapped keys: an older epoch
+key is delivered only when that epoch has at least one event inside the
+device's window. The current epoch is always allowed. A new device can sync
+ciphertext and membership before any peer has wrapped a key to it; the events
+stay opaque locally until a key arrives.
+
+### Invites
+
+An inviter prepares a `member.invited` event and current-epoch key, plus any
+older epoch keys allowed by the chosen history policy. The host receives the
+SHA-256 of the invite secret, never the secret itself, and stores the epoch
+keys wrapped under a key derived from that secret. The single-use code carries
+the secret, host URL, pinned host ID, room ID, room name, and topic. Joining
+requires a device-signed request; the joiner redeems the secret, unwraps the
+invited epochs, rewraps them to its own device, imports the visible snapshot,
+and uploads its own key packages. No existing member needs to be online.
+
+### Leaving, revocation, and rotation
+
+Leave is a signed `member.left` event. The host marks the member left, revokes
+all account devices in the room, deletes their stored key packages, and sets
+`rotation_required`. Every remaining device sees the flag on its next sync;
+the first active device rotates to the next epoch, wraps the new epoch key to
+every active device, and posts a `room.epoch_rotated` event. The host accepts
+the rotation only when the key packages cover every active device. A leave
+retry after a lost response is idempotent when the host already stored that
+leave event.
+
+When the owner leaves, the host promotes the oldest remaining active member
+to owner in the same transaction and updates the room's `owner_account_id`.
+Clients adopt that field on their next sync, so owner-only settings events
+keep working for the heir without any secret leaving the host.
+
+### Limitations
+
+Official rooms currently reject attachments, local-only archive applies, and
+the host can refuse service or withhold events. It cannot forge a member's
+signature or envelope chain, but availability is not guaranteed by the
+protocol. An invite created before a rotation can carry only older epoch
+keys; the joiner may need a peer to upload the current key before reading new
+messages. An invite code also carries the room name and topic at creation
+time. A joiner replays any later settings event that falls inside its chosen
+history window; with `recent` or `none`, a rename outside that window is not
+replayed. Creating a fresh invite after a rename gives the current name.
+
+One room is capped at 5000 active members and 20000 devices by default; the
+operator can lower or raise either cap. Redemption past a cap returns
+`409 room_full` or `409 device_limit`. When the last active member leaves,
+the host revokes unused invites so a dead room cannot be reopened. A join
+response is a point-in-time snapshot; a device that falls behind syncs again
+from its cursor.
+
+Archiving a room on one device is local state. Redeeming a fresh invite for a
+room this account still belongs to restores the existing local copy. Leaving is
+different: the host revokes that device and its keys, so the same device cannot
+rejoin even with a new invite; the local API returns `409 room_left` and the
+account must join from a new device.
 
 ## Local API
 

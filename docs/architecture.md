@@ -1,6 +1,8 @@
 # Architecture (Draft)
 
-> Status: design draft. Nothing here is implemented yet. Names, boundaries, and wire formats will change as the first version is built.
+> Status: describes the implemented architecture. The desktop shell, phone
+> client, and packaged installers remain design-only; names, boundaries, and
+> wire formats can still change.
 
 ## Goals
 
@@ -92,7 +94,8 @@ local API, and the local web UI; an embedded Go/WASM page at `/reset/` handles
 email recovery without uploading the recovery file. A node can optionally
 request PCP, NAT-PMP, or UPnP gateway port mappings and publish the public
 result as an alternate direct address; UDP hole punching is not implemented.
-The phone client and the official room home node are still design-only. See
+The phone client is still design-only; the official room home is implemented
+for official-hosted accounts. See
 [account-recovery.md](account-recovery.md) and
 [deployment.md](deployment.md).
 
@@ -177,7 +180,7 @@ An **endpoint** is a trust boundary that can decrypt messages and run Agents.
 - The official service is **never** an endpoint by default.
 - The official relay sees the outer envelope: target, time, size, sender signature. It does not see the room ID or content.
 - The official account host sees account metadata and ciphertext; it does not hold room epoch keys.
-- The planned official room home node would store ciphertext and order envelopes; it is not implemented. It would not decrypt unless the user explicitly authorizes it to run an Agent.
+- The official room home stores sealed events and orders them by sequence and envelope chain. It holds per-device wrapped epoch keys, but no unwrapped key, so it cannot decrypt. It does not run an Agent unless the user explicitly authorizes one.
 
 ## Components
 
@@ -186,7 +189,7 @@ An **endpoint** is a trust boundary that can decrypt messages and run Agents.
 - Stores account records: ID, public keys, an Argon2id password verifier for a self-hosted account, an OPAQUE registration record for an official-hosted account, device records, room membership, and sealed account-key material.
 - Assigns the 6-digit account code.
 - Verifies login. Self-hosted login checks the local verifier; the official host runs OPAQUE and exchanges a device-signed certificate for a short-lived bearer session.
-- A self-hosted account host can host rooms as a home node. The official host cannot: the official room home is design-only.
+- A self-hosted account host can host rooms as a node home. The official host can host official rooms as a blind home: it stores sealed events, membership, invites, and wrapped keys, but never plaintext or epoch keys.
 - For official hosting, stores ciphertext and OPAQUE records only; it cannot decrypt message content or account keys.
 - For self-hosting, it is the user's endpoint and can decrypt; the local administrator can reset the password.
 
@@ -275,7 +278,7 @@ History follows the participants, not a central server:
 
 - Every participant's machine stores a copy of the rooms it can decrypt.
 - The room home node stores a copy and orders events.
-- The official service stores a copy only when it is involved: an official Agent with explicit authorization, or (in the future) an official room home node storing ciphertext. The account host does not store room history; an official-hosted account's rooms live on its devices or a self-hosted home.
+- The official service stores a copy only when it is involved: an official room home storing ciphertext, or an official Agent with explicit authorization. The account host does not store node-room history; a node-hosted room lives on its devices and that node.
 - A relay stores messages only temporarily for offline delivery; it is not a permanent history store.
 - If two self-hosted machines talk and no official Agent is involved, the official service has no copy.
 - Copies are per machine, not per identity: a person and their Agent on the same machine share one local copy.
@@ -355,7 +358,7 @@ Open details: re-advertising a changed relay to devices that already stored a ro
 1. **Self-hosted account, LAN or public.** The user's machine is the account host and endpoint. Rooms can stay on the LAN; the official service is optional.
 2. **Self-hosted account behind NAT.** The machine keeps an outbound connection to a relay; other devices reach it through the relay.
 3. **Official-hosted account.** The official service stores ciphertext and account metadata; the user's devices are endpoints.
-4. **Mixed room.** A self-hosted account and an official-hosted account share a room. The home is a self-hosted node (the creator's account host, or another member's node); an official-hosted account cannot yet use the official host as a room home, so its devices sync from that node.
+4. **Mixed room.** A self-hosted account and an official-hosted account share a room. The home is a self-hosted node (the creator's account host, or another member's node); the official-hosted account's devices sync from that node. A room created with the official host as home is limited to official-hosted accounts.
 5. **Relay-only node.** A public node that forwards encrypted envelopes but hosts no accounts.
 
 ## Open questions

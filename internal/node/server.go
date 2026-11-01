@@ -1189,6 +1189,11 @@ func (s *Service) IsRemoteRoom(ctx context.Context, roomID string) (bool, error)
 	if err != nil {
 		return false, err
 	}
+	// An official room is never hosted by this node, even when its home
+	// server id happens to equal the account's local node id.
+	if record.HomeKind == room.HomeKindOfficial {
+		return true, nil
+	}
 	snapshot, err := s.accounts.Get(ctx)
 	if err != nil {
 		return false, nil
@@ -1208,6 +1213,9 @@ func (s *Service) EnsureRoomHome(ctx context.Context, roomID string) (*room.Room
 	record, err := s.rooms.GetRoom(ctx, roomID)
 	if err != nil {
 		return nil, err
+	}
+	if record.HomeKind == room.HomeKindOfficial {
+		return record, nil
 	}
 	if record.HomeServerID != "" && record.HomeServerID != snapshot.Account.ServerID {
 		return record, nil
@@ -1244,6 +1252,9 @@ func (s *Service) Join(ctx context.Context, rawCode string) (*room.Room, error) 
 	code, err := DecodeInvite(rawCode)
 	if err != nil {
 		return nil, err
+	}
+	if code.HomeKind == InviteKindOfficial {
+		return s.JoinOfficial(ctx, code)
 	}
 	joiner, snapshot, err := s.localJoiner(ctx)
 	if err != nil {
@@ -1282,6 +1293,13 @@ func (s *Service) SyncRoom(ctx context.Context, roomID string) (int, error) {
 	if s == nil {
 		return 0, nil
 	}
+	record, err := s.rooms.GetRoom(ctx, roomID)
+	if err != nil {
+		return 0, err
+	}
+	if record.HomeKind == room.HomeKindOfficial {
+		return s.SyncOfficialRoom(ctx, roomID)
+	}
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
 
@@ -1289,7 +1307,7 @@ func (s *Service) SyncRoom(ctx context.Context, roomID string) (int, error) {
 	if err != nil || !remote {
 		return 0, err
 	}
-	record, err := s.rooms.GetRoom(ctx, roomID)
+	record, err = s.rooms.GetRoom(ctx, roomID)
 	if err != nil {
 		return 0, err
 	}
@@ -1424,6 +1442,13 @@ func (s *Service) syncLoop(ctx context.Context) {
 // PostRemoteMessage forwards a message to its home node and installs the
 // accepted event locally. It retries once after a sequence conflict.
 func (s *Service) PostRemoteMessage(ctx context.Context, roomID string, actor room.Actor, body room.MessagePostedPayload) (*room.Event, error) {
+	record, err := s.rooms.GetRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if record.HomeKind == room.HomeKindOfficial {
+		return s.PostOfficialMessage(ctx, roomID, actor, body)
+	}
 	remote, err := s.IsRemoteRoom(ctx, roomID)
 	if err != nil {
 		return nil, err
@@ -1440,6 +1465,13 @@ func (s *Service) PostRemoteMessage(ctx context.Context, roomID string, actor ro
 // The home node accepts only the event types in the remote allowlist and
 // checks Agent ownership against its accepted join records.
 func (s *Service) PostRemoteEvent(ctx context.Context, roomID string, actor room.Actor, eventType string, payload any) (*room.Event, error) {
+	record, err := s.rooms.GetRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if record.HomeKind == room.HomeKindOfficial {
+		return s.PostOfficialEvent(ctx, roomID, actor, eventType, payload)
+	}
 	remote, err := s.IsRemoteRoom(ctx, roomID)
 	if err != nil {
 		return nil, err
@@ -1515,6 +1547,13 @@ func (s *Service) clientForRoom(ctx context.Context, roomID string) (*Client, er
 // ciphertext to the home node for a remote room, keeping a local copy either
 // way.
 func (s *Service) UploadAttachment(ctx context.Context, roomID string, actor room.Actor, name, mime string, data []byte) (*room.Attachment, error) {
+	record, err := s.rooms.GetRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if record.HomeKind == room.HomeKindOfficial {
+		return nil, room.ErrOfficialAttachmentsUnsupported
+	}
 	remote, err := s.IsRemoteRoom(ctx, roomID)
 	if err != nil {
 		return nil, err
@@ -1557,6 +1596,13 @@ func (s *Service) FetchAttachment(ctx context.Context, attachmentID string, acto
 	if attachment.Path != "" {
 		return nil
 	}
+	record, err := s.rooms.GetRoom(ctx, attachment.RoomID)
+	if err != nil {
+		return err
+	}
+	if record.HomeKind == room.HomeKindOfficial {
+		return room.ErrOfficialAttachmentsUnsupported
+	}
 	remote, err := s.IsRemoteRoom(ctx, attachment.RoomID)
 	if err != nil {
 		return err
@@ -1579,6 +1625,13 @@ func (s *Service) FetchAttachment(ctx context.Context, attachmentID string, acto
 // LeaveRoom leaves a local room directly or asks the home node to record a
 // remote leave event and rotate the room key.
 func (s *Service) LeaveRoom(ctx context.Context, roomID string, actor room.Actor) (*room.Event, error) {
+	record, err := s.rooms.GetRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if record.HomeKind == room.HomeKindOfficial {
+		return s.LeaveOfficialRoom(ctx, roomID, actor)
+	}
 	remote, err := s.IsRemoteRoom(ctx, roomID)
 	if err != nil {
 		return nil, err

@@ -59,6 +59,10 @@ type Options struct {
 	ResetFS fs.FS
 	// DisableRateLimit is for tests and trusted loopback deployments.
 	DisableRateLimit bool
+	// RoomMemberLimit and RoomDeviceLimit bound one official room. Zero
+	// applies the default caps; values below one are rejected by New.
+	RoomMemberLimit int
+	RoomDeviceLimit int
 	// Now is overridden in tests.
 	Now func() time.Time
 }
@@ -75,6 +79,9 @@ type Service struct {
 	started     time.Time
 	now         func() time.Time
 	rateLimited bool
+
+	roomMemberLimit int
+	roomDeviceLimit int
 
 	loginMu sync.Mutex
 	logins  map[string]*pendingLogin
@@ -117,11 +124,23 @@ func New(options Options) (*Service, error) {
 	if now == nil {
 		now = time.Now
 	}
+	memberLimit := options.RoomMemberLimit
+	if memberLimit == 0 {
+		memberLimit = MaxRoomMembers
+	}
+	deviceLimit := options.RoomDeviceLimit
+	if deviceLimit == 0 {
+		deviceLimit = MaxRoomDevices
+	}
+	if memberLimit < 1 || deviceLimit < 1 {
+		return nil, errors.New("room limits must be at least one")
+	}
 	return &Service{
 		store: options.Store, mailer: options.Mailer, logger: logger,
 		host: state, opaqueHost: opaqueHost, publicURL: publicURL,
 		resetFS: options.ResetFS, started: now().UTC().Truncate(time.Second),
 		now: now, rateLimited: !options.DisableRateLimit,
+		roomMemberLimit: memberLimit, roomDeviceLimit: deviceLimit,
 		logins:       make(map[string]*pendingLogin),
 		deviceNonces: requestauth.NewNonceCache(),
 		limiter:      newRateLimiter(),
@@ -154,6 +173,15 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("POST "+LoginFinishPath, s.handleLoginFinish)
 	mux.HandleFunc("POST "+DeviceSessionPath, s.handleDeviceSession)
 	mux.HandleFunc("POST "+SyncPath, s.handleSync)
+	mux.HandleFunc("POST "+RoomCreatePath, s.handleRoomCreate)
+	mux.HandleFunc("POST "+RoomSyncPath, s.handleRoomSync)
+	mux.HandleFunc("POST "+RoomEventPath, s.handleRoomEvent)
+	mux.HandleFunc("POST "+RoomInvitePath, s.handleRoomInvite)
+	mux.HandleFunc("POST "+RoomJoinPath, s.handleRoomJoin)
+	mux.HandleFunc("POST "+RoomKeysPath, s.handleRoomKeys)
+	mux.HandleFunc("POST "+RoomLeavePath, s.handleRoomLeave)
+	mux.HandleFunc("POST "+RoomRotatePath, s.handleRoomRotate)
+	mux.HandleFunc("POST "+RoomDevicesPath, s.handleRoomDevices)
 	mux.HandleFunc("POST "+PasswordBeginPath, s.handlePasswordBegin)
 	mux.HandleFunc("POST "+PasswordFinishPath, s.handlePasswordFinish)
 	mux.HandleFunc("POST "+RecoveryRotatePath, s.handleRecoveryRotate)

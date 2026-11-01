@@ -148,6 +148,8 @@ const strings: Record<string, [string, string]> = {
 
   "sidebar.rooms": ["Rooms", "房间"],
   "sidebar.newRoom": ["New room", "新建房间"],
+  "sidebar.officialRoom": ["Official blind room", "官方盲托管房间"],
+  "sidebar.officialRoomHint": ["Hosted by the official account service. The host stores only ciphertext and routing metadata.", "托管在官方账号服务。服务器只存密文与路由元数据，看不到聊天内容。"],
   "sidebar.joinRoom": ["Join with code", "用邀请码加入"],
   "sidebar.join": ["Join", "加入"],
   "sidebar.roomPlaceholder": ["Room name", "房间名称"],
@@ -178,6 +180,9 @@ const strings: Record<string, [string, string]> = {
   "conversation.home": ["home", "归属"],
   "conversation.info": ["Room details", "房间详情"],
   "conversation.encrypted": ["encrypted locally", "本地加密"],
+  "conversation.officialHome": ["official blind home", "官方盲托管"],
+  "conversation.officialBadge": ["blind hosted · end-to-end encrypted", "盲托管 · 端到端加密"],
+  "conversation.attachUnsupported": ["Official rooms do not support attachments yet", "官方房间暂不支持附件"],
   "conversation.attach": ["Attach files", "添加附件"],
   "conversation.attachLimit": ["Up to 25 MiB per file", "每个文件最大 25 MiB"],
   "conversation.mentionsHint": ["Type @name to mention an Agent", "输入 @名字 可以召唤 Agent"],
@@ -248,6 +253,8 @@ const strings: Record<string, [string, string]> = {
   "roomInfo.local": ["This machine", "这台机器"],
   "roomInfo.remote": ["Another node on the LAN", "局域网内的另一个节点"],
   "roomInfo.remoteNotice": ["This room is hosted by another node. You can send messages and leave here; invites are managed by the host. Archiving here only affects this device.", "这个房间由另一个节点托管。你可以在这里发消息或离开；邀请由归属节点管理；在这里归档只影响本机。"],
+  "roomInfo.official": ["Official blind home", "官方盲托管"],
+  "roomInfo.officialNotice": ["The official home stores ciphertext, ordering, membership, and routing metadata only. It never receives the room name, topic, message text, attachments, or epoch keys. Attachments are not supported yet; archiving here only affects this device.", "官方托管只保存密文、顺序、成员与路由元数据，不会收到房间名、话题、消息正文、附件或房间密钥。暂不支持附件；在这里归档只影响本机。"],
   "roomInfo.status": ["Status", "状态"],
 
   "agents.title": ["Agents", "Agent"],

@@ -6,8 +6,10 @@
 > Agents run through Claude Code or a local connector; Toget does not include
 > its own model runtime. Official-hosted accounts work end to end: OPAQUE
 > login, blind key storage, required recovery file, email verification, and
-> the embedded browser reset page. The official room home node is still
-> design-only. Optional gateway port mapping is available, but UDP hole
+> the embedded browser reset page. Official rooms use the official host as a
+> blind room home: it orders sealed events and stores wrapped keys but cannot
+> read room names, topics, or messages. Official rooms do not support
+> attachments yet. Optional gateway port mapping is available, but UDP hole
 > punching is not implemented yet. Names and scope will change as the first
 > version is built.
 
@@ -169,7 +171,8 @@ The relay, official directory, official hosting, recovery credentials, signed
 reproducible releases, periodic update checks, the in-app update prompt, and
 rollback are implemented (M4/M5). Daily-use features such as PWA install and
 audit export are implemented, as is policy language v1 (M6). The official room
-home and server-enforced forced updates for official-hosted accounts are not
+home is implemented for official-hosted accounts, without attachments yet.
+Server-enforced forced updates for official-hosted accounts are not
 implemented.
 
 ## Explicit non-goals for the MVP

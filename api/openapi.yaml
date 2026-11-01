@@ -1772,8 +1772,13 @@ paths:
       operationId: createRoom
       summary: Create a room and its first event
       description: |
-        When the LAN node is running, new local rooms are assigned this node
-        as their home server and get a portable LAN address.
+        With `home: node` (the default), when the LAN node is running, new
+        rooms are assigned this node as their home server and get a portable
+        LAN address. With `home: official`, the room is created on the
+        connected official account host: the host orders sealed events and
+        stores ciphertext plus routing metadata, but never receives the room
+        name, topic, message text, attachments, or epoch keys. Official rooms
+        currently reject attachments.
       requestBody:
         required: true
         content:
@@ -1793,8 +1798,19 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/AccountNotFound"
+        "409":
+          description: |
+            `official_account_required` when `home: official` is requested
+            without a connected official account, or the official host
+            rejected the room creation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "423":
           $ref: "#/components/responses/Locked"
+        "503":
+          $ref: "#/components/responses/Unavailable"
 
   /api/v1/rooms/{id}:
     get:
@@ -1820,7 +1836,10 @@ paths:
       tags: [rooms]
       operationId: updateRoom
       summary: Rename a room or change its topic
-      description: Only active room owners can change room settings.
+      description: |
+        Only active room owners can change room settings. For an official room,
+        the owner posts a sealed `room.settings_changed` event to the blind
+        host, which stores ciphertext only; a non-owner receives `403`.
       parameters:
         - $ref: "#/components/parameters/RoomID"
       requestBody:
@@ -1848,6 +1867,10 @@ paths:
           $ref: "#/components/responses/RemoteReadOnly"
         "423":
           $ref: "#/components/responses/Locked"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/Unavailable"
 
   /api/v1/rooms/{id}/archive:
     post:
@@ -2121,6 +2144,9 @@ paths:
         HTTPS, authenticates as this account and device, redeems the secret,
         imports the signed join bundle, and imports the events permitted by
         the invite's history policy. For remote joins `event` is `null`.
+        Redeeming a fresh invite for a room this account still belongs to
+        restores an archived local copy. A device that has already left cannot
+        rejoin and receives `409 room_left`.
       requestBody:
         required: true
         content:
@@ -2141,7 +2167,7 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: This account is already a member.
+          description: This account is already a member, or this device has already left the room.
           content:
             application/json:
               schema:
@@ -4567,6 +4593,14 @@ components:
         home_address:
           type: string
           description: Pinned HTTPS base URL of the home node, when known.
+        home_kind:
+          type: string
+          enum: [node, official]
+          default: node
+          description: |
+            `node` means a Toget node orders the log and can read events it
+            hosts. `official` means the blind official account home only sees
+            sealed envelopes and routing metadata.
         created_by:
           type: string
           description: Account ID of the creator.
@@ -4686,7 +4720,10 @@ components:
           description: Opaque single-use secret. Returned only at creation.
         code:
           type: string
-          description: Portable `toget-invite:v1:` LAN code. Returned only at creation.
+          description: |
+            Portable `toget-invite:v1:` code. It names the home (LAN node or
+            official account host) and carries the single-use secret. Returned
+            only at creation.
         created_by:
           type: string
         history:
@@ -5872,6 +5909,13 @@ components:
         topic:
           type: string
           maxLength: 280
+        home:
+          type: string
+          enum: [node, official]
+          default: node
+          description: |
+            `official` requires a connected official account. The official
+            home is blind to room content and ordering is host-assigned.
 
     UpdateRoomRequest:
       type: object
@@ -5902,7 +5946,7 @@ components:
           maxItems: 10
           items:
             type: string
-          description: Attachment IDs uploaded to this room. Local rooms only.
+          description: Attachment IDs uploaded to this room. Node-hosted rooms only; official rooms reject attachments.
         mentions:
           type: array
           items:

@@ -24,6 +24,11 @@ type WireEvent struct {
 	PrevHash     string    `json:"prev_hash,omitempty"`
 	Hash         string    `json:"hash"`
 	Signature    string    `json:"signature,omitempty"`
+	// Envelope fields let a blind home verify order and authorship without
+	// the room key. Node-hosted rooms leave them empty.
+	EnvelopeHash      string `json:"envelope_hash,omitempty"`
+	EnvelopePrevHash  string `json:"envelope_prev_hash,omitempty"`
+	EnvelopeSignature string `json:"envelope_signature,omitempty"`
 }
 
 // ToWire converts an event for transport.
@@ -33,6 +38,8 @@ func (e Event) ToWire() WireEvent {
 		AuthorID: e.AuthorID, AuthorDevice: e.AuthorDevice,
 		Payload: string(e.Payload), CreatedAt: e.CreatedAt,
 		PrevID: e.PrevID, PrevHash: e.PrevHash, Hash: e.Hash, Signature: e.Signature,
+		EnvelopeHash: e.EnvelopeHash, EnvelopePrevHash: e.EnvelopePrevHash,
+		EnvelopeSignature: e.EnvelopeSignature,
 	}
 }
 
@@ -43,6 +50,8 @@ func (w WireEvent) ToEvent() Event {
 		AuthorID: w.AuthorID, AuthorDevice: w.AuthorDevice,
 		Payload: json.RawMessage(w.Payload), CreatedAt: w.CreatedAt,
 		PrevID: w.PrevID, PrevHash: w.PrevHash, Hash: w.Hash, Signature: w.Signature,
+		EnvelopeHash: w.EnvelopeHash, EnvelopePrevHash: w.EnvelopePrevHash,
+		EnvelopeSignature: w.EnvelopeSignature,
 	}
 }
 

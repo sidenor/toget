@@ -146,7 +146,12 @@ func TestRecoveryCredential(t *testing.T) {
 	if err := json.Unmarshal(data, &changed); err != nil {
 		t.Fatal(err)
 	}
-	changed.Key = "A" + changed.Key[1:]
+	// Pick a replacement that actually differs; base64 often starts with "A".
+	replacement := byte('A')
+	if changed.Key[0] == replacement {
+		replacement = 'B'
+	}
+	changed.Key = string(replacement) + changed.Key[1:]
 	tampered, err := json.Marshal(&changed)
 	if err != nil {
 		t.Fatal(err)

@@ -103,7 +103,7 @@ The authenticated UI is a realtime room list and conversation, not a content sit
 
 - **Daemon:** room copies, event outbox, sync cursors, device and Agent registry cache. It must work offline and survive restarts.
 - **Account host:** account records, OPAQUE records, device list, sessions, email metadata, and sealed account-key blobs. A single-node self-hosted account host is the common case, and SQLite handles it without a database server.
-- **Official service:** starts on SQLite too. If load demands it, the store interface allows PostgreSQL for account metadata; sealed blobs can move to object storage. The official room home does not exist yet, so there is no hosted room history to scale.
+- **Official service:** starts on SQLite too. If load demands it, the store interface allows PostgreSQL for account metadata; sealed blobs can move to object storage. Official room events and wrapped keys live in the same host database, separate from any node's room history, so they can move to object storage without touching account records.
 
 The pure-Go `modernc.org/sqlite` driver keeps cross-compilation free of CGO. Queries are written in SQL and reviewed; no ORM hides them. Migrations are plain SQL, embedded in the binary, and applied explicitly or at startup.
 

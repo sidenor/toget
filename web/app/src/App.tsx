@@ -441,8 +441,8 @@ export default function App() {
           <span>{t("sidebar.rooms")}</span>
           <span className="count">{rooms.length}</span>
         </div>
-        <RoomList rooms={rooms} activeID={view === "chat" ? activeRoomID : null} onSelect={selectRoom} onCreate={async (name) => {
-          const created = await api.createRoom(name);
+        <RoomList rooms={rooms} activeID={view === "chat" ? activeRoomID : null} onSelect={selectRoom} onCreate={async (name, official) => {
+          const created = await api.createRoom(name, "", official);
           setRooms((current) => [created.room, ...current]);
           selectRoom(created.room.id);
         }} onJoin={async (code) => {
@@ -1333,13 +1333,14 @@ function RoomList({
   rooms: Room[];
   activeID: string | null;
   onSelect: (id: string) => void;
-  onCreate: (name: string) => Promise<void>;
+  onCreate: (name: string, official: boolean) => Promise<void>;
   onJoin: (code: string) => Promise<void>;
   onError: (err: unknown) => void;
   t: (key: string) => string;
 }) {
   const [mode, setMode] = useState<"create" | "join" | null>(null);
   const [name, setName] = useState("");
+  const [official, setOfficial] = useState(false);
   const [busy, setBusy] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState("");
@@ -1353,9 +1354,10 @@ function RoomList({
       if (mode === "join") {
         await onJoin(name.trim());
       } else {
-        await onCreate(name.trim());
+        await onCreate(name.trim(), official);
       }
       setName("");
+      setOfficial(false);
       setMode(null);
     } catch (err) {
       onError(err);
@@ -1381,6 +1383,7 @@ function RoomList({
   function closeForm() {
     setMode(null);
     setName("");
+    setOfficial(false);
     setScanError("");
   }
 
@@ -1419,6 +1422,19 @@ function RoomList({
               />
               <span className="fine-print">{t("sidebar.scanHint")}</span>
             </div>
+          )}
+          {mode === "create" && (
+            <label className="official-toggle">
+              <input
+                type="checkbox"
+                checked={official}
+                onChange={(event) => setOfficial(event.target.checked)}
+              />
+              <span>
+                <strong>{t("sidebar.officialRoom")}</strong>
+                <small>{t("sidebar.officialRoomHint")}</small>
+              </span>
+            </label>
           )}
           {scanError && <div className="form-error">{scanError}</div>}
           <div className="new-room-actions">
@@ -1591,11 +1607,16 @@ function Conversation({
   }, [events.length, streamCursor, room?.id]);
 
   if (!room) return null;
+  const official = room.home_kind === "official";
 
   async function send() {
     if (sending || !room) return;
     const value = text.trim();
     if (!value && files.length === 0) return;
+    if (official && files.length > 0) {
+      onError(new Error(t("conversation.attachUnsupported")));
+      return;
+    }
     setSending(true);
     try {
       const uploaded: string[] = [];
@@ -1643,11 +1664,11 @@ function Conversation({
           <h2>{room.name}</h2>
           <p>
             {t("conversation.private")} · {events.length} {t("conversation.events")} · {t("conversation.home")}{" "}
-            {shortID(room.home_node)}
+            {official ? t("conversation.officialHome") : shortID(room.home_node)}
           </p>
         </div>
         <div className="conversation-actions">
-          <div className="room-badge">{t("conversation.encrypted")}</div>
+          <div className="room-badge">{official ? t("conversation.officialBadge") : t("conversation.encrypted")}</div>
           <button className="button ghost small" onClick={() => setShowInfo(true)}>
             {t("conversation.info")}
           </button>
@@ -1727,7 +1748,12 @@ function Conversation({
             >
               M↓
             </button>
-            <button className="icon-button" onClick={() => fileRef.current?.click()} title={t("conversation.attach")}>
+            <button
+              className="icon-button"
+              onClick={() => fileRef.current?.click()}
+              title={official ? t("conversation.attachUnsupported") : t("conversation.attach")}
+              disabled={official}
+            >
               ⌘
             </button>
             <input
@@ -2019,6 +2045,7 @@ function RoomInfo({
   const [invite, setInvite] = useState<string>("");
   const [busy, setBusy] = useState(false);
   const remote = Boolean(room.home_server_id && room.home_server_id !== account.server_id);
+  const official = room.home_kind === "official";
   const isOwner = room.created_by === account.id;
 
   async function createInvite() {
@@ -2094,7 +2121,38 @@ function RoomInfo({
         </section>
         <section className="wide-section">
           <h3>{t("roomInfo.invite")}</h3>
-          {remote ? (
+          {official ? (
+            <>
+              <p className="muted">{t("roomInfo.officialNotice")}</p>
+              <div className="invite-controls">
+                <select value={history} onChange={(event) => setHistory(event.target.value)}>
+                  <option value="none">{t("roomInfo.none")}</option>
+                  <option value="recent">{t("roomInfo.recent")}</option>
+                  <option value="all">{t("roomInfo.all")}</option>
+                </select>
+                <button className="button primary" onClick={() => void createInvite()} disabled={busy}>
+                  {t("roomInfo.createInvite")}
+                </button>
+              </div>
+              {invite && (
+                <>
+                  <div className="invite-secret">
+                    <code>{invite}</code>
+                    <CopyButton value={invite} labels={{ copy: t("roomInfo.copy"), copied: t("roomInfo.copied") }} />
+                  </div>
+                  <div className="invite-qr">
+                    <QRCodeImage
+                      value={invite}
+                      alt={t("roomInfo.inviteQRAlt")}
+                      size={220}
+                      errorLabel={t("common.qrError")}
+                    />
+                    <p className="fine-print">{t("roomInfo.inviteQRHint")}</p>
+                  </div>
+                </>
+              )}
+            </>
+          ) : remote ? (
             <p className="muted">{t("roomInfo.remoteNotice")}</p>
           ) : (
             <>
@@ -2141,7 +2199,7 @@ function RoomInfo({
             </div>
             <div>
               <dt>{t("roomInfo.home")}</dt>
-              <dd>{remote ? t("roomInfo.remote") : t("roomInfo.local")}</dd>
+              <dd>{official ? t("roomInfo.official") : remote ? t("roomInfo.remote") : t("roomInfo.local")}</dd>
             </div>
           </dl>
           <div className="danger-actions">

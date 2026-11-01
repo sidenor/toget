@@ -2,8 +2,9 @@
 
 > Status: this document describes the intended trust boundaries and the
 > controls implemented in the current tree. It is not a claim that the first
-> release is secure for high-stakes use. The official room home remains
-> design-only; everything else marked implemented here exists in the code.
+> release is secure for high-stakes use. The official room home exists in the
+> code and has an end-to-end test, but it has not had an independent security
+> audit; everything else marked implemented here exists in the code.
 
 Toget's security model follows one rule: **the endpoint is the trust boundary**. An endpoint is a machine that holds keys and can decrypt room content. The official service is never an endpoint.
 
@@ -26,7 +27,7 @@ Toget's security model follows one rule: **the endpoint is the trust boundary**.
 | Other room members | Only what is shared in the room | Their epoch keys | Room events | Leaving rotates the epoch |
 | Official relay | No | No | Target server, account/device IDs, path, time, size | Sees the relay envelope and signed inner headers |
 | Official account host (official-hosted account) | No | No | Account record, device list, room membership, ciphertext sizes | Blind store |
-| Official room home node (design only) | No | No | Room event ordering, member list | Ciphertext only; not implemented yet |
+| Official room home | No | No | Room ID, account/device IDs, membership and roles, event type/epoch/sequence/time/size, envelope hashes/signatures, wrapped epoch-key packages, invite policy and timing | Blind ordering and storage. Never receives room name, topic, message text, attachments, or epoch keys. It can withhold or delay events, but cannot forge a member's signature or envelope chain. No attachments yet. |
 | Official Agent, explicitly authorized | Scoped only | Scoped only | Scoped only | Visible and revocable authorization |
 | Self-hosted account host | Yes | Yes | Yes | It is the user's endpoint |
 | Relay run by a third party | No | No | Same as official relay | Same envelope rules |

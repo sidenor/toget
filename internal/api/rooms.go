@@ -15,6 +15,8 @@ import (
 type createRoomRequest struct {
 	Name  string `json:"name"`
 	Topic string `json:"topic"`
+	// Home is "node" (default) or "official" for a blind hosted room.
+	Home string `json:"home"`
 }
 
 type roomEventResponse struct {
@@ -48,6 +50,27 @@ func (s *Server) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 	var req createRoomRequest
 	if err := decodeJSON(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	home := strings.TrimSpace(req.Home)
+	if home == "" {
+		home = room.HomeKindNode
+	}
+	if home != room.HomeKindNode && home != room.HomeKindOfficial {
+		writeError(w, http.StatusBadRequest, "invalid_home", "home must be node or official")
+		return
+	}
+	if home == room.HomeKindOfficial {
+		if s.node == nil {
+			writeError(w, http.StatusServiceUnavailable, "node_disabled", "official rooms need the node service")
+			return
+		}
+		created, event, err := s.node.CreateOfficialRoom(r.Context(), req.Name, req.Topic)
+		if err != nil {
+			writeRoomError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, roomEventResponse{Room: created, Event: event})
 		return
 	}
 	created, event, err := s.rooms.CreateRoom(r.Context(), req.Name, req.Topic, actor)
@@ -101,7 +124,13 @@ func (s *Server) handleUpdateRoom(w http.ResponseWriter, r *http.Request) {
 	if req.Topic != nil {
 		topic = *req.Topic
 	}
-	updated, event, err := s.rooms.Rename(r.Context(), current.ID, actor, name, topic)
+	var updated *room.Room
+	var event *room.Event
+	if current.HomeKind == room.HomeKindOfficial && s.node != nil {
+		updated, event, err = s.node.RenameOfficialRoom(r.Context(), current.ID, actor, name, topic)
+	} else {
+		updated, event, err = s.rooms.Rename(r.Context(), current.ID, actor, name, topic)
+	}
 	if err != nil {
 		writeRoomError(w, err)
 		return
@@ -295,16 +324,33 @@ func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ttl := time.Duration(req.TTLSeconds) * time.Second
-	invite, event, err := s.rooms.CreateInvite(r.Context(), r.PathValue("id"), actor, req.History, ttl)
+	record, err := s.rooms.GetRoom(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeRoomError(w, err)
+		return
+	}
+	if record.HomeKind == room.HomeKindOfficial {
+		if s.node == nil {
+			writeError(w, http.StatusServiceUnavailable, "node_disabled", "official rooms need the node service")
+			return
+		}
+		invite, event, code, err := s.node.CreateOfficialInvite(r.Context(), record.ID, actor, req.History, ttl)
+		if err != nil {
+			writeRoomError(w, err)
+			return
+		}
+		invite.Code = code
+		writeJSON(w, http.StatusCreated, map[string]any{"invite": invite, "event": event})
+		return
+	}
+	invite, event, err := s.rooms.CreateInvite(r.Context(), record.ID, actor, req.History, ttl)
 	if err != nil {
 		writeRoomError(w, err)
 		return
 	}
 	if s.node != nil {
-		if record, err := s.rooms.GetRoom(r.Context(), r.PathValue("id")); err == nil {
-			if code, err := s.node.InviteCode(r.Context(), record.ID, invite.Secret, record.Name); err == nil {
-				invite.Code = code
-			}
+		if code, err := s.node.InviteCode(r.Context(), record.ID, invite.Secret, record.Name); err == nil {
+			invite.Code = code
 		}
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"invite": invite, "event": event})

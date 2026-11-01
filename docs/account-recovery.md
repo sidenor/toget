@@ -2,7 +2,7 @@
 
 > **Status:** per-device vault recovery, local password reset, password change,
 > official-hosted recovery, email verification, and the embedded browser reset
-> page are implemented. The official room home node is still design-only.
+> page are implemented, and the official host can act as a blind room home.
 
 Toget separates two questions that are easy to confuse:
 
@@ -280,8 +280,9 @@ the user's browser; a loopback-only host cannot serve email links off-machine.
 - Deleting the account host database destroys the login records, not the
   ciphertext copies on devices or room homes. There is no server-side recovery
   of a lost recovery file.
-- The official room home node is not implemented. Hosted accounts currently
-  use their own devices or a self-hosted node as room homes, so "old history"
-  means the copies those endpoints hold, not an official archive.
+- The official host can be a room home for official-hosted accounts, but it
+  stores sealed events and per-device wrapped keys, not readable history. "Old
+  history" means what a device can unwrap plus whatever sealed events the home
+  still retains, not a plaintext archive.
 
 Social recovery (Shamir shares) and multi-device approval are future work.

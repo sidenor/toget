@@ -57,9 +57,10 @@ Start here:
 ## Status
 
 The documents describe a working implementation, not only a design. Local,
-LAN, relay, directory, update, and official-hosted account flows are
-implemented and tested; the official room home, desktop shell, and packaged
-installers remain design-only. The architecture and protocol will still
+LAN, relay, directory, update, official-hosted account, and official room home
+flows are implemented and tested; the desktop shell and packaged installers
+remain design-only. Official rooms do not support attachments yet. The
+architecture and protocol will still
 change. Decisions that are expensive to reverse should be recorded as ADRs
 before implementation, and docs that claim a feature is done must match the
 code.

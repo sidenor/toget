@@ -16,8 +16,9 @@
 > The daemon checks for updates on a schedule, the web UI shows an update banner
 > and settings, and `toget update` checks, stages, finishes, and rolls back
 > managed releases. Optional gateway port mapping (PCP, NAT-PMP, UPnP) is
-> implemented; UDP hole punching, the official room home, and packaged
-> installers are not implemented yet.
+> implemented; UDP hole punching and packaged
+> installers are not implemented yet. The official room home is implemented on
+> the same service and stores its state in the same host database.
 
 Toget is deployed as a **node**: one `toget` binary that can act as a daemon, a self-hosted account host, a relay, or the local CLI. Most users run it on one machine and never think about the rest.
 
@@ -211,14 +212,18 @@ export TOGET_HOST_SMTP_PASSWORD='...'
 - `--host-smtp-*` enables email verification and recovery. Without SMTP the
   host still supports password login, device sessions, and key rotation, and
   serves the reset page, but users cannot receive verification or reset links.
+- `--host-room-member-limit` and `--host-room-device-limit` cap one official
+  room (defaults 5000 active members and 20000 devices). A join past either cap
+  returns `409 room_full` or `409 device_limit`.
 - `--no-host` turns the account host off for a relay/directory-only
   deployment.
 
 The host stores OPAQUE registration records, sealed blobs, device records,
 sessions, and encrypted email metadata. It cannot read account keys, room
-content, or the plaintext password. The official room home is not implemented;
-an official-hosted account uses its own devices or a self-hosted node as the
-room home, so the host is not an archive of room history.
+content, or the plaintext password. It can also be the home of official rooms:
+it orders sealed events and stores keys wrapped per device, but it cannot read
+room names, topics, or message text, and it is not a plaintext archive of
+history.
 
 ## Connect from another device
 
