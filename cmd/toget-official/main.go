@@ -56,6 +56,7 @@ func newRootCommand() *cobra.Command {
 		noHost              bool
 		hostListen          string
 		hostPublicURL       string
+		hostDirectAddress   string
 		hostName            string
 		hostTLSCert         string
 		hostTLSKey          string
@@ -100,7 +101,7 @@ func newRootCommand() *cobra.Command {
 
 			if !noHost {
 				host, err := startAccountHost(ctx, paths, hostOptions{
-					Listen: hostListen, PublicURL: hostPublicURL, Name: hostName,
+					Listen: hostListen, PublicURL: hostPublicURL, DirectAddress: hostDirectAddress, Name: hostName,
 					CertPath: hostTLSCert, KeyPath: hostTLSKey, DatabasePath: hostDB,
 					ResetDir: hostResetDir, SMTPAddr: hostSMTPAddr, SMTPUser: hostSMTPUser,
 					SMTPPassword: hostSMTPPassword, SMTPFrom: hostSMTPFrom,
@@ -116,7 +117,11 @@ func newRootCommand() *cobra.Command {
 					defer cancel()
 					_ = host.Close(shutdownCtx)
 				}()
-				fmt.Printf("Accounts:  %s\n", host.pinnedURL)
+				if host.pinnedURL != "" {
+					fmt.Printf("Accounts:  %s\n", host.pinnedURL)
+				} else {
+					fmt.Println("Accounts:  not advertised (set --host-direct-address host:port)")
+				}
 				if host.identityURL != "" {
 					fmt.Printf("Proxy:     %s\n", host.identityURL)
 				}
@@ -208,6 +213,7 @@ func newRootCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&noHost, "no-host", false, "do not run the official account host")
 	cmd.Flags().StringVar(&hostListen, "host-listen", "0.0.0.0:7722", "official account host listen address")
 	cmd.Flags().StringVar(&hostPublicURL, "host-public-url", "", "browser-facing HTTPS origin for account emails (defaults to the listen address)")
+	cmd.Flags().StringVar(&hostDirectAddress, "host-direct-address", "", "public host:port advertised for direct pinned clients (required behind NAT)")
 	cmd.Flags().StringVar(&hostName, "host-name", "Toget Official Accounts", "account host display name")
 	cmd.Flags().StringVar(&hostTLSCert, "host-tls-cert", "", "TLS certificate for the account host (default: <home>/host/tls.crt)")
 	cmd.Flags().StringVar(&hostTLSKey, "host-tls-key", "", "TLS private key for the account host (default: <home>/host/tls.key)")

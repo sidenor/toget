@@ -202,13 +202,19 @@ export TOGET_HOST_SMTP_PASSWORD='...'
   and reset links, and is also the origin of the proxy identity URL described
   below. Without it, the host falls back to the listen address, which only
   works for loopback testing; email recovery needs a public origin.
+- `--host-direct-address` is the public `host:port` advertised in the startup
+  `Accounts:` line for direct certificate-pinned clients. Set it when the host
+  is behind NAT or listens on a wildcard address. Without it, a wildcard
+  listener is advertised only when its outbound address is publicly routable;
+  otherwise `Accounts:` is omitted rather than printing an unreachable private
+  address.
 - The account host always serves TLS. With no certificate flags it creates a
   self-signed certificate under `<home>/host/`; supply a real certificate for
-  a public host. Startup always prints `Accounts:` with the exact origin
-  certificate fingerprint for direct connections. When `--host-public-url` is
-  set it also prints `Proxy:` with the self-certifying host ID for connections
-  through a TLS-terminating proxy. Either can be given to clients; use the one
-  that matches how the client reaches the host.
+  a public host. When a direct address is available, startup prints `Accounts:`
+  with the exact origin certificate fingerprint for direct connections. When
+  `--host-public-url` is set it also prints `Proxy:` with the self-certifying
+  host ID for connections through a TLS-terminating proxy. Either can be given
+  to clients; use the one that matches how the client reaches the host.
 - The database defaults to `<home>/host/accounts.db`; TLS defaults to
   `<home>/host/tls.crt` and `tls.key`. Back up the database and host key, but
   note that neither contains account master keys.
@@ -301,8 +307,9 @@ ingress:
   honors Cloudflare's `CF-Connecting-IP` (which requires `CF-Ray`) and
   `X-Forwarded-For`. Do not add Cloudflare's public ranges when using a
   Tunnel; the direct peer is loopback.
-- Give users the startup `Proxy:` URL. The `Accounts:` URL points at loopback
-  or the machine's outbound address and will not work for remote clients.
+- Give users the startup `Proxy:` URL. Leave `--host-direct-address` unset
+  behind a Tunnel unless clients can reach the origin directly; `Accounts:` is
+  omitted when no usable direct address is configured or detected.
 
 #### Orange cloud with an origin on a standard HTTPS port
 
@@ -319,7 +326,9 @@ Choose one of:
   **Full (strict)** with a Cloudflare Origin CA certificate installed at the
   origin. Use **Full** only if the origin certificate cannot be validated;
   **Flexible** is wrong because Cloudflare would speak plaintext HTTP to a
-  TLS-only listener.
+  TLS-only listener. Add `--host-direct-address <origin-host:port>` only if
+  clients should also connect directly to the origin; otherwise omit it so no
+  origin address is advertised.
 - **Use a Cloudflare Origin Rule** to rewrite the destination port to `7722`.
   This requires a plan that includes Origin Rules and still requires the origin
   to be reachable from Cloudflare on that port. Confirm the rule rewrites the

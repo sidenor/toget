@@ -46,7 +46,7 @@ and directory:
 
 ```bash
 go run ./cmd/toget-official
-# Accounts:  https://<origin>:7722#fp=...
+# Accounts:  https://<origin>:7722#fp=...  (when a direct address is known or configured)
 # Proxy:     https://<public-host>#id=...  (when --host-public-url is set)
 # Public:    https://<public-host>
 # Relay:     https://<host>:7719#fp=...
@@ -77,6 +77,11 @@ go run ./cmd/toget-official --home ~/.local/share/toget-official \
   --host-smtp-addr smtp.example.com:587 --host-smtp-from accounts@example.com \
   --host-smtp-user toget --no-relay --no-directory
 ```
+
+When the origin is behind NAT, also pass
+`--host-direct-address <public-host:port>` so startup can print a usable
+direct fingerprint URL. Otherwise `Accounts:` is omitted instead of showing a
+private address; the `Proxy:` URL still works through the public origin.
 
 Create an official-hosted account, or add a second device to one:
 
@@ -374,7 +379,7 @@ Toget 以本地节点的方式运行。单机上可以创建账号、创建房�
 
 ```bash
 go run ./cmd/toget-official
-# Accounts:  https://<origin>:7722#fp=...
+# Accounts:  https://<origin>:7722#fp=...  (when a direct address is known or configured)
 # Proxy:     https://<public-host>#id=...  (when --host-public-url is set)
 # Public:    https://<public-host>
 # Relay:     https://<host>:7719#fp=...
@@ -399,6 +404,11 @@ go run ./cmd/toget-official --home ~/.local/share/toget-official \
   --host-smtp-addr smtp.example.com:587 --host-smtp-from accounts@example.com \
   --host-smtp-user toget --no-relay --no-directory
 ```
+
+源站在 NAT 后面时，再加
+`--host-direct-address <公网主机:端口>`，启动时才会打印可用的直连指纹地址；
+否则 `Accounts:` 会省略，而不是显示外网不可达的私有地址。经公网域名的
+`Proxy:` 地址不受影响。
 
 创建官方托管账号，或在第二台设备上登录：
 

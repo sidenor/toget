@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 type hostOptions struct {
 	Listen          string
 	PublicURL       string
+	DirectAddress   string
 	Name            string
 	CertPath        string
 	KeyPath         string
@@ -76,7 +78,7 @@ func startAccountHost(parent context.Context, paths config.Paths, options hostOp
 		return nil, errors.New("both --host-tls-cert and --host-tls-key are required")
 	}
 
-	directHost, err := accountHostAddress(listen, "")
+	directHost, err := accountHostDirectAddress(listen, options.DirectAddress)
 	if err != nil {
 		return nil, err
 	}
@@ -103,9 +105,11 @@ func startAccountHost(parent context.Context, paths config.Paths, options hostOp
 		logger.Info("trusting forwarded client IPs", "prefixes", len(trustedProxies))
 	}
 	endpoints := []identity.Endpoint{{Transport: "https", Addr: publicHost}}
-	material, err := hosted.LoadOrCreateTLS(certPath, keyPath, []string{
-		hostOnly(publicHost), hostOnly(directHost), hostOnly(listen),
-	})
+	tlsHosts := []string{hostOnly(publicHost), hostOnly(listen)}
+	if directHost != "" {
+		tlsHosts = append(tlsHosts, hostOnly(directHost))
+	}
+	material, err := hosted.LoadOrCreateTLS(certPath, keyPath, tlsHosts)
 	if err != nil {
 		return nil, err
 	}
@@ -179,9 +183,13 @@ func startAccountHost(parent context.Context, paths config.Paths, options hostOp
 	if strings.TrimSpace(options.PublicURL) != "" {
 		identityURL = hosted.IdentityURL(publicURL, service.HostID())
 	}
+	pinnedURL := ""
+	if directHost != "" {
+		pinnedURL = hosted.PinnedURL("https://"+directHost, material.Fingerprint)
+	}
 	h := &accountHost{
 		store: store, service: service, server: server, listener: listener,
-		pinnedURL:   hosted.PinnedURL("https://"+directHost, material.Fingerprint),
+		pinnedURL:   pinnedURL,
 		identityURL: identityURL,
 		publicURL:   publicURL,
 		fingerprint: material.Fingerprint,
@@ -238,16 +246,73 @@ func accountHostAddress(listen, publicURL string) (string, error) {
 		} else {
 			port = "443"
 		}
-	} else if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+	} else if isWildcardHost(host) {
 		host = node.OutboundIP()
 	}
 	if port == "" {
 		return "", errors.New("account host port is empty")
 	}
-	if strings.Contains(host, ":") {
-		host = "[" + strings.Trim(host, "[]") + "]"
+	return net.JoinHostPort(strings.Trim(host, "[]"), port), nil
+}
+
+// accountHostDirectAddress returns the host:port advertised for clients that
+// pin the origin certificate. An explicit address is required behind NAT.
+// Without one, a wildcard listener is only auto-advertised when its outbound
+// address is publicly routable; otherwise returning an empty address is safer
+// than printing a private one that remote clients cannot use.
+func accountHostDirectAddress(listen, directAddress string) (string, error) {
+	directAddress = strings.TrimSpace(directAddress)
+	if directAddress == "" {
+		host, port, err := net.SplitHostPort(strings.TrimSpace(listen))
+		if err != nil {
+			return "", fmt.Errorf("account host listen address: %w", err)
+		}
+		if isWildcardHost(host) {
+			candidate := node.OutboundIP()
+			if !publicUnicastIP(candidate) {
+				return "", nil
+			}
+			host = candidate
+		}
+		if port == "" {
+			return "", errors.New("account host port is empty")
+		}
+		return net.JoinHostPort(strings.Trim(host, "[]"), port), nil
+	}
+
+	host, port, err := net.SplitHostPort(directAddress)
+	if err != nil {
+		return "", fmt.Errorf("account host direct address must be host:port: %w", err)
+	}
+	host = strings.TrimSpace(host)
+	if host == "" || isWildcardHost(host) {
+		return "", errors.New("account host direct address must name a reachable host")
+	}
+	if strings.Contains(host, "://") || strings.ContainsAny(host, "/?#@* \t\r\n") {
+		return "", errors.New("account host direct address must be host:port without a scheme or path")
+	}
+	if strings.Contains(host, ":") && net.ParseIP(strings.Trim(host, "[]")) == nil {
+		return "", errors.New("account host direct address has an invalid IPv6 host")
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return "", errors.New("account host direct address has an invalid port")
 	}
 	return net.JoinHostPort(strings.Trim(host, "[]"), port), nil
+}
+
+func isWildcardHost(host string) bool {
+	host = strings.Trim(host, "[]")
+	return host == "" || host == "0.0.0.0" || host == "::"
+}
+
+func publicUnicastIP(raw string) bool {
+	ip := net.ParseIP(strings.Trim(raw, "[]"))
+	if ip == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() ||
+		ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+		return false
+	}
+	return true
 }
 
 func hostOnly(addr string) string {
