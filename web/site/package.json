@@ -4,9 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "dev": "pnpm wasm && vite",
+    "build": "pnpm wasm && tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "wasm": "mkdir -p public/wasm && GOOS=js GOARCH=wasm go build -trimpath -o public/wasm/toget-site.wasm ./wasm && cp \"$(go env GOROOT)/lib/wasm/wasm_exec.js\" public/wasm/wasm_exec.js"
   },
   "dependencies": {
     "react": "^18.3.1",

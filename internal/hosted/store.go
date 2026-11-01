@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	hostSchemaVersion = 2
+	hostSchemaVersion = 3
 
 	// SessionTTL bounds an authenticated host session.
 	SessionTTL = 12 * time.Hour
@@ -121,6 +121,12 @@ var hostSchema = []string{
 		last_used_at INTEGER NOT NULL
 	)`,
 	`CREATE INDEX IF NOT EXISTS hosted_sessions_account ON hosted_sessions(account_id)`,
+	`CREATE TABLE IF NOT EXISTS hosted_vaults (
+		account_id TEXT PRIMARY KEY REFERENCES hosted_accounts(id) ON DELETE CASCADE,
+		blob TEXT NOT NULL,
+		version INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	)`,
 	`CREATE TABLE IF NOT EXISTS hosted_rooms (
 		id TEXT PRIMARY KEY,
 		owner_account_id TEXT NOT NULL REFERENCES hosted_accounts(id) ON DELETE CASCADE,

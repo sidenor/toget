@@ -10,6 +10,8 @@ import (
 // device-signed and carries the account and device identity headers. Room
 // payloads are opaque to the host.
 const (
+	// RoomListPath lists the caller account's active room memberships.
+	RoomListPath = "/host/v1/room/list"
 	// RoomCreatePath creates a hosted room and its first event.
 	RoomCreatePath = "/host/v1/room/create"
 	// RoomSyncPath returns room state and events after a cursor.
@@ -256,4 +258,25 @@ type RoomDeviceRegisterRequest struct {
 type RoomDeviceRegisterResponse struct {
 	Protocol int      `json:"protocol"`
 	Room     RoomInfo `json:"room"`
+}
+
+// RoomListRequest lists this account's active rooms. It carries no room
+// content beyond what the blind host already stores.
+type RoomListRequest struct {
+	Protocol int `json:"protocol"`
+}
+
+// RoomListEntry is one active membership and its public room head.
+type RoomListEntry struct {
+	Room     RoomInfo  `json:"room"`
+	Role     string    `json:"role"`
+	Status   string    `json:"status"`
+	History  string    `json:"history,omitempty"`
+	JoinedAt time.Time `json:"joined_at"`
+}
+
+// RoomListResponse is the account's active room memberships.
+type RoomListResponse struct {
+	Protocol int             `json:"protocol"`
+	Rooms    []RoomListEntry `json:"rooms"`
 }

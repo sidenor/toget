@@ -1427,6 +1427,12 @@ func (s *Service) appendUnchecked(ctx context.Context, roomID string, actor Acto
 }
 
 func (s *Service) buildEvent(roomID string, seq int64, prev *Event, eventType string, actor Actor, payload json.RawMessage, now time.Time) (*Event, error) {
+	return buildEvent(roomID, seq, prev, eventType, actor, payload, now)
+}
+
+// buildEvent constructs and signs one plaintext event. It is shared by the
+// local room service and the browser client's stateless official-room path.
+func buildEvent(roomID string, seq int64, prev *Event, eventType string, actor Actor, payload json.RawMessage, now time.Time) (*Event, error) {
 	event := &Event{
 		ID:           identity.NewID(),
 		RoomID:       roomID,
@@ -1466,6 +1472,11 @@ func (s *Service) findEvent(ctx context.Context, roomID, eventID string) (*Event
 }
 
 func (s *Service) sealEvent(event *Event, epoch int, key []byte) (*Event, error) {
+	return sealEvent(event, epoch, key)
+}
+
+// sealEvent encrypts an event's payload for one room epoch.
+func sealEvent(event *Event, epoch int, key []byte) (*Event, error) {
 	sealed, err := sealRoomPayload(key, event.Payload, payloadAAD(event.RoomID, epoch, "event"))
 	if err != nil {
 		return nil, fmt.Errorf("seal event payload: %w", err)

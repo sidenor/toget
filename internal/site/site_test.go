@@ -26,6 +26,12 @@ func testAssets() fstest.MapFS {
 		"manifest.webmanifest": &fstest.MapFile{
 			Data: []byte(`{"name":"Toget"}`),
 		},
+		"wasm/wasm_exec.js": &fstest.MapFile{
+			Data: []byte("globalThis.Go = function Go() {}"),
+		},
+		"wasm/toget-site.wasm": &fstest.MapFile{
+			Data: []byte("\x00asm\x01\x00\x00\x00"),
+		},
 		"secret.txt": &fstest.MapFile{
 			Data: []byte("do not serve this by traversal"),
 		},
@@ -101,6 +107,11 @@ func TestHashedAssets(t *testing.T) {
 		{"/assets/app-def456.css", "text/css; charset=utf-8", assetCache, "body{background:#fff}"},
 		{"/favicon.svg", "image/svg+xml", publicCache, "<svg"},
 		{"/manifest.webmanifest", "application/manifest+json", publicCache, `"Toget"`},
+		// The WASM runtime and module must be revalidated: a stale pair can
+		// fail to boot after a deploy, and the module needs the standard MIME
+		// type for streaming instantiation.
+		{"/wasm/wasm_exec.js", "text/javascript; charset=utf-8", "no-cache", "function Go"},
+		{"/wasm/toget-site.wasm", "application/wasm", "no-cache", "\x00asm"},
 	}
 	for _, test := range cases {
 		recorder := request(handler, http.MethodGet, test.target, nil)
@@ -269,6 +280,13 @@ func assertPageHeaders(t *testing.T, recorder *httptest.ResponseRecorder) {
 	header := recorder.Header()
 	if got := header.Get("Content-Security-Policy"); got != contentSecurityPolicy {
 		t.Fatalf("Content-Security-Policy = %q, want %q", got, contentSecurityPolicy)
+	}
+	csp := header.Get("Content-Security-Policy")
+	if !strings.Contains(csp, "script-src 'self' 'wasm-unsafe-eval'") {
+		t.Fatalf("Content-Security-Policy does not permit WebAssembly: %q", csp)
+	}
+	if strings.Contains(csp, "'unsafe-eval'") || strings.Contains(csp, "'unsafe-inline'") {
+		t.Fatalf("Content-Security-Policy allows unsafe script sources: %q", csp)
 	}
 	if got := header.Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Fatalf("X-Content-Type-Options = %q", got)

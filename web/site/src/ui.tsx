@@ -18,7 +18,19 @@ export type IconName =
   | "file"
   | "chats"
   | "contacts"
-  | "person";
+  | "person"
+  | "lock"
+  | "info"
+  | "copy"
+  | "download"
+  | "logout"
+  | "refresh"
+  | "wifiOff"
+  | "link"
+  | "mail"
+  | "eye"
+  | "eyeOff"
+  | "plus";
 
 const paths: Record<IconName, ReactNode> = {
   search: (
@@ -96,6 +108,78 @@ const paths: Record<IconName, ReactNode> = {
       <path d="M5.2 20c.6-3.7 3.1-5.8 6.8-5.8s6.2 2.1 6.8 5.8" />
     </>
   ),
+  lock: (
+    <>
+      <rect x="4.8" y="10.2" width="14.4" height="10" rx="2.6" />
+      <path d="M8.2 10.2V7.6a3.8 3.8 0 0 1 7.6 0v2.6" />
+      <path d="M12 14.2v2.1" />
+    </>
+  ),
+  info: (
+    <>
+      <circle cx="12" cy="12" r="8.6" />
+      <path d="M12 11.1v5.2" />
+      <circle cx="12" cy="8.1" r=".9" fill="currentColor" stroke="none" />
+    </>
+  ),
+  copy: (
+    <>
+      <rect x="8.2" y="8.2" width="11.2" height="11.2" rx="2.2" />
+      <path d="M15.8 8.2V6.4a1.8 1.8 0 0 0-1.8-1.8H6.4a1.8 1.8 0 0 0-1.8 1.8v7.6a1.8 1.8 0 0 0 1.8 1.8h1.8" />
+    </>
+  ),
+  download: (
+    <>
+      <path d="M12 4.2v10.4M7.6 10.8 12 15.2l4.4-4.4" />
+      <path d="M4.8 18.4v1.2a1.6 1.6 0 0 0 1.6 1.6h11.2a1.6 1.6 0 0 0 1.6-1.6v-1.2" />
+    </>
+  ),
+  logout: (
+    <>
+      <path d="M10 4.6H6.2a2 2 0 0 0-2 2v10.8a2 2 0 0 0 2 2H10" />
+      <path d="M14.4 8.2 18.2 12l-3.8 3.8M18.2 12H9.2" />
+    </>
+  ),
+  refresh: (
+    <>
+      <path d="M19.6 12a7.6 7.6 0 0 1-12.9 5.4L4.4 15" />
+      <path d="M4.4 12a7.6 7.6 0 0 1 12.9-5.4L19.6 9" />
+      <path d="M4.4 19.2V15h4.2M19.6 4.8V9h-4.2" />
+    </>
+  ),
+  wifiOff: (
+    <>
+      <path d="M3.4 3.4 20.6 20.6" />
+      <path d="M8.8 15.4a4.6 4.6 0 0 1 6.4 0M5.6 12.1a9.2 9.2 0 0 1 3.1-1.9M18.4 12.1a9.2 9.2 0 0 0-2.6-1.7M2.8 8.7a14 14 0 0 1 3.5-2.3M21.2 8.7a14 14 0 0 0-7.8-3.2" />
+      <circle cx="12" cy="18.6" r="1" fill="currentColor" stroke="none" />
+    </>
+  ),
+  link: (
+    <>
+      <path d="M9.6 14.4 14.4 9.6" />
+      <path d="M8.1 17.6 6.2 19.5a3.5 3.5 0 0 1-4.9-4.9l3.4-3.4a3.5 3.5 0 0 1 4.9 0" />
+      <path d="m15.9 6.4 1.9-1.9a3.5 3.5 0 0 1 4.9 4.9l-3.4 3.4a3.5 3.5 0 0 1-4.9 0" />
+    </>
+  ),
+  mail: (
+    <>
+      <rect x="3.4" y="5.4" width="17.2" height="13.2" rx="2.4" />
+      <path d="m4.6 7.2 7.4 5.4 7.4-5.4" />
+    </>
+  ),
+  eye: (
+    <>
+      <path d="M2.6 12s3.4-6 9.4-6 9.4 6 9.4 6-3.4 6-9.4 6-9.4-6-9.4-6Z" />
+      <circle cx="12" cy="12" r="2.7" />
+    </>
+  ),
+  eyeOff: (
+    <>
+      <path d="M3 3l18 18" />
+      <path d="M10.6 6.2A10 10 0 0 1 12 6c6 0 9.4 6 9.4 6a16 16 0 0 1-2.3 2.9M6.3 7.9A16 16 0 0 0 2.6 12s3.4 6 9.4 6a9.5 9.5 0 0 0 3.4-.6" />
+    </>
+  ),
+  plus: <path d="M12 5.2v13.6M5.2 12h13.6" strokeWidth="2" />,
 };
 
 export function Icon({
@@ -127,6 +211,44 @@ export function Icon({
   );
 }
 
+export function SearchBox({
+  value,
+  onChange,
+  placeholder = "搜索",
+  autoFocus = false,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  autoFocus?: boolean;
+}) {
+  return (
+    <label className="search-box">
+      <Icon name="search" size={17} />
+      <input
+        autoFocus={autoFocus}
+        type="text"
+        inputMode="search"
+        enterKeyHint="search"
+        value={value}
+        placeholder={placeholder}
+        aria-label={placeholder}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      {value && (
+        <button
+          type="button"
+          className="search-clear"
+          aria-label="清除搜索"
+          onClick={() => onChange("")}
+        >
+          <Icon name="close" size={13} />
+        </button>
+      )}
+    </label>
+  );
+}
+
 export function BrandMark({ size = 30 }: { size?: number }) {
   return (
     <svg aria-hidden="true" width={size} height={size} viewBox="0 0 32 32">
@@ -155,14 +277,12 @@ export function Avatar({
   spec,
   size = 44,
   className = "",
-  presence = false,
 }: {
   spec: AvatarSpec;
   size?: number;
   className?: string;
-  presence?: boolean;
 }) {
-  const avatar = (
+  return (
     <span
       aria-hidden="true"
       className={`avatar avatar-size-${avatarSize(size)} ${
@@ -171,33 +291,5 @@ export function Avatar({
     >
       {spec.agent ? <Icon name="sparkle" size={Math.round(size * 0.45)} /> : spec.label}
     </span>
-  );
-  if (!presence) {
-    return avatar;
-  }
-  return (
-    <span className="avatar-wrap">
-      {avatar}
-      <i className="presence" />
-    </span>
-  );
-}
-
-export function AvatarStack({
-  avatars,
-  max = 3,
-}: {
-  avatars: AvatarSpec[];
-  max?: number;
-}) {
-  const shown = avatars.slice(0, max);
-  const extra = avatars.length - shown.length;
-  return (
-    <div className="avatar-stack" aria-hidden="true">
-      {shown.map((avatar, index) => (
-        <Avatar key={index} spec={avatar} size={24} className="stack-avatar" />
-      ))}
-      {extra > 0 && <span className="stack-more">+{extra}</span>}
-    </div>
   );
 }

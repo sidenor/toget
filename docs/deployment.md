@@ -229,8 +229,9 @@ export TOGET_HOST_SMTP_PASSWORD='...'
   `toget-official`. Use `--host-site-dir` only to override it during
   development. The page and its hashed assets have their own CSP and cache
   policy; `/host/*` and `/reset/*` keep the account host's stricter headers.
-  The current site is a front-end preview backed by local sample data and does
-  not yet call account or room APIs.
+  The client calls `/host/v1` for registration, sessions, rooms, invites,
+  history, and recovery, and stores its encrypted account vault in the
+  browser's IndexedDB.
 - `--host-smtp-*` enables email verification and recovery. Without SMTP the
   host still supports password login, device sessions, and key rotation, and
   serves the reset page, but users cannot receive verification or reset links.

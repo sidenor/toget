@@ -156,3 +156,15 @@ func IsRoomConflict(err error) bool {
 func IsRoomRotationRequired(err error) bool {
 	return RoomErrorCode(err) == "rotation_required"
 }
+
+// ListRooms returns the account's active room memberships.
+func (c *Client) ListRooms(ctx context.Context, signer RoomSigner) (*RoomListResponse, error) {
+	var response RoomListResponse
+	if err := c.doRoom(ctx, RoomListPath, signer, RoomListRequest{Protocol: Protocol}, &response); err != nil {
+		return nil, err
+	}
+	if response.Protocol != Protocol {
+		return nil, fmt.Errorf("%w: malformed room list response", ErrInvalidHost)
+	}
+	return &response, nil
+}

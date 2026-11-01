@@ -255,6 +255,7 @@ type SyncResponse struct {
 	Revoked       int                    `json:"revoked"`
 	Skipped       int                    `json:"skipped"`
 	Warnings      []string               `json:"warnings,omitempty"`
+	EmailVerified bool                   `json:"email_verified"`
 }
 
 // PasswordBeginRequest starts OPAQUE re-registration for a new password.

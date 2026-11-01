@@ -1383,3 +1383,52 @@ func isUniqueViolation(err error) bool {
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, "unique constraint") || strings.Contains(text, "primary key")
 }
+
+// HostedRoomMembership is one account membership with its public room.
+type HostedRoomMembership struct {
+	Room     HostedRoom
+	Role     string
+	Status   string
+	History  string
+	JoinedAt time.Time
+	LeftAt   *time.Time
+}
+
+// ListHostedRoomsForAccount returns every active membership for an account.
+func (s *Store) ListHostedRoomsForAccount(ctx context.Context, accountID string) ([]HostedRoomMembership, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT r.id, r.owner_account_id, r.epoch, r.head, r.head_envelope_hash,
+		       r.rotation_required, r.created_at, r.updated_at,
+		       m.role, m.status, m.history, m.joined_at, m.left_at
+		  FROM hosted_room_members m
+		  JOIN hosted_rooms r ON r.id = m.room_id
+		 WHERE m.account_id = ? AND m.status = 'active'
+		 ORDER BY m.joined_at DESC`, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("hosted: list account rooms: %w", err)
+	}
+	defer rows.Close()
+	var out []HostedRoomMembership
+	for rows.Next() {
+		var membership HostedRoomMembership
+		var rotation int
+		var created, updated, joined int64
+		var left sql.NullInt64
+		if err := rows.Scan(&membership.Room.ID, &membership.Room.OwnerAccountID,
+			&membership.Room.Epoch, &membership.Room.Head, &membership.Room.HeadEnvelopeHash,
+			&rotation, &created, &updated, &membership.Role, &membership.Status,
+			&membership.History, &joined, &left); err != nil {
+			return nil, fmt.Errorf("hosted: scan account room: %w", err)
+		}
+		membership.Room.RotationRequired = rotation != 0
+		membership.Room.CreatedAt = timeFromMillis(created)
+		membership.Room.UpdatedAt = timeFromMillis(updated)
+		membership.JoinedAt = timeFromMillis(joined)
+		membership.LeftAt = nullableTime(left)
+		out = append(out, membership)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("hosted: iterate account rooms: %w", err)
+	}
+	return out, nil
+}

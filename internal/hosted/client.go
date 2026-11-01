@@ -341,7 +341,14 @@ func (c *Client) Register(ctx context.Context, options RegisterOptions) (*Regist
 	if err != nil {
 		return nil, err
 	}
-	credential, recoveryKey, err := NewRecoveryCredential(begin.AccountID, c.hostURL, now)
+	// A browser origin has no certificate pin of its own. Bind the host's
+	// self-certifying identity into the recovery file so a later reset can
+	// verify the host even when the page origin is not pinned.
+	recoveryHostURL := c.hostURL
+	if c.hostID == "" && c.fingerprint == "" {
+		recoveryHostURL = c.origin + "#id=" + info.HostID
+	}
+	credential, recoveryKey, err := NewRecoveryCredential(begin.AccountID, recoveryHostURL, now)
 	if err != nil {
 		return nil, err
 	}
@@ -378,7 +385,7 @@ func (c *Client) Register(ctx context.Context, options RegisterOptions) (*Regist
 	}
 	return &RegistrationResult{
 		AccountID: begin.AccountID, AccountCode: begin.AccountCode,
-		Name: begin.Name, HostURL: c.hostURL,
+		Name: begin.Name, HostURL: recoveryHostURL,
 		HostID: info.HostID, HostCode: info.HostCode,
 		AccountPublicKey:  append([]byte(nil), accountPublicKey...),
 		AccountPrivateKey: append(ed25519.PrivateKey(nil), accountKey...),
@@ -625,13 +632,23 @@ func (c *Client) ChangePassword(ctx context.Context, sessionToken, accountID, ne
 // RotateRecovery creates and installs a new recovery credential. The caller
 // must persist the returned file; the old file stops working immediately.
 func (c *Client) RotateRecovery(ctx context.Context, sessionToken, accountID string, masterKey []byte) (*RecoveryCredential, []byte, error) {
+	return c.RotateRecoveryAt(ctx, sessionToken, accountID, masterKey, c.hostURL)
+}
+
+// RotateRecoveryAt installs a new recovery credential whose recovery file
+// names hostURL. Browsers pass their identity-pinned origin because they have
+// no certificate pin to embed.
+func (c *Client) RotateRecoveryAt(ctx context.Context, sessionToken, accountID string, masterKey []byte, hostURL string) (*RecoveryCredential, []byte, error) {
 	if sessionToken == "" {
 		return nil, nil, ErrSessionInvalid
 	}
 	if !digits(accountID, 14) || len(masterKey) != MasterKeySize {
 		return nil, nil, errors.New("recovery rotation is incomplete")
 	}
-	credential, recoveryKey, err := NewRecoveryCredential(accountID, c.hostURL, c.now().UTC())
+	if strings.TrimSpace(hostURL) == "" {
+		hostURL = c.hostURL
+	}
+	credential, recoveryKey, err := NewRecoveryCredential(accountID, hostURL, c.now().UTC())
 	if err != nil {
 		return nil, nil, err
 	}

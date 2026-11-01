@@ -41,8 +41,13 @@ const (
 	registerRequestLimit = 30
 	loginRequestLimit    = 30
 	recoverRequestLimit  = 6
-	emailRequestLimit    = 6
-	maxRecoveryMails     = 3
+	// A single reset legitimately calls several token-authorized endpoints:
+	// context, material (often twice while the user checks files), begin, and
+	// finish. Keep the mail-sending request endpoint tight, but allow the
+	// high-entropy token endpoints enough headroom for one reset flow.
+	recoverTokenLimit = 30
+	emailRequestLimit = 6
+	maxRecoveryMails  = 3
 )
 
 // Options configures an account host.
@@ -184,6 +189,9 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("POST "+LoginFinishPath, s.handleLoginFinish)
 	mux.HandleFunc("POST "+DeviceSessionPath, s.handleDeviceSession)
 	mux.HandleFunc("POST "+SyncPath, s.handleSync)
+	mux.HandleFunc("GET "+VaultPath, s.handleVaultGet)
+	mux.HandleFunc("PUT "+VaultPath, s.handleVaultPut)
+	mux.HandleFunc("POST "+RoomListPath, s.handleRoomList)
 	mux.HandleFunc("POST "+RoomCreatePath, s.handleRoomCreate)
 	mux.HandleFunc("POST "+RoomSyncPath, s.handleRoomSync)
 	mux.HandleFunc("POST "+RoomEventPath, s.handleRoomEvent)
@@ -674,6 +682,7 @@ func (s *Service) handleSync(w http.ResponseWriter, r *http.Request) {
 		KeyRotations: acct.KeyRotations, Added: summary.Added,
 		Updated: summary.Updated, Revoked: summary.Revoked,
 		Skipped: summary.Skipped, Warnings: summary.Warnings,
+		EmailVerified: acct.EmailVerified,
 	})
 }
 
@@ -960,7 +969,7 @@ func (s *Service) recoveryTargets(ctx context.Context, user string) []AccountRef
 }
 
 func (s *Service) handleRecoverContext(w http.ResponseWriter, r *http.Request) {
-	if s.limited(w, r, "recover", recoverRequestLimit) {
+	if s.limited(w, r, "recover-token", recoverTokenLimit) {
 		return
 	}
 	var request RecoverContextRequest
@@ -1004,7 +1013,7 @@ func (s *Service) handleRecoverContext(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleRecoverMaterial(w http.ResponseWriter, r *http.Request) {
-	if s.limited(w, r, "recover", recoverRequestLimit) {
+	if s.limited(w, r, "recover-token", recoverTokenLimit) {
 		return
 	}
 	var request RecoverMaterialRequest
@@ -1040,7 +1049,7 @@ func (s *Service) handleRecoverMaterial(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Service) handleRecoverRegisterBegin(w http.ResponseWriter, r *http.Request) {
-	if s.limited(w, r, "recover", recoverRequestLimit) {
+	if s.limited(w, r, "recover-token", recoverTokenLimit) {
 		return
 	}
 	var request RecoverRegisterBeginRequest
@@ -1074,7 +1083,7 @@ func (s *Service) handleRecoverRegisterBegin(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Service) handleRecoverFinish(w http.ResponseWriter, r *http.Request) {
-	if s.limited(w, r, "recover", recoverRequestLimit) {
+	if s.limited(w, r, "recover-token", recoverTokenLimit) {
 		return
 	}
 	var request RecoverFinishRequest

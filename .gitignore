@@ -64,3 +64,6 @@ out/
 
 # Built binary at repository root
 /toget
+
+# Generated Go wasm runtime
+web/site/public/wasm/

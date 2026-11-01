@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; " +
+	contentSecurityPolicy = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; " +
 		"img-src 'self' data:; font-src 'self'; connect-src 'self'; " +
 		"manifest-src 'self'; base-uri 'none'; form-action 'none'; " +
 		"frame-ancestors 'none'"
@@ -128,7 +128,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasPrefix(name, "/assets/"):
 		w.Header().Set("Cache-Control", assetCache)
-	case name == "/index.html":
+	case name == "/index.html" || strings.HasPrefix(name, "/wasm/"):
 		w.Header().Set("Cache-Control", "no-cache")
 	default:
 		w.Header().Set("Cache-Control", publicCache)
@@ -209,6 +209,8 @@ func contentType(name string) string {
 		return "image/webp"
 	case ".woff2":
 		return "font/woff2"
+	case ".wasm":
+		return "application/wasm"
 	case ".ico":
 		return "image/x-icon"
 	}

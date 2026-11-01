@@ -184,7 +184,7 @@ func (s *Service) handleRoomCreate(w http.ResponseWriter, r *http.Request) {
 		},
 		Device: HostedRoomDevice{
 			RoomID: request.RoomID, DeviceID: auth.record.ID, AccountID: auth.account.ID,
-			DisplayName: auth.record.Name, SigningPublicKey: append([]byte(nil), auth.publicKey...),
+			DisplayName: auth.account.Name, SigningPublicKey: append([]byte(nil), auth.publicKey...),
 			EncryptionPublicKey: append([]byte(nil), auth.encryption...),
 			History:             room.HistoryAll, FromSeq: 1, JoinedAt: now,
 		},
@@ -459,7 +459,7 @@ func (s *Service) handleRoomJoin(w http.ResponseWriter, r *http.Request) {
 	hostedRoom, member, device, keys, events, hasMore, err := s.store.RedeemHostedRoomInvite(r.Context(), invite,
 		HostedRoomJoin{
 			RoomID: request.RoomID, AccountID: auth.account.ID, DeviceID: auth.record.ID,
-			DisplayName: auth.record.Name, SigningPublicKey: append([]byte(nil), auth.publicKey...),
+			DisplayName: auth.account.Name, SigningPublicKey: append([]byte(nil), auth.publicKey...),
 			EncryptionPublicKey: append([]byte(nil), auth.encryption...),
 			History:             invite.History, Now: now,
 		}, s.roomMemberLimit, s.roomDeviceLimit)
@@ -677,42 +677,66 @@ func (s *Service) handleRoomDevices(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_device", "invalid room device")
 		return
 	}
-	hostedRoom, member, _, err := s.store.HostedRoomAccess(r.Context(), request.RoomID, auth.account.ID, auth.record.ID)
+	hostedRoom, err := s.store.GetHostedRoom(r.Context(), request.RoomID)
 	if err != nil {
 		s.roomStoreError(w, r, err)
+		return
+	}
+	member, err := s.store.GetHostedRoomMember(r.Context(), request.RoomID, auth.account.ID)
+	if err != nil || member.Status != "active" {
+		writeError(w, http.StatusForbidden, "forbidden", "room access is not allowed")
 		return
 	}
 	if hostedRoom.RotationRequired {
 		writeError(w, http.StatusConflict, "rotation_required", "rotate the room epoch before adding a device")
 		return
 	}
-	keys, err := accountKeys(auth.account)
-	if err != nil {
-		s.internal(w, r, err)
-		return
-	}
-	var cert *identity.DeviceCertificate
-	for _, key := range keys {
-		candidate, verifyErr := identity.VerifyDeviceCertificate(request.Device.Certificate, key)
-		if verifyErr == nil && candidate.AccountID == auth.account.ID &&
-			candidate.DeviceID == request.Device.DeviceID {
-			cert = candidate
-			break
+	var signingKey ed25519.PublicKey
+	var encryptionKey []byte
+	selfRegistration := request.Device.DeviceID == auth.record.ID
+	if selfRegistration {
+		// A newly signed-in account device may add itself once its account has
+		// an active membership. The signed account-level device certificate is
+		// the authorization; it is not trusted merely because it is new.
+		if !roomRefMatches(request.Device, auth) {
+			writeError(w, http.StatusForbidden, "forbidden", "device identity does not match the signed request")
+			return
 		}
-	}
-	if cert == nil {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "device certificate is invalid")
-		return
-	}
-	signingKey, err := identity.DecodePublicKey(cert.DevicePubKey)
-	if err != nil || !bytes.Equal(signingKey, request.Device.SigningPublicKey) {
-		writeError(w, http.StatusBadRequest, "invalid_device", "device signing key does not match its certificate")
-		return
-	}
-	encryptionKey, err := identity.DecodeEncryptionPublicKey(cert.EncryptionPublicKey)
-	if err != nil || !bytes.Equal(encryptionKey, request.Device.EncryptionPublicKey) {
-		writeError(w, http.StatusBadRequest, "invalid_device", "device encryption key does not match its certificate")
-		return
+		signingKey = auth.publicKey
+		encryptionKey = auth.encryption
+	} else {
+		if _, _, _, err := s.store.HostedRoomAccess(r.Context(), request.RoomID, auth.account.ID, auth.record.ID); err != nil {
+			s.roomStoreError(w, r, err)
+			return
+		}
+		keys, err := accountKeys(auth.account)
+		if err != nil {
+			s.internal(w, r, err)
+			return
+		}
+		var cert *identity.DeviceCertificate
+		for _, key := range keys {
+			candidate, verifyErr := identity.VerifyDeviceCertificate(request.Device.Certificate, key)
+			if verifyErr == nil && candidate.AccountID == auth.account.ID &&
+				candidate.DeviceID == request.Device.DeviceID {
+				cert = candidate
+				break
+			}
+		}
+		if cert == nil {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "device certificate is invalid")
+			return
+		}
+		signingKey, err = identity.DecodePublicKey(cert.DevicePubKey)
+		if err != nil || !bytes.Equal(signingKey, request.Device.SigningPublicKey) {
+			writeError(w, http.StatusBadRequest, "invalid_device", "device signing key does not match its certificate")
+			return
+		}
+		encryptionKey, err = identity.DecodeEncryptionPublicKey(cert.EncryptionPublicKey)
+		if err != nil || !bytes.Equal(encryptionKey, request.Device.EncryptionPublicKey) {
+			writeError(w, http.StatusBadRequest, "invalid_device", "device encryption key does not match its certificate")
+			return
+		}
 	}
 	existing, err := s.store.GetHostedRoomDevice(r.Context(), request.RoomID, request.Device.DeviceID)
 	if err == nil {
@@ -729,7 +753,7 @@ func (s *Service) handleRoomDevices(w http.ResponseWriter, r *http.Request) {
 	now := s.now().UTC().Truncate(time.Millisecond)
 	updated, err := s.store.RegisterHostedRoomDevice(r.Context(), request.RoomID, HostedRoomDevice{
 		RoomID: request.RoomID, DeviceID: request.Device.DeviceID, AccountID: auth.account.ID,
-		DisplayName: auth.record.Name, SigningPublicKey: append([]byte(nil), signingKey...),
+		DisplayName: auth.account.Name, SigningPublicKey: append([]byte(nil), signingKey...),
 		EncryptionPublicKey: append([]byte(nil), encryptionKey...), JoinedAt: now,
 	}, s.roomDeviceLimit)
 	if err != nil {

@@ -242,7 +242,7 @@ toget/
 
 - `web/app` is the local UI SPA. It talks only through the local API and the event stream.
 - `web/reset` is an embedded static page plus a Go/WASM module. It must not load third-party scripts or telemetry; it reads the recovery credential locally with the File API and performs OPAQUE and XChaCha20-Poly1305 in WASM, not WebCrypto.
-- `web/site` is the public web client embedded by `toget-official` at `/`. It is a static React SPA served with an SPA fallback and its own CSP/cache policy; `/host/*` and `/reset/*` stay on the account host handler. The current preview uses local sample data and is not wired to account or room APIs yet.
+- `web/site` is the public web client embedded by `toget-official` at `/`. It is a static React SPA served with an SPA fallback and its own CSP/cache policy; `/host/*` and `/reset/*` stay on the account host handler. A Go/WASM client in `web/site/wasm` calls `/host/v1` for accounts, rooms, invites, history, and recovery; the encrypted account vault is kept in IndexedDB.
 - `web/packages/ui` is the design system; feature-specific components stay in the app.
 - `web/packages/api-client` and `web/packages/proto` are generated.
 

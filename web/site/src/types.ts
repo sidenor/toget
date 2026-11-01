@@ -6,52 +6,118 @@ export interface AvatarSpec {
   agent?: boolean;
 }
 
-export interface MessageFile {
-  name: string;
-  size: string;
-  kind?: string;
-}
+export type Theme = "light" | "dark" | "system";
 
-export interface Message {
-  id: string;
-  from: string;
-  text?: string;
-  kind?: "text" | "file" | "event";
-  file?: MessageFile;
-  at: string;
-  read?: boolean;
-  reactions?: Record<string, number>;
-}
+export type Tab = "chats" | "members" | "me";
 
-export interface Chat {
-  id: string;
-  name: string;
-  avatar: AvatarSpec;
-  kind: "group" | "dm" | "agent";
-  members: string[];
-  pinned?: boolean;
-  unread: number;
-  messages: Message[];
-  createdAt?: string;
-}
-
-export interface Person {
-  id: string;
-  name: string;
-  handle: string;
-  avatar: AvatarSpec;
-  status: string;
-  agent?: boolean;
-}
+export type ViewMode = "chats" | "member";
 
 export interface Profile {
-  id: string;
+  account_id: string;
   name: string;
-  handle: string;
-  avatar: AvatarSpec;
-  status: string;
+  host_id: string;
+  device_id: string;
+  device_name: string;
+  email_verified: boolean;
+  created_at?: string;
+  room_count: number;
+  vault_pending: boolean;
 }
 
-export type Tab = "chats" | "contacts" | "me";
+export interface RoomSummary {
+  id: string;
+  name: string;
+  topic?: string;
+  owner_account_id: string;
+  epoch: number;
+  member_count: number;
+  unread: number;
+  history?: string;
+  joined_at?: string;
+  read_seq?: number;
+  last_seq?: number;
+  last_text?: string;
+  last_author?: string;
+  last_at?: string | null;
+}
 
-export type Theme = "light" | "dark" | "system";
+export interface MessageState {
+  id: string;
+  seq: number;
+  event_type: string;
+  author_id: string;
+  author_device?: string;
+  author_name?: string;
+  text: string;
+  kind: "text" | "system" | "locked";
+  at: string;
+  epoch?: number;
+}
+
+export interface MemberState {
+  account_id: string;
+  display_name: string;
+  role: string;
+  status: string;
+  encryption_public_key?: string;
+  joined_at?: string;
+  left_at?: string | null;
+}
+
+export interface DeviceInfo {
+  device_id: string;
+  account_id: string;
+  signing_public_key?: string;
+  encryption_public_key?: string;
+  joined_at?: string;
+  revoked_at?: string | null;
+}
+
+export interface RoomView {
+  summary: RoomSummary;
+  messages: MessageState[];
+  members: MemberState[];
+  devices: DeviceInfo[];
+  epoch: number;
+  my_role?: string;
+  can_rename: boolean;
+  can_invite: boolean;
+  rotation_required: boolean;
+  locked_count: number;
+  vault_pending: boolean;
+}
+
+export interface RecoveryFile {
+  filename: string;
+  content: string;
+}
+
+export interface AuthResult {
+  profile: Profile;
+  email_sent: boolean;
+  recovery?: RecoveryFile;
+  vault_loaded: boolean;
+  vault_error?: string;
+}
+
+export interface RefreshResult {
+  rooms: RoomSummary[];
+  warnings?: string[];
+}
+
+export interface InviteResult {
+  code: string;
+  history: string;
+  expires_at: string;
+}
+
+export interface ApiError {
+  code: string;
+  message: string;
+}
+
+export interface StoredMember {
+  accountID: string;
+  name: string;
+  rooms: { id: string; name: string; role: string }[];
+}
