@@ -1110,11 +1110,13 @@ textarea {
   position: relative;
 }
 
-.msg-row:hover .reaction-picker,
-.reaction-picker:focus-within {
-  visibility: visible;
-  opacity: 1;
-  transform: translateY(0) scale(1);
+@media (hover: hover) and (pointer: fine) {
+  .msg-row:hover .reaction-picker,
+  .reaction-picker:focus-within {
+    visibility: visible;
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .reaction-picker button {
