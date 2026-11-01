@@ -152,6 +152,10 @@ type Config struct {
 	AgentTimeoutSeconds int `json:"agent_timeout_seconds,omitempty"`
 	// AgentHistoryLimit is the number of recent events handed to an Agent.
 	AgentHistoryLimit int `json:"agent_history_limit,omitempty"`
+	// BridgeOrigins lists website origins allowed to pair with this node. The
+	// official site is the default; loopback development origins can be added
+	// through the TOGET_BRIDGE_ORIGINS environment variable.
+	BridgeOrigins []string `json:"bridge_origins,omitempty"`
 	// Update configures signed release checks and managed installation.
 	Update UpdateConfig `json:"update,omitempty"`
 }
@@ -277,6 +281,17 @@ func (c *Config) applyDefaults() {
 	if c.AgentRuntimes == nil {
 		c.AgentRuntimes = map[string]AgentRuntimeConfig{
 			"claude-code": {Command: "claude"},
+		}
+	}
+	if c.BridgeOrigins == nil {
+		c.BridgeOrigins = []string{"https://toget.vu"}
+	}
+	if raw := strings.TrimSpace(os.Getenv("TOGET_BRIDGE_ORIGINS")); raw != "" {
+		c.BridgeOrigins = nil
+		for _, origin := range strings.Split(raw, ",") {
+			if origin = strings.TrimSpace(origin); origin != "" {
+				c.BridgeOrigins = append(c.BridgeOrigins, origin)
+			}
 		}
 	}
 	if c.Update.Channel == "" {

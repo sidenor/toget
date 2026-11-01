@@ -3541,3 +3541,254 @@ select {
     width: 100%;
   }
 }
+
+/* This computer */
+
+.machine-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+  margin-bottom: 22px;
+}
+
+.machine-card {
+  display: grid;
+  gap: 5px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+
+.machine-card strong {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+
+.machine-card .muted {
+  font-size: 11.5px;
+}
+
+.machine-address-card strong {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
+@media (min-width: 1080px) {
+  .machine-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .machine-address-card {
+    grid-column: span 2;
+  }
+}
+
+.link-button {
+  justify-self: start;
+  padding: 0;
+  margin-top: 2px;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}
+
+.machine-panel {
+  display: grid;
+  gap: 14px;
+  padding: 20px;
+  margin-bottom: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--panel) 78%, transparent);
+}
+
+.machine-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+}
+
+.machine-panel-head h2 {
+  font-size: 16px;
+  margin-bottom: 4px;
+}
+
+.machine-panel-head .muted {
+  font-size: 12.5px;
+  line-height: 1.5;
+  max-width: 62ch;
+}
+
+.machine-subhead {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.machine-code {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 16px 20px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+}
+
+.machine-code .pair-code {
+  font-size: clamp(26px, 4vw, 34px);
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  color: var(--accent-ink);
+}
+
+.machine-browser {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+
+.machine-browser strong {
+  font-size: 13.5px;
+}
+
+.machine-browser .fine-print {
+  margin-top: 2px;
+}
+
+.machine-shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip-button {
+  padding: 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chip-button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.chip-button.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.machine-path {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.machine-path code {
+  padding: 5px 9px;
+  border-radius: 8px;
+  background: var(--panel-soft);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.machine-path .mini {
+  flex-shrink: 0;
+}
+
+.machine-directory {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(165px, 1fr));
+  gap: 8px;
+}
+
+.machine-folder {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.machine-folder:hover {
+  border-color: var(--accent);
+}
+
+.machine-folder-icon {
+  color: var(--accent);
+  font-size: 15px;
+  line-height: 1;
+}
+
+.machine-folder span:last-child {
+  display: grid;
+  min-width: 0;
+}
+
+.machine-folder strong {
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.machine-folder small {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+@media (max-width: 720px) {
+  .machine-panel-head {
+    flex-direction: column;
+  }
+
+  .machine-code {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .machine-browser {
+    align-items: flex-start;
+  }
+
+  .machine-directory {
+    grid-template-columns: 1fr 1fr;
+  }
+}

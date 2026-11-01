@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AuthScreen } from "./Auth";
 import type { AuthValues } from "./Auth";
+import { AgentsPage } from "./AgentsPage";
 import { ChatView } from "./ChatView";
 import { MePage } from "./MePage";
 import {
@@ -1271,6 +1272,7 @@ export default function App() {
 
   const showChat = tab === "chats";
   const showMembers = tab === "members";
+  const showAgents = tab === "agents";
   const hideMobileNav =
     isMobile &&
     ((showChat && !!roomView) || (showMembers && !!selectedMember));
@@ -1362,6 +1364,8 @@ export default function App() {
         />
       );
     }
+  } else if (showAgents) {
+    content = <AgentsPage isMobile={isMobile} onToast={setToast} />;
   } else {
     content = (
       <MePage
@@ -1632,6 +1636,14 @@ function Sidebar({
         >
           成员
         </button>
+        <button
+          type="button"
+          className={tab === "agents" ? "active" : ""}
+          aria-pressed={tab === "agents"}
+          onClick={() => onTab("agents")}
+        >
+          Agent
+        </button>
       </div>
 
       {tab === "members" ? (
@@ -1642,6 +1654,14 @@ function Sidebar({
           onSelect={onSelectMember}
           compact
         />
+      ) : tab === "agents" ? (
+        <div className="agent-side">
+          <span className="agent-side-mark">
+            <Icon name="sparkle" size={18} />
+          </span>
+          <strong>本机 Agent</strong>
+          <p>Agent 跑在你自己的电脑上。连接这台电脑后，就能在这里管理运行时、权限和工作目录。</p>
+        </div>
       ) : (
         <RoomList
           rooms={rooms}
@@ -1887,6 +1907,7 @@ function TabBar({
   const items: { id: Tab; label: string; icon: IconName }[] = [
     { id: "chats", label: "消息", icon: "chats" },
     { id: "members", label: "成员", icon: "contacts" },
+    { id: "agents", label: "Agent", icon: "sparkle" },
     { id: "me", label: "我", icon: "person" },
   ];
   return (

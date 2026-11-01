@@ -118,6 +118,43 @@ func (s *Service) Register(ctx context.Context, accountID, name, runtime string,
 	return a, nil
 }
 
+// UpdateSettings changes the user-editable parts of an Agent. It does not
+// affect presence, room membership, or existing sessions.
+func (s *Service) UpdateSettings(ctx context.Context, agentID, accountID, name, runtime string, permissions json.RawMessage) (*Agent, error) {
+	name = strings.TrimSpace(name)
+	runtime = strings.TrimSpace(runtime)
+	if name == "" || len(name) > MaxNameLength {
+		return nil, ErrInvalidName
+	}
+	if runtime == "" || len(runtime) > 64 {
+		return nil, ErrInvalidRuntime
+	}
+	if len(permissions) == 0 {
+		permissions = json.RawMessage(`{}`)
+	}
+	var probe any
+	if err := json.Unmarshal(permissions, &probe); err != nil {
+		return nil, fmt.Errorf("permissions must be JSON: %w", err)
+	}
+	a, err := s.store.GetAgent(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if a.AccountID != accountID {
+		return nil, ErrNotFound
+	}
+	if a.RevokedAt != nil {
+		return nil, ErrRevoked
+	}
+	a.Name = name
+	a.Runtime = runtime
+	a.Permissions = append(json.RawMessage(nil), permissions...)
+	if err := s.store.UpdateAgent(ctx, a); err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
 // Get returns one Agent.
 func (s *Service) Get(ctx context.Context, id string) (*Agent, error) {
 	return s.store.GetAgent(ctx, id)

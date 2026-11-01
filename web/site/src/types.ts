@@ -8,7 +8,7 @@ export interface AvatarSpec {
 
 export type Theme = "light" | "dark" | "system";
 
-export type Tab = "chats" | "members" | "me";
+export type Tab = "chats" | "members" | "agents" | "me";
 
 export type ViewMode = "chats" | "member";
 

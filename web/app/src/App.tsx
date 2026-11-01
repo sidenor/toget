@@ -26,15 +26,16 @@ import {
   AuditView,
   CommonProps,
   DevicesView,
+  MachineView,
   PoliciesView,
   SearchView,
   SettingsView,
   UpdateBanner,
 } from "./views";
 
-type View = "chat" | "approvals" | "agents" | "policies" | "devices" | "audit" | "search" | "settings";
+type View = "chat" | "approvals" | "agents" | "machine" | "policies" | "devices" | "audit" | "search" | "settings";
 
-const views: View[] = ["chat", "approvals", "agents", "policies", "devices", "audit", "search", "settings"];
+const views: View[] = ["chat", "approvals", "agents", "machine", "policies", "devices", "audit", "search", "settings"];
 
 function initialView(): View {
   const requested = new URLSearchParams(window.location.search).get("view");
@@ -430,6 +431,7 @@ export default function App() {
             badge={status.pending_approvals || undefined}
           />
           <NavButton active={view === "agents"} onClick={() => setView("agents")} glyph="✦" label={t("nav.agents")} />
+          <NavButton active={view === "machine"} onClick={() => setView("machine")} glyph="⌂" label={t("nav.machine")} />
           <NavButton active={view === "policies"} onClick={() => setView("policies")} glyph="⚖" label={t("nav.policies")} />
           <NavButton active={view === "devices"} onClick={() => setView("devices")} glyph="▤" label={t("nav.devices")} />
           <NavButton active={view === "audit"} onClick={() => setView("audit")} glyph="⛓" label={t("nav.audit")} />
@@ -532,6 +534,7 @@ export default function App() {
           ))}
         {view === "approvals" && <ApprovalsView {...common} />}
         {view === "agents" && <AgentsView {...common} />}
+        {view === "machine" && <MachineView {...common} onOpenAgents={() => setView("agents")} />}
         {view === "policies" && <PoliciesView {...common} />}
         {view === "devices" && <DevicesView {...common} />}
         {view === "audit" && <AuditView {...common} />}
@@ -572,6 +575,8 @@ function viewTitle(view: View, t: (key: string) => string): string {
       return t("nav.approvals");
     case "agents":
       return t("nav.agents");
+    case "machine":
+      return t("nav.machine");
     case "policies":
       return t("nav.policies");
     case "devices":

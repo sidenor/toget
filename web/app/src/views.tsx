@@ -11,6 +11,9 @@ import type {
   AuditResponse,
   BackupArchive,
   BackupManifest,
+  BridgeBrowser,
+  BridgeDirectory,
+  BridgeMachine,
   CardView,
   Device,
   DiscoveredPeer,
@@ -193,13 +196,19 @@ export function AgentsView({ t, rooms, notify, onError, onRoomsChanged, openRoom
   const [runtime, setRuntime] = useState("claude-code");
   const [perms, setPerms] = useState({ write: false, shell: false, external: false });
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState<Agent | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editRuntime, setEditRuntime] = useState("claude-code");
+  const [editPerms, setEditPerms] = useState({ write: false, shell: false, external: false });
+  const [editBusy, setEditBusy] = useState(false);
 
   async function load() {
     try {
       const result = await api.agents();
-      setAgents(result.agents);
+      const list = result.agents ?? [];
+      setAgents(list);
       const pairs = await Promise.all(
-        result.agents.map(async (agent) => {
+        list.map(async (agent) => {
           const [refs, state] = await Promise.all([api.agentRooms(agent.id), api.agentSessions(agent.id)]);
           return [agent.id, refs.rooms.map((room) => room.room_id), state.sessions] as const;
         }),
@@ -234,6 +243,34 @@ export function AgentsView({ t, rooms, notify, onError, onRoomsChanged, openRoom
       onError(err);
     } finally {
       setBusy(false);
+    }
+  }
+
+  function openEditor(agent: Agent) {
+    const permissions = (agent.permissions ?? {}) as Record<string, unknown>;
+    setEditing(agent);
+    setEditName(agent.name);
+    setEditRuntime(agent.runtime);
+    setEditPerms({
+      write: Boolean(permissions.write),
+      shell: Boolean(permissions.shell),
+      external: Boolean(permissions.external),
+    });
+  }
+
+  async function saveSettings(event: FormEvent) {
+    event.preventDefault();
+    if (!editing || !editName.trim()) return;
+    setEditBusy(true);
+    try {
+      await api.updateAgentSettings(editing.id, editName.trim(), editRuntime, editPerms);
+      setEditing(null);
+      notify(t("agents.settingsSaved"));
+      await load();
+    } catch (err) {
+      onError(err);
+    } finally {
+      setEditBusy(false);
     }
   }
 
@@ -411,6 +448,9 @@ export function AgentsView({ t, rooms, notify, onError, onRoomsChanged, openRoom
                     <option value="waiting_approval">{t("agents.waiting")}</option>
                     <option value="offline">{t("agents.offline")}</option>
                   </select>
+                  <button className="button ghost small" onClick={() => openEditor(agent)}>
+                    {t("agents.edit")}
+                  </button>
                   <button className="button ghost small danger" onClick={() => void revoke(agent)}>
                     {t("agents.revoke")}
                   </button>
@@ -420,6 +460,46 @@ export function AgentsView({ t, rooms, notify, onError, onRoomsChanged, openRoom
           );
         })}
       </div>
+      {editing && (
+        <Modal title={t("agents.edit")} onClose={() => setEditing(null)}>
+          <form onSubmit={saveSettings} className="form-stack">
+            <label>
+              {t("agents.name")}
+              <input value={editName} onChange={(event) => setEditName(event.target.value)} maxLength={64} autoFocus required />
+            </label>
+            <label>
+              {t("agents.runtime")}
+              <select value={editRuntime} onChange={(event) => setEditRuntime(event.target.value)}>
+                <option value="claude-code">Claude Code</option>
+                <option value="codex">Codex</option>
+                <option value="custom">Custom</option>
+              </select>
+            </label>
+            <fieldset className="permissions">
+              <legend>{t("agents.permissions")}</legend>
+              {(["write", "shell", "external"] as const).map((key) => (
+                <label className="check" key={key}>
+                  <input
+                    type="checkbox"
+                    checked={editPerms[key]}
+                    onChange={(event) => setEditPerms((current) => ({ ...current, [key]: event.target.checked }))}
+                  />
+                  {t(key === "write" ? "agents.write" : key === "shell" ? "agents.shell" : "agents.external")}
+                </label>
+              ))}
+            </fieldset>
+            <p className="fine-print muted">{t("agents.editHint")}</p>
+            <div className="form-actions">
+              <button type="button" className="button ghost" onClick={() => setEditing(null)}>
+                {t("common.cancel")}
+              </button>
+              <button type="submit" className="button primary" disabled={editBusy || !editName.trim()}>
+                {editBusy ? t("common.loading") : t("common.save")}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
       {showAdd && (
         <Modal title={t("agents.add")} onClose={() => setShowAdd(false)}>
           <form onSubmit={create} className="form-stack">
@@ -1231,9 +1311,9 @@ export function PoliciesView({ t, rooms, notify, onError }: CommonProps) {
     Promise.all([api.roomAgents(roomID), api.policies(roomID)])
       .then(([agentResult, policyResult]) => {
         if (cancelled) return;
-        setAgents(agentResult.agents);
-        setPolicies(policyResult.policies);
-        setAgentID((current) => (current && agentResult.agents.some((agent) => agent.id === current) ? current : ""));
+        setAgents(agentResult.agents ?? []);
+        setPolicies(policyResult.policies ?? []);
+        setAgentID((current) => (current && (agentResult.agents ?? []).some((agent) => agent.id === current) ? current : ""));
       })
       .catch((err) => {
         if (!cancelled) onError(err);
@@ -2966,5 +3046,231 @@ export function SearchView({ t, onError, openRoom }: CommonProps) {
         ))}
       </div>
     </section>
+  );
+}
+
+type MachineProps = Pick<CommonProps, "t" | "notify" | "onError"> & {
+  onOpenAgents: () => void;
+};
+
+export function MachineView({ t, notify, onError, onOpenAgents }: MachineProps) {
+  const [machine, setMachine] = useState<BridgeMachine | null>(null);
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [directory, setDirectory] = useState<BridgeDirectory | null>(null);
+  const [browsers, setBrowsers] = useState<BridgeBrowser[]>([]);
+  const [code, setCode] = useState<{ code: string; expires_at: string } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [dirLoading, setDirLoading] = useState(false);
+  const [busy, setBusy] = useState("");
+
+  async function loadDirectory(path?: string) {
+    setDirLoading(true);
+    try {
+      setDirectory(await api.machineDirectory(path));
+    } catch (err) {
+      onError(err);
+    } finally {
+      setDirLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([api.machine(), api.agents(), api.bridgeBrowsers()])
+      .then(([machineResult, agentResult, browserResult]) => {
+        if (cancelled) return;
+        setMachine(machineResult);
+        setAgents(agentResult.agents ?? []);
+        setBrowsers(browserResult.browsers ?? []);
+      })
+      .catch((err) => {
+        if (!cancelled) onError(err);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    void loadDirectory();
+    return () => {
+      cancelled = true;
+    };
+    // The machine page loads once on open; directory navigation refreshes itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function createCode() {
+    setBusy("code");
+    try {
+      setCode(await api.bridgeCode());
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function revokeBrowser(id: string) {
+    if (!window.confirm(t("machine.revokeConfirm"))) return;
+    setBusy(id);
+    try {
+      await api.bridgeRevokeBrowser(id);
+      setBrowsers((current) => current.filter((browser) => browser.id !== id));
+      notify(t("machine.revoked"));
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  const homeLabel = directory ? directory.relative || "~" : "~";
+
+  return (
+    <div className="view machine-view">
+      <header className="view-header">
+        <div>
+          <p className="eyebrow">{t("nav.machine")}</p>
+          <h1>{machine?.name || t("nav.machine")}</h1>
+          <p className="muted">{t("machine.subtitle")}</p>
+        </div>
+        <button className="button ghost" onClick={() => void loadDirectory(directory?.path)} disabled={dirLoading}>
+          {dirLoading ? t("common.loading") : t("machine.refresh")}
+        </button>
+      </header>
+
+      {loading && <Spinner label={t("common.loading")} />}
+
+      {machine && (
+        <section className="machine-grid">
+          <article className="machine-card">
+            <span className="field-label">{t("machine.system")}</span>
+            <strong>{machine.os} · {machine.arch}</strong>
+            <span className="muted">Toget {machine.version}</span>
+          </article>
+          <article className="machine-card machine-address-card">
+            <span className="field-label">{t("machine.localAddress")}</span>
+            <strong>{machine.local_url || machine.listen}</strong>
+            <span className="muted">{machine.locked ? t("machine.locked") : t("machine.unlocked")}</span>
+          </article>
+          <article className="machine-card">
+            <span className="field-label">{t("machine.account")}</span>
+            <strong>{machine.account?.name || t("machine.noAccount")}</strong>
+            <span className="muted">{machine.account ? formatAccountID(machine.account.id) : "—"}</span>
+          </article>
+          <article className="machine-card">
+            <span className="field-label">{t("nav.agents")}</span>
+            <strong>{machine.agents}</strong>
+            <button className="link-button" onClick={onOpenAgents}>{t("machine.manageAgents")} →</button>
+          </article>
+        </section>
+      )}
+
+      <section className="machine-panel">
+        <div className="machine-panel-head">
+          <div>
+            <h2>{t("machine.webTitle")}</h2>
+            <p className="muted">{t("machine.webText")}</p>
+          </div>
+          <button className="button primary" onClick={() => void createCode()} disabled={busy === "code"}>
+            {busy === "code" ? t("common.loading") : t("machine.createCode")}
+          </button>
+        </div>
+        {code && (
+          <div className="machine-code">
+            <code className="pair-code">{code.code}</code>
+            <div>
+              <CopyButton value={code.code} labels={{ copy: t("common.copy"), copied: t("common.copied") }} />
+              <p className="fine-print">{t("machine.codeExpires", { time: new Date(code.expires_at).toLocaleTimeString() })}</p>
+            </div>
+          </div>
+        )}
+        <p className="fine-print muted">{t("machine.codeHint")}</p>
+        <h3 className="machine-subhead">{t("machine.browsers")}</h3>
+        {browsers.length === 0 && <p className="empty-hint">{t("machine.noBrowsers")}</p>}
+        {browsers.map((browser) => (
+          <article className="machine-browser" key={browser.id}>
+            <div>
+              <strong>{browser.origin.replace(/^https?:\/\//, "")}</strong>
+              <p className="fine-print">
+                {t("machine.pairedAt", { time: new Date(browser.created_at).toLocaleString() })}
+                {browser.last_used_at ? ` · ${t("machine.lastUsed", { time: new Date(browser.last_used_at).toLocaleString() })}` : ""}
+              </p>
+            </div>
+            <button className="button ghost danger" onClick={() => void revokeBrowser(browser.id)} disabled={busy === browser.id}>
+              {t("machine.revoke")}
+            </button>
+          </article>
+        ))}
+      </section>
+
+      <section className="machine-panel">
+        <div className="machine-panel-head">
+          <div>
+            <h2>{t("machine.directories")}</h2>
+            <p className="muted">{t("machine.directoriesText")}</p>
+          </div>
+        </div>
+        <nav className="machine-shortcuts" aria-label={t("machine.directories")}>
+          <button
+            className={`chip-button ${directory?.path === directory?.home ? "active" : ""}`}
+            onClick={() => void loadDirectory(directory?.home)}
+          >
+            ~
+          </button>
+          {directory?.roots.map((root) => (
+            <button
+              className={`chip-button ${directory?.path === root.path ? "active" : ""}`}
+              key={root.path}
+              onClick={() => void loadDirectory(root.path)}
+            >
+              {root.name}
+            </button>
+          ))}
+        </nav>
+        {(directory?.parent || directory?.relative) && (
+          <div className="machine-path">
+            {directory?.parent && (
+              <button className="mini" onClick={() => void loadDirectory(directory.parent)} aria-label={t("machine.up")}>↑</button>
+            )}
+            <code>{homeLabel}</code>
+          </div>
+        )}
+        {dirLoading ? (
+          <Spinner label={t("common.loading")} />
+        ) : (
+          <div className="machine-directory">
+            {directory?.entries.map((entry) => (
+              <button className="machine-folder" key={entry.path} onClick={() => void loadDirectory(entry.path)}>
+                <span className="machine-folder-icon">▰</span>
+                <span>
+                  <strong>{entry.name}</strong>
+                  {entry.modified && <small>{new Date(entry.modified).toLocaleDateString()}</small>}
+                </span>
+              </button>
+            ))}
+            {directory && directory.entries.length === 0 && <p className="empty-hint">{t("machine.emptyDirectory")}</p>}
+          </div>
+        )}
+      </section>
+
+      <section className="machine-panel">
+        <div className="machine-panel-head">
+          <div>
+            <h2>{t("machine.agentTitle")}</h2>
+            <p className="muted">{t("machine.agentText")}</p>
+          </div>
+          <button className="button ghost" onClick={onOpenAgents}>{t("machine.manageAgents")}</button>
+        </div>
+        {agents.length === 0 && <p className="empty-hint">{t("agents.none")}</p>}
+        {agents.map((agent) => (
+          <article className="machine-browser" key={agent.id}>
+            <div>
+              <strong>{agent.name}</strong>
+              <p className="fine-print">{agent.runtime} · {statusLabel(t, agent.status)}</p>
+            </div>
+            <span className={`chip ${agent.status === "running" ? "accent" : ""}`}>{statusLabel(t, agent.status)}</span>
+          </article>
+        ))}
+      </section>
+    </div>
   );
 }

@@ -24,6 +24,9 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 		writeAgentError(w, err)
 		return
 	}
+	if agents == nil {
+		agents = []agent.Agent{}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"agents": agents})
 }
 
@@ -598,4 +601,31 @@ func (s *Server) handleCompleteTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"receipt": receipt, "event": event})
+}
+
+type updateAgentSettingsRequest struct {
+	Name        string          `json:"name"`
+	Runtime     string          `json:"runtime"`
+	Permissions json.RawMessage `json:"permissions"`
+}
+
+// handleUpdateAgentSettings edits the user-visible Agent configuration. Status
+// and room membership are changed through their own endpoints.
+func (s *Server) handleUpdateAgentSettings(w http.ResponseWriter, r *http.Request) {
+	snapshot, err := s.accounts.Get(r.Context())
+	if err != nil {
+		writeAccountError(w, err)
+		return
+	}
+	var req updateAgentSettingsRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	updated, err := s.agents.UpdateSettings(r.Context(), r.PathValue("id"), snapshot.Account.ID, req.Name, req.Runtime, req.Permissions)
+	if err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agent": updated})
 }

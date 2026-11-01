@@ -1,9 +1,9 @@
 # Deployment
 
-> Status: the self-hosted node path and the official account host are
-> implemented. Packaged installers and the container image described below are
-> still planned; the binary, service installation, and update workflow are
-> usable today.
+> Status: the self-hosted node path, the official account host, and
+> downloadable installers are implemented. The container image described below
+> is still planned; the binary, installers, service installation, and update
+> workflow are usable today.
 >
 > **Implemented today:** `toget serve` provides the local account, vault,
 > SQLite log, loopback API/UI, and a same-LAN HTTPS node. `toget service`
@@ -17,9 +17,9 @@
 > The daemon checks for updates on a schedule, the web UI shows an update banner
 > and settings, and `toget update` checks, stages, finishes, and rolls back
 > managed releases. Optional gateway port mapping (PCP, NAT-PMP, UPnP) is
-> implemented; UDP hole punching and packaged
-> installers are not implemented yet. The official room home is implemented on
-> the same service and stores its state in the same host database.
+> implemented; UDP hole punching and container images are not implemented yet.
+> The official room home is implemented on the same service and stores its
+> state in the same host database.
 
 Toget is deployed as a **node**: one `toget` binary that can act as a daemon, a self-hosted account host, a relay, or the local CLI. Most users run it on one machine and never think about the rest.
 
@@ -127,6 +127,41 @@ volumes:
   toget-data:
 ```
 
+### Downloadable installers
+
+`scripts/build-release.sh` builds the archives served by the install scripts:
+
+```bash
+scripts/build-release.sh --out /srv/toget/downloads --version 0.1.0
+```
+
+It rebuilds both web UIs (or reuses them with `--skip-web`), cross-compiles
+linux/darwin/windows on amd64 and arm64 with `CGO_ENABLED=0`, and writes one
+archive, one `.sha256` sidecar, and a `latest` pointer. Serve the directory
+from the official origin:
+
+```bash
+toget-official --home /var/lib/toget-official \
+  --host-public-url https://toget.vu \
+  --host-site-dir web/site/dist \
+  --host-download-dir /srv/toget/downloads \
+  ...
+```
+
+Users then install with:
+
+```bash
+curl -fsSL https://toget.vu/install.sh | sh
+# Windows:
+# powershell -c "irm https://toget.vu/install.ps1 | iex"
+```
+
+Both scripts fetch `latest`, detect OS and architecture, verify the archive's
+SHA-256, and atomically install the binary. `/downloads/` serves only flat,
+visible files: nested paths, traversal, hidden files, and symlinks that escape
+the directory are rejected; `latest` is `no-cache` and archives are immutable.
+See [Website bridge and installers](web-bridge.md#release-downloads).
+
 A static binary on the host is the reference deployment, because it can use
 the host's keychain, service manager, and update path.
 
@@ -232,6 +267,10 @@ export TOGET_HOST_SMTP_PASSWORD='...'
   The client calls `/host/v1` for registration, sessions, rooms, invites,
   history, and recovery, and stores its encrypted account vault in the
   browser's IndexedDB.
+- `--host-download-dir` mounts release archives at `/downloads/` for the
+  install scripts. Only flat, visible filenames are served; the handler
+  rejects subdirectories, traversal, hidden files, and symlinks that leave the
+  directory. Without the flag, `/downloads/*` is not mounted.
 - `--host-smtp-*` enables email verification and recovery. Without SMTP the
   host still supports password login, device sessions, and key rotation, and
   serves the reset page, but users cannot receive verification or reset links.

@@ -8,6 +8,9 @@ import type {
   ApprovalAction,
   Attachment,
   BackupArchive,
+  BridgeBrowser,
+  BridgeDirectory,
+  BridgeMachine,
   CardView,
   AuditResponse,
   CreateRoomResponse,
@@ -188,9 +191,21 @@ export const api = {
     request<{ seq: number }>(`/api/v1/rooms/${encodeURIComponent(roomID)}/read`, json({ seq })),
 
   agents: () => request<{ agents: Agent[] }>("/api/v1/agents"),
+  machine: () => request<BridgeMachine>("/api/v1/machine"),
+  machineDirectory: (path?: string) =>
+    request<BridgeDirectory>(`/api/v1/machine/directory${path ? `?path=${encodeURIComponent(path)}` : ""}`),
+  bridgeCode: () => request<{ code: string; expires_at: string }>("/api/v1/bridge/code", json({})),
+  bridgeBrowsers: () => request<{ browsers: BridgeBrowser[] }>("/api/v1/bridge/browsers"),
+  bridgeRevokeBrowser: (id: string) =>
+    request<void>(`/api/v1/bridge/browsers/${encodeURIComponent(id)}`, { method: "DELETE" }),
   createAgent: (name: string, runtime: string, permissions: Record<string, unknown>) =>
     request<Agent>("/api/v1/agents", json({ name, runtime, permissions })),
   agent: (id: string) => request<Agent>(`/api/v1/agents/${encodeURIComponent(id)}`),
+  updateAgentSettings: (id: string, name: string, runtime: string, permissions: Record<string, unknown>) =>
+    request<{ agent: Agent }>(`/api/v1/agents/${encodeURIComponent(id)}/settings`, {
+      method: "POST",
+      body: JSON.stringify({ name, runtime, permissions }),
+    }),
   setAgentStatus: (id: string, status: string, roomID = "", detail = "") =>
     request<{ agent: Agent; event?: RoomEvent }>(`/api/v1/agents/${encodeURIComponent(id)}`, {
       method: "PATCH",

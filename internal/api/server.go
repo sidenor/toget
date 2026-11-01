@@ -21,6 +21,7 @@ import (
 	"github.com/sidenor/toget/internal/agent"
 	"github.com/sidenor/toget/internal/approval"
 	"github.com/sidenor/toget/internal/backup"
+	"github.com/sidenor/toget/internal/bridge"
 	"github.com/sidenor/toget/internal/hosted"
 	"github.com/sidenor/toget/internal/hostedlink"
 	"github.com/sidenor/toget/internal/identity"
@@ -64,6 +65,8 @@ type Options struct {
 	Updates       *update.Monitor
 	Backups       *backup.Service
 	Notifications *notify.Service
+	Bridge        *bridge.Manager
+	BridgeOrigins []string
 	Session       *session.Manager
 	AgentRuns     AgentRunController
 	AgentStreams  AgentStreamProvider
@@ -87,6 +90,8 @@ type Server struct {
 	updates       *update.Monitor
 	backups       *backup.Service
 	notifications *notify.Service
+	bridge        *bridge.Manager
+	bridgeOrigins map[string]bool
 	session       *session.Manager
 	agentRuns     AgentRunController
 	agentStreams  AgentStreamProvider
@@ -120,6 +125,8 @@ func New(opts Options) *Server {
 		updates:       opts.Updates,
 		backups:       opts.Backups,
 		notifications: opts.Notifications,
+		bridge:        opts.Bridge,
+		bridgeOrigins: originSet(opts.BridgeOrigins),
 		session:       sessions,
 		agentRuns:     opts.AgentRuns,
 		agentStreams:  opts.AgentStreams,
@@ -218,6 +225,9 @@ func (s *Server) Handler() http.Handler {
 	// Agents, approvals, and tool receipts.
 	mux.HandleFunc("GET /api/v1/agents", s.data(s.handleListAgents))
 	mux.HandleFunc("POST /api/v1/agents", s.data(s.handleCreateAgent))
+	mux.HandleFunc("POST /api/v1/agents/{id}/settings", s.data(s.handleUpdateAgentSettings))
+	mux.HandleFunc("GET /api/v1/machine", s.data(s.handleBridgeMachine))
+	mux.HandleFunc("GET /api/v1/machine/directory", s.data(s.handleBridgeDirectory))
 	mux.HandleFunc("GET /api/v1/agents/{id}", s.data(s.handleGetAgent))
 	mux.HandleFunc("PATCH /api/v1/agents/{id}", s.data(s.handleUpdateAgent))
 	mux.HandleFunc("POST /api/v1/agents/{id}/revoke", s.data(s.handleRevokeAgent))
@@ -268,7 +278,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/notifications/mute", s.data(s.handleMuteNotifications))
 
 	mux.HandleFunc("GET /", s.handleUI)
-	return s.recoverer(s.logRequests(mux))
+	s.registerBridgeRoutes(mux)
+	return s.recoverer(s.logRequests(s.bridgeCORS(mux)))
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -1007,9 +1018,11 @@ func allowedOrigins(listen string) map[string]bool {
 		port = "7718"
 	}
 	out := map[string]bool{
-		net.JoinHostPort("127.0.0.1", port): true,
-		net.JoinHostPort("localhost", port): true,
-		net.JoinHostPort("::1", port):       true,
+		net.JoinHostPort("127.0.0.1", port):       true,
+		net.JoinHostPort("localhost", port):       true,
+		net.JoinHostPort("::1", port):             true,
+		net.JoinHostPort("toget.localhost", port): true,
+		net.JoinHostPort("toget.local", port):     true,
 	}
 	if host != "" && host != "0.0.0.0" && host != "::" {
 		out[net.JoinHostPort(host, port)] = true

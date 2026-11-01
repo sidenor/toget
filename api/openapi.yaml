@@ -3295,6 +3295,398 @@ paths:
         "423":
           $ref: "#/components/responses/Locked"
 
+  /api/v1/agents/{id}/settings:
+    post:
+      tags: [agents]
+      operationId: updateAgentSettings
+      summary: Edit an Agent's name, runtime, and permissions
+      description: |
+        Changes only the user-editable fields. Presence, room membership, and
+        runtime sessions are untouched. The local UI and the website bridge
+        share this operation.
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAgentSettingsRequest"
+      responses:
+        "200":
+          description: The updated Agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentSettingsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/machine:
+    get:
+      tags: [bridge]
+      operationId: getLocalMachine
+      summary: Read this machine for the local UI
+      description: |
+        The same safe summary the website sees after pairing: hostname, OS,
+        architecture, version, local URL, home directory, lock state, account,
+        and Agent count. No keys, tokens, or data-directory paths.
+      responses:
+        "200":
+          description: The local machine.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeMachine"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/machine/directory:
+    get:
+      tags: [bridge]
+      operationId: browseLocalDirectory
+      summary: Browse folders under the home directory
+      description: |
+        Read-only folder listing for the local UI. Only directories are
+        returned; hidden folders, file names, and file contents are never
+        exposed. Paths outside the home directory are rejected.
+      parameters:
+        - $ref: "#/components/parameters/DirectoryPath"
+      responses:
+        "200":
+          description: One folder listing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeDirectory"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/BridgeDirectoryDenied"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/bridge/code:
+    post:
+      tags: [bridge]
+      operationId: createBridgeCode
+      summary: Generate a one-time website pairing code
+      description: |
+        Called by the local UI only. The six-digit code is valid for five
+        minutes, single-use, and shown to the user so they can type it on the
+        official website. Creating a new code invalidates the previous one.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: The pairing code and its expiry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeCodeResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginDenied"
+        "409":
+          $ref: "#/components/responses/AccountNotFound"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/bridge/browsers:
+    get:
+      tags: [bridge]
+      operationId: listBridgeBrowsers
+      summary: List browsers paired through the official website
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        "200":
+          description: Paired browsers, without their token hashes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeBrowserList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/bridge/browsers/{id}:
+    delete:
+      tags: [bridge]
+      operationId: revokeBridgeBrowser
+      summary: Disconnect one paired browser
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/BrowserID"
+      responses:
+        "204":
+          description: The browser token is revoked.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/bridge/info:
+    get:
+      tags: [bridge]
+      operationId: getBridgeInfo
+      summary: Probe whether this node supports website pairing
+      description: |
+        Called by the official website before pairing. The Origin must be in
+        the node's bridge allowlist (`https://toget.vu` by default, or the
+        origins in `TOGET_BRIDGE_ORIGINS`).
+      security: []
+      responses:
+        "200":
+          description: The node supports the bridge.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeInfoResponse"
+        "403":
+          $ref: "#/components/responses/BridgeOriginDenied"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/bridge/pair:
+    post:
+      tags: [bridge]
+      operationId: pairBridge
+      summary: Exchange a pairing code for a browser token
+      description: |
+        The code is single-use and expires after five minutes. Twenty failed
+        attempts within five minutes block pairing for five minutes. The
+        returned token is valid for 180 days, is bound to the request Origin,
+        and is stored only as a SHA-256 hash on the node.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BridgePairRequest"
+      responses:
+        "200":
+          description: A browser token and the machine summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgePairResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/BridgePairInvalid"
+        "403":
+          $ref: "#/components/responses/BridgeOriginDenied"
+        "409":
+          $ref: "#/components/responses/BridgeTooManyBrowsers"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/bridge/unpair:
+    post:
+      tags: [bridge]
+      operationId: unpairBridge
+      summary: Revoke the token used by this browser
+      security:
+        - bridgeAuth: []
+      responses:
+        "204":
+          description: The browser token is revoked.
+        "401":
+          $ref: "#/components/responses/BridgeUnauthorized"
+
+  /api/v1/bridge/session:
+    get:
+      tags: [bridge]
+      operationId: getBridgeSession
+      summary: Read the machine and lock state while paired
+      description: |
+        Available while the local vault is locked so the website can show the
+        unlock state. Operations that need account authority still answer 423.
+      security:
+        - bridgeAuth: []
+      responses:
+        "200":
+          description: The machine summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeSessionResponse"
+        "401":
+          $ref: "#/components/responses/BridgeUnauthorized"
+        "403":
+          $ref: "#/components/responses/BridgeOriginDenied"
+
+  /api/v1/bridge/machine:
+    get:
+      tags: [bridge]
+      operationId: getBridgeMachine
+      summary: Read machine details through a paired browser
+      security:
+        - bridgeAuth: []
+      responses:
+        "200":
+          description: The machine summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeMachine"
+        "401":
+          $ref: "#/components/responses/BridgeUnauthorized"
+        "403":
+          $ref: "#/components/responses/BridgeOriginDenied"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/bridge/directory:
+    get:
+      tags: [bridge]
+      operationId: browseBridgeDirectory
+      summary: Browse folders under the home directory
+      description: |
+        Read-only and restricted to the account's home directory. Only visible
+        directories are listed; file names and contents never leave the
+        machine. Symlinks that escape the home directory are skipped.
+      security:
+        - bridgeAuth: []
+      parameters:
+        - $ref: "#/components/parameters/DirectoryPath"
+      responses:
+        "200":
+          description: One folder listing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeDirectory"
+        "401":
+          $ref: "#/components/responses/BridgeUnauthorized"
+        "403":
+          $ref: "#/components/responses/BridgeDirectoryDenied"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/bridge/agents:
+    get:
+      tags: [bridge]
+      operationId: listBridgeAgents
+      summary: List local Agents through a paired browser
+      description: Revoked Agents remain in the list so their history is visible.
+      security:
+        - bridgeAuth: []
+      responses:
+        "200":
+          description: Owned Agents and their room names.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeAgentList"
+        "401":
+          $ref: "#/components/responses/BridgeUnauthorized"
+        "403":
+          $ref: "#/components/responses/BridgeOriginDenied"
+        "423":
+          $ref: "#/components/responses/Locked"
+    post:
+      tags: [bridge]
+      operationId: createBridgeAgent
+      summary: Register a local Agent through a paired browser
+      security:
+        - bridgeAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAgentSettingsRequest"
+      responses:
+        "201":
+          description: The registered Agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeAgent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/BridgeUnauthorized"
+        "403":
+          $ref: "#/components/responses/BridgeOriginDenied"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/bridge/agents/{id}:
+    patch:
+      tags: [bridge]
+      operationId: updateBridgeAgent
+      summary: Edit a local Agent through a paired browser
+      security:
+        - bridgeAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAgentSettingsRequest"
+      responses:
+        "200":
+          description: The updated Agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeAgent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/BridgeUnauthorized"
+        "403":
+          $ref: "#/components/responses/BridgeOriginDenied"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "423":
+          $ref: "#/components/responses/Locked"
+
+  /api/v1/bridge/agents/{id}/revoke:
+    post:
+      tags: [bridge]
+      operationId: revokeBridgeAgent
+      summary: Revoke a local Agent through a paired browser
+      security:
+        - bridgeAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+      responses:
+        "204":
+          description: The Agent is revoked and removed from its rooms.
+        "401":
+          $ref: "#/components/responses/BridgeUnauthorized"
+        "403":
+          $ref: "#/components/responses/BridgeOriginDenied"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "423":
+          $ref: "#/components/responses/Locked"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -3306,6 +3698,14 @@ components:
       in: cookie
       name: toget_token
       description: HttpOnly, SameSite=Strict cookie set when the web UI loads.
+    bridgeAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Browser token issued by `POST /api/v1/bridge/pair` after the user
+        enters a one-time code shown by the local node. It lasts 180 days, is
+        bound to one website origin, and is stored only as a SHA-256 hash.
+        Bridge routes reject the local API token.
 
   parameters:
     RoomID:
@@ -3343,6 +3743,23 @@ components:
       in: path
       required: true
       description: Room ID of the Agent's runtime session.
+      schema:
+        type: string
+    BrowserID:
+      name: id
+      in: path
+      required: true
+      description: Paired-browser token ID.
+      schema:
+        type: string
+    DirectoryPath:
+      name: path
+      in: query
+      required: false
+      description: |
+        Absolute folder path, or a path relative to the home directory.
+        Defaults to the home directory. Hidden components and paths outside
+        the home directory are rejected.
       schema:
         type: string
     ApprovalID:
@@ -3498,6 +3915,38 @@ components:
             $ref: "#/components/schemas/Error"
     Internal:
       description: The local node could not complete the operation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BridgeUnauthorized:
+      description: |
+        The browser is not paired with this node, its token expired or was
+        revoked, or the token belongs to a different origin.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BridgePairInvalid:
+      description: The pairing code is invalid, expired, already used, or temporarily blocked after too many failures.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BridgeOriginDenied:
+      description: The request Origin is not in the node's website-bridge allowlist.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BridgeDirectoryDenied:
+      description: The folder is outside the home directory, hidden, or the request Origin is not allowlisted.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BridgeTooManyBrowsers:
+      description: The node already has the maximum of 32 paired browsers; revoke one first.
       content:
         application/json:
           schema:
@@ -6002,3 +6451,283 @@ components:
           type: integer
           minimum: 0
           description: Defaults to 7 days when zero.
+
+    BridgeInfoResponse:
+      type: object
+      additionalProperties: false
+      required: [app, bridge, version]
+      properties:
+        app:
+          type: string
+          const: toget
+        bridge:
+          type: boolean
+          const: true
+        version:
+          type: string
+
+    BridgeCodeResponse:
+      type: object
+      additionalProperties: false
+      required: [code, expires_at]
+      properties:
+        code:
+          type: string
+          pattern: "^[0-9]{6}$"
+          description: Six-digit, single-use code shown by the local node.
+        expires_at:
+          type: string
+          format: date-time
+
+    BridgePairRequest:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code:
+          type: string
+          pattern: "^[0-9]{6}$"
+
+    BridgePairResponse:
+      type: object
+      additionalProperties: false
+      required: [token, bridge, machine]
+      properties:
+        token:
+          type: string
+          description: Bearer token for this browser. Store it in browser storage; it cannot be recovered from the node.
+        bridge:
+          $ref: "#/components/schemas/BridgeToken"
+        machine:
+          $ref: "#/components/schemas/BridgeMachine"
+
+    BridgeToken:
+      type: object
+      additionalProperties: false
+      required: [id, origin, created_at, expires_at]
+      properties:
+        id:
+          type: string
+        origin:
+          type: string
+          format: uri
+          description: The only website origin this token may be used from.
+        account_id:
+          type: string
+          description: Account recorded at pairing time, when the node had one.
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+
+    BridgeBrowserList:
+      type: object
+      additionalProperties: false
+      required: [browsers]
+      properties:
+        browsers:
+          type: array
+          items:
+            $ref: "#/components/schemas/BridgeToken"
+
+    BridgeUser:
+      type: object
+      additionalProperties: false
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+
+    BridgeMachine:
+      type: object
+      additionalProperties: false
+      required: [name, os, arch, version, listen, local_url, locked, agents]
+      properties:
+        name:
+          type: string
+          description: Machine hostname, or "This computer" when unavailable.
+        os:
+          type: string
+          examples: [linux, darwin, windows]
+        arch:
+          type: string
+          examples: [amd64, arm64]
+        version:
+          type: string
+          description: Toget version running on this machine.
+        listen:
+          type: string
+          description: Loopback listen address, such as `127.0.0.1:7718`.
+        local_url:
+          type: string
+          format: uri
+          description: Browser URL for the local UI, such as `http://toget.localhost:7718`.
+        home:
+          type: string
+          description: Home directory used by the read-only folder browser. Omitted when unavailable.
+        locked:
+          type: boolean
+          description: Whether the local vault is locked.
+        account:
+          $ref: "#/components/schemas/BridgeUser"
+        agents:
+          type: integer
+          minimum: 0
+          description: Number of Agents owned by the account, including revoked Agents.
+
+    BridgeSessionResponse:
+      type: object
+      additionalProperties: false
+      required: [machine]
+      properties:
+        machine:
+          $ref: "#/components/schemas/BridgeMachine"
+
+    BridgeAgentRoom:
+      type: object
+      additionalProperties: false
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          description: Room name, or an empty string if it cannot be read.
+
+    BridgeAgent:
+      type: object
+      additionalProperties: false
+      required: [id, account_id, name, runtime, status, permissions, created_at]
+      properties:
+        id:
+          type: string
+        account_id:
+          type: string
+        name:
+          type: string
+        runtime:
+          type: string
+          examples: [claude-code]
+        status:
+          type: string
+          enum: [idle, running, waiting_approval, offline, revoked]
+        permissions:
+          type: object
+          additionalProperties: true
+          description: Declared scope such as shell, write, and external permissions.
+        created_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        revoked_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        rooms:
+          type: array
+          items:
+            $ref: "#/components/schemas/BridgeAgentRoom"
+
+    BridgeAgentList:
+      type: object
+      additionalProperties: false
+      required: [agents]
+      properties:
+        agents:
+          type: array
+          items:
+            $ref: "#/components/schemas/BridgeAgent"
+
+    UpdateAgentSettingsRequest:
+      type: object
+      additionalProperties: false
+      required: [name, runtime]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        runtime:
+          type: string
+          minLength: 1
+          maxLength: 64
+        permissions:
+          type: object
+          additionalProperties: true
+
+    AgentSettingsResponse:
+      type: object
+      additionalProperties: false
+      required: [agent]
+      properties:
+        agent:
+          $ref: "#/components/schemas/Agent"
+
+    BridgeDirectoryShortcut:
+      type: object
+      additionalProperties: false
+      required: [name, path]
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+
+    BridgeDirectoryEntry:
+      type: object
+      additionalProperties: false
+      required: [name, path]
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+        modified:
+          type: string
+          format: date-time
+          description: Folder modification time in UTC. Omitted when unavailable.
+
+    BridgeDirectory:
+      type: object
+      additionalProperties: false
+      required: [path, relative, home, roots, entries]
+      properties:
+        path:
+          type: string
+          description: Absolute path of the listed folder.
+        relative:
+          type: string
+          description: Path relative to the home directory; empty at the root.
+        parent:
+          type: string
+          description: Parent folder. Omitted at the home directory.
+        home:
+          type: string
+          description: Home directory that bounds this browser.
+        roots:
+          type: array
+          description: Existing conventional folders, such as Downloads or Documents.
+          items:
+            $ref: "#/components/schemas/BridgeDirectoryShortcut"
+        entries:
+          type: array
+          description: Visible subdirectories, sorted case-insensitively.
+          items:
+            $ref: "#/components/schemas/BridgeDirectoryEntry"
+        truncated:
+          type: boolean
+          description: True when more than 500 entries were found.

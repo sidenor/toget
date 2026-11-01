@@ -90,6 +90,18 @@ embedded copy during development. The client calls the host's `/host/v1` API
 for registration, sign-in, rooms, invites, history, and recovery, and keeps its
 encrypted account vault in the browser's IndexedDB.
 
+The same site has an **Agents** page that manages Agents on the visitor's own
+computer. After `curl -fsSL https://toget.vu/install.sh | sh` and
+`toget serve`, the local page at `http://toget.localhost:7718` shows a
+one-time six-digit code; entering it at `https://toget.vu/agents` pairs that
+browser. A paired browser can add, edit, and revoke local Agents and browse
+folders under the home directory, but cannot read file contents or run
+commands. Tokens are origin-bound, stored hashed on the node, and revocable
+from the local Machine page. Release archives and checksums are served from
+`https://toget.vu/downloads`; `scripts/build-release.sh` builds them and
+`toget-official --host-download-dir` serves them. See
+[Website bridge and installers](docs/web-bridge.md).
+
 Create an official-hosted account, or add a second device to one:
 
 ```bash
@@ -124,7 +136,7 @@ pnpm --filter @toget/app build   # web/app/dist is also committed
 go run ./cmd/toget serve
 ```
 
-Open <http://127.0.0.1:7718> and create your account. The password is an
+Open <http://toget.localhost:7718> and create your account. The password is an
 Argon2id verifier for local sign-in and also derives the key that wraps the
 local vault, so account and device private keys stay encrypted at rest. Create
 a per-device recovery file while the node is unlocked:
@@ -423,6 +435,16 @@ go run ./cmd/toget-official --home ~/.local/share/toget-official \
 `/host/v1` API 完成注册、登录、房间、邀请、历史消息和账号找回，加密的账号
 保险库保存在浏览器的 IndexedDB 里。
 
+同一个网站还有 **Agents** 页面，用来管理访问者自己电脑上的 Agent。先运行
+`curl -fsSL https://toget.vu/install.sh | sh` 安装、`toget serve` 启动，本地
+页面 `http://toget.localhost:7718` 会显示一次性六位配对码；在
+`https://toget.vu/agents` 输入后即可配对。配对后可以添加、修改、撤销本机
+Agent，也可以浏览主目录下的文件夹，但读不到文件内容、不能执行命令。令牌绑定
+网站来源、在节点上只保存哈希，并可随时在本地 Machine 页面撤销。安装包和校验和
+从 `https://toget.vu/downloads` 提供，`scripts/build-release.sh` 负责构建，
+`toget-official --host-download-dir` 负责托管。详见
+[网页配对与安装包](docs/web-bridge.md)。
+
 创建官方托管账号，或在第二台设备上登录：
 
 ```bash
@@ -442,7 +464,7 @@ pnpm --filter @toget/app build
 go run ./cmd/toget serve
 ```
 
-打开 <http://127.0.0.1:7718> 创建账号。本地密码用 Argon2id 校验，同时派生包装本地保险库的密钥；账号和设备私钥在磁盘上保持加密。解锁时创建每设备恢复文件：
+打开 <http://toget.localhost:7718> 创建账号。本地密码用 Argon2id 校验，同时派生包装本地保险库的密钥；账号和设备私钥在磁盘上保持加密。解锁时创建每设备恢复文件：
 
 ```bash
 go run ./cmd/toget account recovery create --out ~/offline/toget-recovery.togetkey

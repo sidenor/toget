@@ -34,6 +34,7 @@ type hostOptions struct {
 	DatabasePath    string
 	ResetDir        string
 	SiteDir         string
+	DownloadDir     string
 	SMTPAddr        string
 	SMTPUser        string
 	SMTPPassword    string
@@ -170,6 +171,13 @@ func startAccountHost(parent context.Context, paths config.Paths, options hostOp
 	if err != nil {
 		cleanup()
 		return nil, err
+	}
+	if strings.TrimSpace(options.DownloadDir) != "" {
+		handler, err = siteserve.WithDownloads(handler, options.DownloadDir)
+		if err != nil {
+			cleanup()
+			return nil, err
+		}
 	}
 	server := &http.Server{
 		Handler:           handler,

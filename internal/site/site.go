@@ -201,6 +201,10 @@ func contentType(name string) string {
 		return "image/svg+xml"
 	case ".txt":
 		return "text/plain; charset=utf-8"
+	case ".sh":
+		return "text/x-shellscript; charset=utf-8"
+	case ".ps1":
+		return "text/plain; charset=utf-8"
 	case ".png":
 		return "image/png"
 	case ".jpg", ".jpeg":

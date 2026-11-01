@@ -13,6 +13,7 @@ Start here:
 | [Protocol](protocol.md) | Node protocol, end-to-end envelope, local API, versioning |
 | [Security model](security-model.md) | Assets, who can see what, threats, controls, limits |
 | [Account recovery](account-recovery.md) | Per-device vault recovery, official-hosted accounts, browser reset page, limits |
+| [Website bridge and installers](web-bridge.md) | Install downloads, local URL, one-time pairing, remote Agent management, folder browser, token security, release publishing |
 | [Relay and directory](relay.md) | Cross-network routing, trust boundaries, quotas, limits |
 | [LAN discovery](discovery.md) | mDNS advertisement, verified lookup, privacy, limits |
 | [Business cards](cards.md) | Portable signed cards, QR codes for cards, invites, and pairing, saved-card pinning, limits |
@@ -35,10 +36,11 @@ Start here:
 8. Security model — who can decrypt what, and what we do not protect yet.
 9. Account recovery — how passwords and local vault keys are recovered.
 10. Deployment — how a node is installed and operated.
-11. Signed updates — how releases are signed, served, installed, and rolled back.
-12. Tech stack — why these tools.
-13. Repository layout — where code goes.
-14. Roadmap — what to build next.
+11. Website bridge and installers — how downloads, pairing, and remote Agent management work.
+12. Signed updates — how releases are signed, served, installed, and rolled back.
+13. Tech stack — why these tools.
+14. Repository layout — where code goes.
+15. Roadmap — what to build next.
 
 ## Decision records
 
@@ -57,9 +59,9 @@ Start here:
 ## Status
 
 The documents describe a working implementation, not only a design. Local,
-LAN, relay, directory, update, official-hosted account, and official room home
-flows are implemented and tested; the desktop shell and packaged installers
-remain design-only. Official rooms do not support attachments yet. The
+LAN, relay, directory, update, official-hosted account, official room home,
+website-bridge, and downloadable-installer flows are implemented and tested;
+the desktop shell remains design-only. Official rooms do not support attachments yet. The
 architecture and protocol will still
 change. Decisions that are expensive to reverse should be recorded as ADRs
 before implementation, and docs that claim a feature is done must match the

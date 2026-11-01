@@ -524,3 +524,41 @@ export type NotificationStatus = {
   subscriptions: NotificationSubscription[];
   muted_until?: string | null;
 };
+
+export type BridgeMachine = {
+  name: string;
+  os: string;
+  arch: string;
+  version: string;
+  listen: string;
+  local_url: string;
+  home?: string;
+  locked: boolean;
+  account?: { id: string; name: string };
+  agents: number;
+};
+
+export type BridgeBrowser = {
+  id: string;
+  origin: string;
+  account_id?: string;
+  created_at: string;
+  last_used_at?: string;
+  expires_at: string;
+};
+
+export type BridgeDirectoryEntry = {
+  name: string;
+  path: string;
+  modified?: string;
+};
+
+export type BridgeDirectory = {
+  path: string;
+  relative: string;
+  parent?: string;
+  home: string;
+  roots: { name: string; path: string }[];
+  entries: BridgeDirectoryEntry[];
+  truncated?: boolean;
+};

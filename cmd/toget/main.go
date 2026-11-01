@@ -13,8 +13,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"syscall"
@@ -28,6 +30,7 @@ import (
 	"github.com/sidenor/toget/internal/api"
 	"github.com/sidenor/toget/internal/approval"
 	"github.com/sidenor/toget/internal/backup"
+	"github.com/sidenor/toget/internal/bridge"
 	"github.com/sidenor/toget/internal/config"
 	"github.com/sidenor/toget/internal/hosted"
 	"github.com/sidenor/toget/internal/hostedlink"
@@ -61,6 +64,7 @@ var (
 	noRelayFlag        bool
 	noMDNSFlag         bool
 	noQUICFlag         bool
+	serveNoOpenFlag    bool
 	stdinReader        = bufio.NewReader(os.Stdin)
 )
 
@@ -84,6 +88,7 @@ func newRootCommand() *cobra.Command {
 	root.PersistentFlags().BoolVar(&jsonFlag, "json", false, "print machine-readable JSON")
 
 	root.AddCommand(newServeCommand())
+	root.AddCommand(newOpenCommand())
 	root.AddCommand(newStatusCommand())
 	root.AddCommand(newSessionCommand())
 	root.AddCommand(newAccountCommand())
@@ -337,6 +342,7 @@ func newServeCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&noRelayFlag, "no-relay", false, "disable relay fallback")
 	cmd.Flags().BoolVar(&noMDNSFlag, "no-mdns", false, "disable same-LAN multicast discovery")
 	cmd.Flags().BoolVar(&noQUICFlag, "no-quic", false, "disable HTTP/3 on the node transport")
+	cmd.Flags().BoolVar(&serveNoOpenFlag, "no-open", false, "do not open the local web UI in a browser")
 	return cmd
 }
 
@@ -574,6 +580,11 @@ func runServe(ctx context.Context) error {
 	}
 
 	backupService := backup.NewService(db, paths)
+	bridgeManager, err := bridge.New(filepath.Join(paths.Home, "bridge-tokens.json"))
+	if err != nil {
+		logger.Warn("website bridge disabled", "error", err)
+		bridgeManager = nil
+	}
 	handler := api.New(api.Options{
 		Accounts:      accounts,
 		Hosted:        hostedlink.New(accounts, hostSessions),
@@ -586,6 +597,8 @@ func runServe(ctx context.Context) error {
 		Updates:       updateMonitor,
 		Backups:       backupService,
 		Notifications: notificationService,
+		Bridge:        bridgeManager,
+		BridgeOrigins: cfg.BridgeOrigins,
 		Session:       sessions,
 		AgentRuns:     agentRunner,
 		AgentStreams:  agentRunner,
@@ -612,7 +625,7 @@ func runServe(ctx context.Context) error {
 
 	info := version.Current()
 	fmt.Printf("Toget %s\n", info.App)
-	fmt.Printf("Local node: http://%s\n", listener.Addr().String())
+	fmt.Printf("Local node: %s\n", localNodeURL(listener.Addr().String()))
 	if nodeReady {
 		fmt.Printf("LAN node:   %s\n", nodeService.URL())
 	} else if cfg.NodeListen == config.NodeListenOff {
@@ -623,11 +636,24 @@ func runServe(ctx context.Context) error {
 	fmt.Printf("Data: %s\n", paths.Home)
 	if snapshot, err := accounts.Get(ctx); err == nil {
 		fmt.Printf("Account: %s · %s\n", snapshot.Account.Name, formatAccountID(snapshot.Account.ID))
-		fmt.Println("Locked: run `toget unlock` before using the CLI or UI.")
+		if accounts.VaultReady() {
+			fmt.Println("Unlocked: the local CLI and web UI are ready.")
+		} else {
+			fmt.Println("Locked: run `toget unlock` before using the CLI or UI.")
+		}
 	} else if errors.Is(err, account.ErrNotFound) {
 		fmt.Println("Account: not created yet")
 	}
 	fmt.Println("Press Ctrl+C to stop.")
+
+	if !serveNoOpenFlag && shouldOpenBrowser() {
+		target := localNodeURL(listener.Addr().String())
+		go func() {
+			if err := openBrowser(target); err != nil {
+				logger.Warn("could not open the local web UI", "error", err)
+			}
+		}()
+	}
 
 	go func() {
 		<-signalCtx.Done()
@@ -732,6 +758,68 @@ func pendingAgentApproval(ctx context.Context, approvals *approval.Service, room
 	return false, nil
 }
 
+func newOpenCommand() *cobra.Command {
+	var printOnly bool
+	cmd := &cobra.Command{
+		Use:   "open",
+		Short: "Open the local web UI in your browser",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, cfg, err := resolveConfig()
+			if err != nil {
+				return err
+			}
+			target := localNodeURL(cfg.Listen)
+			fmt.Println(target)
+			if printOnly {
+				return nil
+			}
+			if err := openBrowser(target); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not open a browser automatically: %v\nOpen this address manually: %s\n", err, target)
+				return nil
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&printOnly, "print", false, "print the address without opening a browser")
+	return cmd
+}
+
+// shouldOpenBrowser keeps server and service runs quiet: a browser only opens
+// when a person started the command in a terminal with a graphical session.
+func shouldOpenBrowser() bool {
+	if os.Getenv("TOGET_NO_BROWSER") != "" {
+		return false
+	}
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		return false
+	}
+	if runtime.GOOS == "linux" {
+		return os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != ""
+	}
+	return true
+}
+
+func openBrowser(target string) error {
+	var command *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		command = exec.Command("open", target)
+	case "windows":
+		command = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
+	default:
+		if _, err := exec.LookPath("xdg-open"); err == nil {
+			command = exec.Command("xdg-open", target)
+		} else {
+			return errors.New("xdg-open is not installed")
+		}
+	}
+	if err := command.Start(); err != nil {
+		return err
+	}
+	return nil
+}
+
 func newStatusCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
@@ -749,7 +837,7 @@ func newStatusCommand() *cobra.Command {
 				return printJSON(status)
 			}
 			fmt.Printf("Toget %s (%s/%s)\n", status.Version.App, status.Version.OS, status.Version.Arch)
-			fmt.Printf("Node:    http://%s\n", status.Listen)
+			fmt.Printf("Node:    %s\n", localNodeURL(status.Listen))
 			if status.Account == nil {
 				fmt.Println("Account: not created yet")
 				fmt.Println("Create one with: toget account create")
@@ -3101,6 +3189,17 @@ func resolveRoom(ctx context.Context, c *api.Client, roomID string) (string, err
 		sort.Strings(ids)
 		return "", fmt.Errorf("there is more than one room; pass --room <id>:\n  %s", strings.Join(ids, "\n  "))
 	}
+}
+
+// localNodeURL renders the address people type into a browser. Browsers
+// resolve *.localhost to the loopback interface without a hosts entry, which
+// is friendlier than 127.0.0.1 and remains local-only.
+func localNodeURL(addr string) string {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		return "http://" + addr
+	}
+	return "http://toget.localhost:" + port
 }
 
 func validateLoopback(listen string) error {
