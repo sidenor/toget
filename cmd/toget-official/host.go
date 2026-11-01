@@ -227,13 +227,15 @@ func accountHostAddress(listen, publicURL string) (string, error) {
 			parsed = "https://" + parsed
 		}
 		parsedURL, err := url.Parse(parsed)
-		if err != nil || parsedURL.Host == "" {
-			return "", errors.New("account host public URL is invalid")
+		if err != nil || parsedURL.Scheme != "https" || parsedURL.Host == "" ||
+			parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.ForceQuery ||
+			(parsedURL.Path != "" && parsedURL.Path != "/") || parsedURL.Fragment != "" {
+			return "", errors.New("account host public URL must be an HTTPS origin with no path, query, or fragment")
 		}
 		host = parsedURL.Hostname()
 		if parsedURL.Port() != "" {
 			port = parsedURL.Port()
-		} else if parsedURL.Scheme == "https" {
+		} else {
 			port = "443"
 		}
 	} else if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
