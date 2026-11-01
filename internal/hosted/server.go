@@ -1,6 +1,11 @@
+//go:build !js
+
+// The account host's HTTP service is native-only. The reset page compiles this
+// package for GOOS=js and only needs the client.
 package hosted
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -24,6 +29,7 @@ import (
 
 	"github.com/sidenor/toget/internal/account"
 	"github.com/sidenor/toget/internal/identity"
+	"github.com/sidenor/toget/internal/requestauth"
 )
 
 const (
@@ -73,6 +79,8 @@ type Service struct {
 	loginMu sync.Mutex
 	logins  map[string]*pendingLogin
 
+	deviceNonces *requestauth.NonceCache
+
 	limiter  *rateLimiter
 	failures *loginFailures
 }
@@ -114,9 +122,10 @@ func New(options Options) (*Service, error) {
 		host: state, opaqueHost: opaqueHost, publicURL: publicURL,
 		resetFS: options.ResetFS, started: now().UTC().Truncate(time.Second),
 		now: now, rateLimited: !options.DisableRateLimit,
-		logins:   make(map[string]*pendingLogin),
-		limiter:  newRateLimiter(),
-		failures: newLoginFailures(),
+		logins:       make(map[string]*pendingLogin),
+		deviceNonces: requestauth.NewNonceCache(),
+		limiter:      newRateLimiter(),
+		failures:     newLoginFailures(),
 	}, nil
 }
 
@@ -143,6 +152,7 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("POST "+RegisterFinishPath, s.handleRegisterFinish)
 	mux.HandleFunc("POST "+LoginBeginPath, s.handleLoginBegin)
 	mux.HandleFunc("POST "+LoginFinishPath, s.handleLoginFinish)
+	mux.HandleFunc("POST "+DeviceSessionPath, s.handleDeviceSession)
 	mux.HandleFunc("POST "+SyncPath, s.handleSync)
 	mux.HandleFunc("POST "+PasswordBeginPath, s.handlePasswordBegin)
 	mux.HandleFunc("POST "+PasswordFinishPath, s.handlePasswordFinish)
@@ -159,7 +169,7 @@ func (s *Service) Handler() http.Handler {
 		mux.HandleFunc("GET /reset", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/reset/", http.StatusMovedPermanently)
 		})
-		mux.Handle("GET /reset/", http.StripPrefix("/reset/", http.FileServer(http.FS(s.resetFS))))
+		mux.Handle("GET /reset/", http.StripPrefix("/reset/", newResetAssets(s.resetFS)))
 	}
 	return s.recoverPanic(s.securityHeaders(s.generalLimit(mux)))
 }
@@ -491,6 +501,83 @@ func (s *Service) handleLoginFinish(w http.ResponseWriter, r *http.Request) {
 		KeyBundle: acct.KeyBundle, Devices: devices, EmailVerified: acct.EmailVerified,
 		SessionToken: sessionToken, SessionExpiresAt: sessionExpires,
 		CreatedAt: acct.CreatedAt,
+	})
+}
+
+// handleDeviceSession exchanges an account-signed device certificate and a
+// device-key signature for a short-lived bearer session. It never asks for the
+// account password, so a device can keep syncing while its local vault is
+// unlocked even when the user does not remember the host password.
+func (s *Service) handleDeviceSession(w http.ResponseWriter, r *http.Request) {
+	if s.limited(w, r, "device-session", 120) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, MaxBody)
+	body, err := io.ReadAll(r.Body)
+	if err != nil || len(body) == 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid request body")
+		return
+	}
+	var request DeviceSessionRequest
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid request body")
+		return
+	}
+	if request.Protocol != Protocol || !digits(request.AccountID, 14) ||
+		request.DeviceID == "" || len(request.DeviceID) > 128 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid device session request")
+		return
+	}
+	if !requestauth.ConstantTimeEqual(r.Header.Get(requestauth.HeaderAccount), request.AccountID) ||
+		!requestauth.ConstantTimeEqual(r.Header.Get(requestauth.HeaderDevice), request.DeviceID) {
+		writeError(w, http.StatusForbidden, "forbidden", "request identity does not match the device session request")
+		return
+	}
+	acct, err := s.store.GetAccount(r.Context(), request.AccountID)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "device is not authorized")
+		return
+	}
+	record, err := s.store.GetDevice(r.Context(), request.AccountID, request.DeviceID)
+	if err != nil || record.RevokedAt != nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "device is not authorized")
+		return
+	}
+	keys, err := accountKeys(acct)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "device is not authorized")
+		return
+	}
+	var cert *identity.DeviceCertificate
+	for _, key := range keys {
+		candidate, verifyErr := identity.VerifyDeviceCertificateSignature([]byte(record.Certificate), key)
+		if verifyErr == nil && candidate.AccountID == request.AccountID && candidate.DeviceID == request.DeviceID {
+			cert = candidate
+			break
+		}
+	}
+	if cert == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "device is not authorized")
+		return
+	}
+	publicKey, err := identity.DecodePublicKey(cert.DevicePubKey)
+	if err != nil || !bytes.Equal(publicKey, record.PublicKey) {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "device is not authorized")
+		return
+	}
+	if err := requestauth.Verify(r, body, publicKey, s.deviceNonces, s.now()); err != nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "device signature is invalid")
+		return
+	}
+	token, expires, err := s.createSession(r.Context(), acct.ID)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, DeviceSessionResponse{
+		Protocol: Protocol, SessionToken: token, SessionExpiresAt: expires,
 	})
 }
 

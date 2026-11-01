@@ -362,8 +362,9 @@ configured, Settings shows the missing configuration keys instead of a banner.
 A “later” dismissal lasts 24 hours by default and at most seven days. A forced
 release can be postponed for at most 24 hours; after that the banner returns.
 This is a client-side honesty mechanism, not a security boundary: a user who
-controls the binary can always ignore it. Enforcement tied to official-hosted
-accounts is not implemented.
+controls the binary can always ignore it. Official-hosted accounts exist, but
+server-side enforcement tied to them is not implemented; the account host does
+not gate sessions on the client's release level.
 
 ## Managed layout
 
@@ -455,8 +456,8 @@ The lock file prevents two updates from running at once.
   deterministic on the client, and pausing a rollout is an operator action:
   repoint the channel or yank the release.
 - `security` and `forced` levels affect the banner and the maximum dismissal
-  period, but there is no server-side enforcement. Official-hosted accounts do
-  not yet require a forced update.
+  period, but there is no server-side enforcement. A device signed in to an
+  official-hosted account is not required by the host to update.
 - Delta updates are not implemented. Every update downloads a full archive.
 - A database schema migration is not rolled back with the binary. The update
   checks the manifest's `schema` before installing, but if the new release

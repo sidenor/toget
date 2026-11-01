@@ -785,10 +785,14 @@ paths:
     post:
       tags: [account]
       operationId: createAccount
-      summary: Create the account for this node
+      summary: Create a self-hosted or official-hosted account
       description: |
-        The account ID is derived from this node's server identity. Creating
-        the account also unlocks the session.
+        Without `host_url`, the account ID is derived from this node's server
+        identity and the account lives on this machine. With `host_url`, the
+        node registers an official-hosted account: OPAQUE registration and
+        sealed key material go to the host, and the response includes the
+        one-time official recovery file under `recovery`. Creating the
+        account also unlocks the session.
       requestBody:
         required: true
         content:
@@ -797,17 +801,59 @@ paths:
               $ref: "#/components/schemas/CreateAccountRequest"
       responses:
         "201":
-          description: The account was created.
+          description: The account was created. Official hosting also returns `recovery`.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Account"
+                $ref: "#/components/schemas/CreatedAccount"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "409":
           $ref: "#/components/responses/AccountExists"
+        "503":
+          description: Official hosting is not configured on this node.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/account/hosted/login:
+    post:
+      tags: [account]
+      operationId: loginHostedAccount
+      summary: Add this device to an official-hosted account
+      description: |
+        Performs an OPAQUE login with the account password, unwraps the
+        account master key locally, and initializes this device's local vault.
+        The node must not already have an account. The password is used once
+        and is not stored on the host.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HostedLoginRequest"
+      responses:
+        "201":
+          description: The device joined the account and the session is unlocked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HostedLoginResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/InvalidCredentials"
+        "409":
+          $ref: "#/components/responses/AccountExists"
+        "503":
+          description: Official hosting is not configured on this node.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/v1/devices:
     get:
@@ -910,6 +956,21 @@ paths:
         Paired devices receive the new key through account sync, sealed to
         their device encryption key. Room homes receive the new member key
         separately; unreachable homes are returned as warnings and retried.
+        An official-hosted account requires the account password so the new
+        key bundle can be sealed and published to the host; a self-hosted
+        account ignores it.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                password:
+                  type: string
+                  format: password
+                  description: Required for an official-hosted account.
       responses:
         "200":
           description: The account key was rotated.
@@ -917,6 +978,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RotateAccountKeyResult"
+        "400":
+          description: The official-hosted account password is missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "423":
@@ -950,12 +1017,33 @@ paths:
     post:
       tags: [account]
       operationId: createRecovery
-      summary: Create a new recovery file for this device
+      summary: Create a local recovery file or rotate the official one
       description: |
-        Wraps the vault master key with a new high-entropy recovery key and
-        returns the credential file once. The previous recovery file stops
-        working. The vault must be unlocked. Store the returned file offline:
-        anyone with it and local access can reset the password and open history.
+        Without a body, wraps this device's vault master key with a new
+        high-entropy recovery key and returns the credential file once. The
+        previous per-device recovery file stops working. The vault must be
+        unlocked.
+
+        With `{"official": true, "password": "..."}`, rotates the
+        official-hosted account's recovery file instead: the new recovery key
+        wraps the account master key and the host replaces the old recovery
+        wrap. The password is required. Store either returned file offline.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                official:
+                  type: boolean
+                  default: false
+                  description: Rotate the official account recovery file instead of the per-device file.
+                password:
+                  type: string
+                  format: password
+                  description: "Required when `official` is true."
       responses:
         "201":
           description: The recovery file was created. Its content is returned once.
@@ -968,12 +1056,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RecoveryCredential"
+        "400":
+          description: The request is invalid or the official password is missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/AccountNotFound"
         "423":
           $ref: "#/components/responses/Locked"
+        "503":
+          description: Official hosting is not configured on this node.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     delete:
       tags: [account]
       operationId: removeRecovery
@@ -3575,6 +3675,11 @@ components:
         server_code:
           type: string
           pattern: "^[0-9]{8}$"
+        host_url:
+          type: string
+          format: uri
+          description: Pinned official account host URL; absent for a self-hosted account.
+          examples: ["https://accounts.example.com#fp=..."]
         key_generation:
           type: integer
           minimum: 1
@@ -3584,6 +3689,93 @@ components:
           format: date-time
         device:
           $ref: "#/components/schemas/Device"
+
+    CreatedAccount:
+      type: object
+      additionalProperties: false
+      required: [id, name, server_id, server_code, key_generation, created_at]
+      properties:
+        id:
+          type: string
+          description: "14 decimal digits: 8-digit server code plus 6-digit account code."
+          pattern: "^[0-9]{14}$"
+        name:
+          type: string
+        server_id:
+          type: string
+          description: Full fingerprint of the server root key.
+        server_code:
+          type: string
+          pattern: "^[0-9]{8}$"
+        host_url:
+          type: string
+          format: uri
+          description: Pinned official account host URL; absent for a self-hosted account.
+        key_generation:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+        device:
+          $ref: "#/components/schemas/Device"
+        recovery:
+          $ref: "#/components/schemas/RecoveryCredential"
+
+    HostedLoginRequest:
+      type: object
+      additionalProperties: false
+      required: [host_url, account_id, password]
+      properties:
+        host_url:
+          type: string
+          format: uri
+          description: Official account host URL, including the pinned key fragment when known.
+        account_id:
+          type: string
+          pattern: "^[0-9]{14}$"
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 1024
+        device_name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Defaults to the machine hostname.
+
+    HostedLoginResponse:
+      type: object
+      additionalProperties: false
+      required: [id, name, server_id, server_code, key_generation, created_at]
+      properties:
+        id:
+          type: string
+          pattern: "^[0-9]{14}$"
+        name:
+          type: string
+        server_id:
+          type: string
+        server_code:
+          type: string
+          pattern: "^[0-9]{8}$"
+        host_url:
+          type: string
+          format: uri
+        key_generation:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+        device:
+          $ref: "#/components/schemas/Device"
+        warnings:
+          type: array
+          items:
+            type: string
+          description: Non-fatal sync or room-home warnings from the login.
 
     DeviceList:
       type: object
@@ -5589,13 +5781,17 @@ components:
       properties:
         filename:
           type: string
-          examples: ["toget-recovery-68173501840479-0199a1b2.togetkey"]
+          examples:
+            - "toget-recovery-68173501840479-0199a1b2.togetkey"
+            - "toget-account-recovery-68173501840479.togetkey"
         content:
           type: string
           maxLength: 16384
           description: |
-            The complete recovery file. It is a bearer secret: store it
-            offline and never send it through chat or unencrypted storage.
+            The complete recovery file. It may be a per-device vault recovery
+            file or an official account recovery file. It is a bearer secret:
+            store it offline and never send it through chat or unencrypted
+            storage.
         created_at:
           type: string
           format: date-time
@@ -5652,6 +5848,17 @@ components:
           minLength: 1
           maxLength: 64
           description: Defaults to the machine hostname.
+        host_url:
+          type: string
+          format: uri
+          description: |
+            Official account host URL. When set, the node registers an
+            official-hosted account instead of creating a local one.
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          description: Optional email for official account verification and recovery.
 
     CreateRoomRequest:
       type: object

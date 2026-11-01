@@ -10,8 +10,11 @@
 > request. Relay sessions use a WebSocket tunnel with HTTPS long-poll fallback.
 > Protobuf framing and a custom QUIC stream protocol remain design-only.
 > Optional gateway port mapping (PCP, NAT-PMP, UPnP) publishes public
-> alternates; UDP hole punching is not implemented. Go, SQLite, React,
-> TypeScript, and Vite match this document.
+> alternates; UDP hole punching is not implemented. The official account host
+> (`internal/hosted`, `cmd/toget-official`) uses OPAQUE (`bytemare/opaque`),
+> XChaCha20-Poly1305 sealed blobs, device-signed bearer sessions, and a
+> Go/WASM reset page. Go, SQLite, React, TypeScript, and Vite match this
+> document.
 
 ## Decision summary
 
@@ -19,14 +22,14 @@
 | --- | --- | --- |
 | Node, daemon, account host, relay | **Go** | Static binary, cross-platform services, strong concurrency, predictable memory |
 | Node transport | **HTTP/3 over QUIC** (`quic-go`), HTTPS/TCP fallback | Low-latency multiplexing, HTTPS fallback for hostile networks; optional gateway port mapping, relay for hard NAT |
-| Node encoding | **Protobuf** | Compact, versionable, generated types in Go and TypeScript |
+| Node encoding | **JSON envelopes** today; Protobuf schema reserved | Debuggable on the wire; protobuf messages exist but the implemented protocol is JSON |
 | Local API | **HTTP JSON + OpenAPI 3.1** on `127.0.0.1:7718` | Easy to inspect, script, and generate clients for |
 | Local web UI | **TypeScript + React + Vite** | Largest UI ecosystem; one codebase for web, desktop shell, and PWA |
 | UI system | **Tailwind CSS + Radix + shadcn/ui** | Accessible primitives, copy-in components, no design-system lock-in |
 | State | **TanStack Query** + minimal local state | Server state dominates: rooms, events, approvals |
 | Local storage | **SQLite** (`modernc.org/sqlite`) | Embedded, zero-ops, `CGO_ENABLED=0`, good for offline outbox and room copies |
 | Large official storage | **PostgreSQL** (optional) | Only when the official service outgrows SQLite |
-| Crypto | **Go stdlib + `golang.org/x/crypto` + `cloudflare/circl`** | Ed25519, X25519, HKDF, ChaCha20-Poly1305, HPKE, Argon2id, SPAKE2 |
+| Crypto | **Go stdlib + `golang.org/x/crypto` + `bytemare/opaque`** | Ed25519, X25519, HKDF, XChaCha20-Poly1305, Argon2id, OPAQUE |
 | CLI | **Cobra** | Standard Go CLI structure |
 | Logging | **log/slog** | Structured logs without a framework |
 | Metrics | **Prometheus client**, local only | Self-hosters can scrape; nothing is sent by default |
@@ -56,12 +59,12 @@ Go fits:
 
 Go is also used for the official service. The same binary with different subcommands keeps the self-hosted and official paths honest: they share the protocol and the storage code.
 
-## Why QUIC and Protobuf
+## Why QUIC and JSON envelopes
 
 - **QUIC** gives independent streams over one connection, cheap reconnects, and built-in TLS 1.3. It works well for many rooms and many peers without head-of-line blocking.
-- **WSS/TCP 443** is the fallback for networks that block UDP or only allow HTTPS. It carries the same Protobuf messages in binary frames.
-- **Protobuf** is compact, forward-compatible, and generates code for Go and TypeScript. Unknown fields are preserved, which matters for an open protocol with independent implementations.
-- **JSON stays at the edges**: the local API, the directory API, manifests, and configuration. Humans debug those; machines exchange Protobuf.
+- **WSS/TCP 443** is the fallback for networks that block UDP or only allow HTTPS. Relay sessions use the same envelope over a WebSocket tunnel or HTTPS long-poll.
+- **JSON envelopes** are what the implemented node, relay, directory, and account-host protocols use. They are easy to inspect, version additively, and implement without a code generator.
+- **Protobuf** remains a reserved schema in `proto/` for a future compact framing; the generated messages are not on the wire today. Adopting it would need a protocol version, not a silent switch.
 
 We are not using libp2p. It is a large dependency with its own identity, routing, and transport stack, and Toget's relay tree and account model are specific enough that we would fight it more than use it. We borrow ideas, not the dependency.
 
@@ -79,7 +82,7 @@ Using Matrix would mean adopting its trust model and event graph. Building a sma
 
 - **One UI, several shells.** The local web UI can run as a normal SPA, inside Tauri, and as a PWA. No second UI codebase.
 - **Ecosystem.** React has the largest component, testing, and hiring ecosystem; Radix and shadcn/ui provide accessible primitives that can be edited rather than fought.
-- **Typed contract.** OpenAPI generates the local API client; Protobuf generates event types. The UI does not hand-write wire types.
+- **Typed contract.** `api/openapi.yaml` documents the local API and the web client keeps TypeScript types beside its API module; Protobuf generates the reserved event/message types. The UI does not reach into Go internals.
 - **Fast iteration.** Vite's dev server and React Fast Refresh keep the loop short.
 
 Details:
@@ -99,8 +102,8 @@ The authenticated UI is a realtime room list and conversation, not a content sit
 ## Why SQLite everywhere at first
 
 - **Daemon:** room copies, event outbox, sync cursors, device and Agent registry cache. It must work offline and survive restarts.
-- **Account host:** account records, device list, membership, and ciphertext for hosted rooms. A single-node self-hosted account host is the common case, and SQLite handles it without a database server.
-- **Official service:** starts on SQLite too. If load demands it, the store interface allows PostgreSQL for the account and room metadata; ciphertext blobs can move to object storage.
+- **Account host:** account records, OPAQUE records, device list, sessions, email metadata, and sealed account-key blobs. A single-node self-hosted account host is the common case, and SQLite handles it without a database server.
+- **Official service:** starts on SQLite too. If load demands it, the store interface allows PostgreSQL for account metadata; sealed blobs can move to object storage. The official room home does not exist yet, so there is no hosted room history to scale.
 
 The pure-Go `modernc.org/sqlite` driver keeps cross-compilation free of CGO. Queries are written in SQL and reviewed; no ORM hides them. Migrations are plain SQL, embedded in the binary, and applied explicitly or at startup.
 
@@ -111,11 +114,11 @@ Why not Postgres by default: requiring a database server to run a personal node 
 - **Ed25519** for signatures: device certificates, outer envelopes, manifests.
 - **X25519** for key agreement.
 - **HKDF-SHA256** for key derivation.
-- **HPKE (RFC 9180)** with X25519 + HKDF-SHA256 + ChaCha20-Poly1305 for wrapping room epoch keys to member devices. `cloudflare/circl` provides the implementation.
-- **XChaCha20-Poly1305** for message content; AES-256-GCM where hardware acceleration is clearly better.
-- **Argon2id** for password verifiers and key derivation from passwords.
-- **SPAKE2** (via `circl/pake`) for password-authenticated login, so the host never sees the password. If a mature OPAQUE implementation becomes available, it is a candidate to replace SPAKE2.
-- **TLS 1.3** for transport; server identity is additionally proven with the signed manifest.
+- **X25519 + HKDF-SHA256** for wrapping room epoch keys to member devices. An HPKE (RFC 9180) migration is optional future work; the implemented envelope uses the explicit X25519 + HKDF + AEAD construction.
+- **XChaCha20-Poly1305** for message content and hosted sealed blobs; AES-256-GCM where hardware acceleration is clearly better.
+- **Argon2id** for self-hosted password verifiers and for wrapping the local vault key from a password.
+- **OPAQUE** (`github.com/bytemare/opaque`) for official-hosted registration and login, so the host never sees the password. The export key unwraps MK; the host stores only the registration record and ciphertext.
+- **TLS 1.3** for transport; server identity is additionally proven with the signed manifest or pinned host key.
 
 Rules:
 
@@ -135,9 +138,9 @@ Rules:
 
 ## Authentication and secrets
 
-- **Account login:** password via PAKE; the account host stores only a verifier.
+- **Account login:** self-hosted login checks a local Argon2id verifier; official-hosted login uses OPAQUE, and the host stores only the registration record.
 - **Local vault (implemented):** each device has a random vault key wrapped by an Argon2id-derived KEK from the password; an optional recovery key wraps the same vault key.
-- **Official-hosted accounts (planned):** MK is generated client-side and stored as `Enc(KEK(password), MK)`; the recovery credential stores `Enc(RK, MK)`.
+- **Official-hosted accounts (implemented):** MK is generated client-side. The host stores `Enc(OPAQUE export key, MK)`, `Enc(RK, MK)`, and `Enc(MK, account key bundle)`; the official recovery file carries RK, never MK.
 - **Devices:** each device has its own key pair and a certificate signed by the account key. Device enrollment requires approval from an existing device or the account host.
 - **Local API:** per-session token in a user-only file; `Origin` checks and `SameSite=Strict` cookies.
 - **Secrets at rest:** OS keychain (Keychain, Credential Manager, Secret Service) or an encrypted local vault for headless Linux. Agent API keys never go to the account host.
@@ -145,7 +148,7 @@ Rules:
 ## Repository and build tooling
 
 - **One Go module** at the repository root.
-- **Two binaries:** `cmd/toget` (node, daemon, CLI, relay, account host) and `cmd/toget-official` (directory, official account host, update service). The official binary reuses the same internal packages.
+- **Two binaries:** `cmd/toget` (node, daemon, CLI, self-hosted account host, relay subcommand) and `cmd/toget-official` (official account host, relay, directory, update service). The official binary reuses the same internal packages.
 - **pnpm workspaces** for `web/*` and `packages/*`.
 - **mise** pins Go, Node, pnpm, buf, and other tools.
 - **Taskfile** is the single entry point for development: `task dev`, `task test`, `task generate`, `task build`. Release signing and channel generation live in `toget-official release`, not in Taskfile.
@@ -154,8 +157,8 @@ Rules:
 ## Testing and quality
 
 - **Go:** standard `testing`, table-driven tests, `httptest`, in-memory SQLite for store tests.
-- **Protocol:** golden Protobuf fixtures, round-trip tests, fuzz tests for every decoder, and conformance tests that a second implementation could reuse.
-- **Crypto:** known-answer tests for HPKE, AEAD, HKDF, and signatures; property tests for envelope binding.
+- **Protocol:** JSON fixtures, round-trip tests for the envelope and signed requests, and fuzz tests for decoders where the input is untrusted.
+- **Crypto:** tests for OPAQUE registration/login, AEAD and key-wrap round trips, signature verification, and envelope AAD binding; host and hosted-link end-to-end tests cover registration, login, key rotation, password change, and recovery.
 - **Web:** Vitest and React Testing Library; Playwright for end-to-end flows.
 - **Multi-node:** integration tests spin up two or three nodes, a relay, and a fake Agent on localhost.
 - **Cross-platform CI:** tests run on Linux; macOS and Windows jobs build every package. `amd64` and `arm64` release archives are cross-built where practical.
@@ -224,10 +227,10 @@ Rules:
 - QUIC unavailable or unreliable on a meaningful share of networks, making WSS the primary path.
 - SQLite becoming a proven bottleneck for the official service.
 - A crypto primitive losing its security margin, requiring a versioned migration.
-- A protocol requirement that QUIC + Protobuf cannot express.
+- A protocol requirement that QUIC + JSON envelopes cannot express.
 
 If a change is needed, the protocol contract and domain packages stay the same; only the adapter or runtime changes. That is what the boundaries are for.
 
 ## The short version
 
-**Go for the node and the official service. QUIC plus a WSS fallback, Protobuf on the wire. SQLite first. React for the local UI. Standard cryptography only. One repository, one release train, boring standards.**
+**Go for the node and the official service. QUIC plus a WSS fallback, JSON envelopes on the wire. SQLite first. React for the local UI. Standard cryptography only. One repository, one release train, boring standards.**

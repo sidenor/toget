@@ -131,9 +131,9 @@ and [cards.md](cards.md).
 
 - [x] Self-hosted per-device recovery credential: generation, locked-password reset, unlocked local reset, password change
 - [x] Recovery-file checksum, account/device/server binding, rate limiting, verifier/wrap rollback
-- [ ] Official-hosted accounts: blind ciphertext storage, MK wrapping, PAKE login
-- [ ] Official recovery credential: forced download at registration
-- [ ] Account reset page: static, open source, no third-party scripts, local file read
+- [x] Official-hosted accounts: blind ciphertext storage, MK wrapping, OPAQUE login
+- [x] Official recovery credential: required before onboarding continues
+- [x] Account reset page: static, open source, no third-party scripts, local file read
 - [x] Device management UI: list, rename, revoke (local and paired devices)
 - [ ] Official room home node (ciphertext only)
 - [x] Signed release manifests, update service, atomic update and rollback
@@ -144,14 +144,18 @@ and [cards.md](cards.md).
 - [x] `toget service install` for systemd, launchd, and Windows services
 - [ ] Forced-update enforcement for official-hosted accounts
 
-**Status:** self-hosted local-vault recovery is implemented; the official hosted
-account flow, forced-download registration, and browser reset page are not.
-Signed release keys, manifests, channels, a signed release index, a static
-update service, atomic install, startup reconciliation, CLI rollback, periodic
-checks, and an in-app update prompt are implemented. The forced level is
-honored by the UI but is not server-enforced for official-hosted accounts,
-which do not exist yet. See [account-recovery.md](account-recovery.md) and
-[updates.md](updates.md).
+**Status:** self-hosted local-vault recovery and the official hosted account
+flow are implemented: OPAQUE registration and login, blind master-key storage,
+device-signed host sessions, email verification and recovery, required
+recovery-file download, key rotation, and the embedded browser reset page.
+The official room home node remains design-only; hosted accounts currently use
+their own devices or a self-hosted node as room homes. Signed release keys,
+manifests, channels, a signed release index, a static update service, atomic
+install, startup reconciliation, CLI rollback, periodic checks, and an in-app
+update prompt are implemented. The forced level is honored by the UI but is
+not server-enforced for official-hosted accounts. See
+[account-recovery.md](account-recovery.md), [deployment.md](deployment.md),
+and [updates.md](updates.md).
 
 **Done when:** a user can register on the official service, lose their password, reset it with the recovery credential, and still open old history — while the official service never has a key to read it.
 

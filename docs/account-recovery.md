@@ -1,16 +1,15 @@
 # Account Recovery and Local Passwords
 
-> **Status:** per-device vault recovery, local password reset, and password
-> change are implemented for self-hosted nodes. Official-hosted account
-> recovery, email login recovery, and the static browser reset page are still
-> design-only.
+> **Status:** per-device vault recovery, local password reset, password change,
+> official-hosted recovery, email verification, and the embedded browser reset
+> page are implemented. The official room home node is still design-only.
 
 Toget separates two questions that are easy to confuse:
 
-| Question | Answer |
-| --- | --- |
-| Can I sign in as this account? | The account password verifier on this device |
-| Can I decrypt old local history? | This device's vault master key, wrapped by the password or a recovery key |
+| Question | Self-hosted | Official-hosted |
+| --- | --- | --- |
+| Can I sign in as this account? | The password verifier on this device | The OPAQUE password record on the account host |
+| Can I decrypt old history? | This device's vault master key, wrapped by the password or a recovery key | The account master key (MK), unwrapped by a password login or the official recovery file |
 
 Changing the password verifier without the vault key would leave the old
 history unreadable. Resetting the vault key without the verifier would let the
@@ -156,7 +155,7 @@ All password and recovery responses use `Cache-Control: no-store` and
 | Method and path | Auth state | Purpose |
 | --- | --- | --- |
 | `GET /api/v1/account/recovery` | session token | Recovery status |
-| `POST /api/v1/account/recovery` | unlocked | Create or replace the credential |
+| `POST /api/v1/account/recovery` | unlocked | Create or replace the per-device credential; `{"official": true, "password": "..."}` rotates the official recovery file instead |
 | `DELETE /api/v1/account/recovery` | unlocked | Remove the credential |
 | `POST /api/v1/account/change-password` | session token | Current password required |
 | `POST /api/v1/account/reset-password` | session token | Recovery file while locked, or `local: true` while unlocked |
@@ -186,8 +185,11 @@ verifier and vault wrap cannot be changed concurrently.
   cannot decrypt the sealed files without the password or recovery key.
 - **Lost machine:** restore a tested backup and use the password or recovery
   file. If neither is available, the history is lost. Toget says this plainly.
-- **Other devices:** a reset or password change on one device does not change
-  another device's password or vault. There is no account-wide password yet.
+- **Other self-hosted devices:** a reset or password change on one device does
+  not change another device's local password or vault. Each self-hosted device
+  has its own password. Official-hosted accounts are different: the password
+  record on the host changes for every device, while each device still has its
+  own local vault password and must be updated separately.
 - **Lost or replaced credential:** create a new one while unlocked; the old
   file is void. A lost credential cannot be regenerated from the server.
 - **Server identity change:** the fingerprint and server ID in the file must
@@ -198,18 +200,88 @@ verifier and vault wrap cannot be changed concurrently.
   A recovery file can reset access; without one, use a tested backup. The
   daemon never bypasses either check.
 
-## Official-hosted accounts (design)
+## Official-hosted accounts
 
-The design for official-hosted accounts remains:
+An official-hosted account has one password record on the account host and a
+separate local vault password on each device. The host runs OPAQUE, so the
+password is never sent to it, and it stores only ciphertext:
 
-- registration generates the account master key and forces a recovery
-  credential download before completion;
-- email resets the login credential, but does not decrypt old history;
-- the static reset page reads the file locally with the File API and WebCrypto
-  and never uploads RK or MK;
-- the official service stores ciphertext only.
+- `Enc(password export key, MK)` — the password wrap;
+- `Enc(RK, MK)` — the official recovery wrap;
+- `Enc(MK, account key bundle)` — the signing key material.
 
-None of that hosted flow is implemented in this tree. The implemented recovery
-credential is per device and targets the local vault.
+Registration generates MK and RK on the client, uploads the wrapped blobs, and
+returns the recovery file once. The web onboarding flow requires the user to
+download it and confirm it was saved before continuing. The CLI writes it with
+mode `0600`:
+
+```bash
+toget account create --host 'https://accounts.example#fp=...' \
+  --name Aiden --email aiden@example.com --out ~/offline/toget-account.togetkey
+```
+
+The official file uses `kind: "toget-account-recovery"` and the filename
+`toget-account-recovery-<accountID>.togetkey`. It is separate from the
+per-device local recovery file. Rotate it while signed in:
+
+```bash
+toget account recovery rotate-official --out ~/offline/toget-account.togetkey
+```
+
+Rotating invalidates the previous official file immediately. A device with the
+account password can also rotate it from Settings.
+
+### Sign in on another device
+
+```bash
+toget account login --host 'https://accounts.example#fp=...' \
+  --account-id 48392017174628
+```
+
+The password performs the OPAQUE exchange, MK unwraps the account key bundle,
+and the new device publishes its account-signed device certificate. The
+password is used once to initialize this device's local vault and is not
+stored on the host. The CLI prompts for any missing value.
+
+### Email recovery and the reset page
+
+Email is a recovery channel, not a decryption key:
+
+1. The user requests a reset link; the host always answers the same way, so the
+   endpoint does not reveal whether an address is registered.
+2. The link opens `/reset/` on the same account host. The page is embedded in
+   `toget-official`, has no third-party scripts, and runs Go/WASM under a strict
+   CSP.
+3. The page asks for the official recovery file. It is read locally through
+   the File API and never uploaded.
+4. The browser verifies the recovery wrapper, unwraps MK, performs a fresh
+   OPAQUE registration for the new password, and sends only the new password
+   wrap, recovery wrap, and OPAQUE record.
+5. The host replaces the old password material atomically and marks the reset
+   token used. The page then shows a new recovery file; the old one no longer
+   works.
+
+Without the recovery file, an email link cannot decrypt MK and cannot reset the
+account. This is deliberate: whoever controls the mailbox gets login recovery
+only when the recovery key is also present. A logged-in device can rotate the
+official recovery file if the old one is lost.
+
+The host never receives the recovery file, MK, the account private key, or the
+plaintext password. It stores the encrypted email address and a keyed hash used
+for lookups. The reset page also needs `--host-public-url` to be reachable from
+the user's browser; a loopback-only host cannot serve email links off-machine.
+
+### Official account limits
+
+- Email resets restore the password only with the recovery file.
+- A password change updates the official password and the device that made the
+  change. Other devices keep their local unlock password until they are
+  updated; their next official login uses the new host password.
+- Deleting the account host database destroys the login records, not the
+  ciphertext copies on devices or room homes. There is no server-side recovery
+  of a lost recovery file.
+- The official room home node is not implemented. Hosted accounts currently
+  use their own devices or a self-hosted node as room homes, so "old history"
+  means the copies those endpoints hold, not an official archive.
 
 Social recovery (Shamir shares) and multi-device approval are future work.

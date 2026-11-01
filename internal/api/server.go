@@ -21,6 +21,8 @@ import (
 	"github.com/sidenor/toget/internal/agent"
 	"github.com/sidenor/toget/internal/approval"
 	"github.com/sidenor/toget/internal/backup"
+	"github.com/sidenor/toget/internal/hosted"
+	"github.com/sidenor/toget/internal/hostedlink"
 	"github.com/sidenor/toget/internal/identity"
 	"github.com/sidenor/toget/internal/node"
 	"github.com/sidenor/toget/internal/notify"
@@ -52,6 +54,7 @@ type AgentStreamProvider interface {
 // Options configures the local API.
 type Options struct {
 	Accounts      *account.Service
+	Hosted        *hostedlink.Service
 	Rooms         *room.Service
 	Agents        *agent.Service
 	Policies      *policy.Service
@@ -74,6 +77,7 @@ type Options struct {
 // Server is the loopback HTTP server.
 type Server struct {
 	accounts      *account.Service
+	hosted        *hostedlink.Service
 	rooms         *room.Service
 	agents        *agent.Service
 	policies      *policy.Service
@@ -106,6 +110,7 @@ func New(opts Options) *Server {
 	}
 	return &Server{
 		accounts:      opts.Accounts,
+		hosted:        opts.Hosted,
 		rooms:         opts.Rooms,
 		agents:        opts.Agents,
 		policies:      opts.Policies,
@@ -140,6 +145,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/status", s.protected(s.handleStatus))
 	mux.HandleFunc("GET /api/v1/account", s.protected(s.handleGetAccount))
 	mux.HandleFunc("POST /api/v1/account", s.protected(s.handleCreateAccount))
+	mux.HandleFunc("POST /api/v1/account/hosted/login", s.protected(s.handleHostedLogin))
 
 	// Update checks are local system operations, so they stay available while
 	// the account is locked. They still require the loopback API token.
@@ -376,8 +382,35 @@ func (s *Server) handleGetRecovery(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, status)
 }
 
+type createRecoveryRequest struct {
+	Official bool   `json:"official"`
+	Password string `json:"password"`
+}
+
 func (s *Server) handleCreateRecovery(w http.ResponseWriter, r *http.Request) {
 	noStore(w)
+	var req createRecoveryRequest
+	if r.ContentLength != 0 {
+		if err := decodeJSON(w, r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+	}
+	if req.Official {
+		if s.hosted == nil {
+			writeError(w, http.StatusServiceUnavailable, "hosted_unavailable", "official account hosting is not configured")
+			return
+		}
+		credential, content, err := s.hosted.RotateRecovery(r.Context(), req.Password)
+		if err != nil {
+			writeAccountError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, RecoveryCredentialView{
+			Filename: credential.Filename(), Content: string(content), CreatedAt: credential.CreatedAt,
+		})
+		return
+	}
 	credential, content, err := s.accounts.CreateRecovery(r.Context())
 	if err != nil {
 		writeAccountError(w, err)
@@ -414,7 +447,13 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	if _, err := s.accounts.ChangePassword(r.Context(), req.CurrentPassword, req.NewPassword); err != nil {
+	var err error
+	if s.hosted != nil {
+		err = s.hosted.ChangePassword(r.Context(), req.CurrentPassword, req.NewPassword)
+	} else {
+		_, err = s.accounts.ChangePassword(r.Context(), req.CurrentPassword, req.NewPassword)
+	}
+	if err != nil {
 		if errors.Is(err, account.ErrInvalidCredentials) || errors.Is(err, vault.ErrInvalidPassword) {
 			s.session.Failed(key)
 			writeError(w, http.StatusUnauthorized, "invalid_credentials", "current password is incorrect")
@@ -506,12 +545,61 @@ type createAccountRequest struct {
 	Name       string `json:"name"`
 	Password   string `json:"password"`
 	DeviceName string `json:"device_name"`
+	HostURL    string `json:"host_url"`
+	Email      string `json:"email"`
+}
+
+// createAccountResponse is flattened like AccountView, with the one-time
+// official recovery file attached when the account was created on a host.
+type createAccountResponse struct {
+	AccountView
+	Recovery *RecoveryCredentialView `json:"recovery,omitempty"`
 }
 
 func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	var req createAccountRequest
 	if err := decodeJSON(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if strings.TrimSpace(req.HostURL) != "" {
+		noStore(w)
+		if s.hosted == nil {
+			writeError(w, http.StatusServiceUnavailable, "hosted_unavailable", "official account hosting is not configured")
+			return
+		}
+		if _, err := s.accounts.Get(r.Context()); err == nil {
+			writeError(w, http.StatusConflict, "account_exists", "this node already has an account")
+			return
+		} else if !errors.Is(err, account.ErrNotFound) {
+			writeAccountError(w, err)
+			return
+		}
+		nodeURL := ""
+		if s.node != nil {
+			nodeURL = s.node.Address(r.Context())
+		}
+		snapshot, result, err := s.hosted.Register(r.Context(), hostedlink.RegisterSpec{
+			HostURL: req.HostURL, Name: req.Name, Email: req.Email,
+			Password: req.Password, DeviceName: req.DeviceName, NodeURL: nodeURL,
+		})
+		if err != nil {
+			writeAccountError(w, err)
+			return
+		}
+		s.session.Unlock()
+		if s.node != nil {
+			s.node.EnsureAllRooms(r.Context())
+		}
+		resp := createAccountResponse{AccountView: *accountView(snapshot.Account, snapshot.Device)}
+		if result.RecoveryCredential != nil {
+			resp.Recovery = &RecoveryCredentialView{
+				Filename:  result.RecoveryCredential.Filename(),
+				Content:   string(result.RecoveryCredentialRaw),
+				CreatedAt: result.RecoveryCredential.CreatedAt,
+			}
+		}
+		writeJSON(w, http.StatusCreated, resp)
 		return
 	}
 	snapshot, err := s.accounts.Create(r.Context(), req.Name, req.Password, req.DeviceName)
@@ -524,6 +612,57 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		s.node.EnsureAllRooms(r.Context())
 	}
 	writeJSON(w, http.StatusCreated, accountView(snapshot.Account, snapshot.Device))
+}
+
+type hostedLoginRequest struct {
+	HostURL    string `json:"host_url"`
+	AccountID  string `json:"account_id"`
+	Password   string `json:"password"`
+	DeviceName string `json:"device_name"`
+}
+
+type hostedLoginResponse struct {
+	AccountView
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+func (s *Server) handleHostedLogin(w http.ResponseWriter, r *http.Request) {
+	noStore(w)
+	if s.hosted == nil {
+		writeError(w, http.StatusServiceUnavailable, "hosted_unavailable", "official account hosting is not configured")
+		return
+	}
+	var req hostedLoginRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if _, err := s.accounts.Get(r.Context()); err == nil {
+		writeError(w, http.StatusConflict, "account_exists", "this node already has an account")
+		return
+	} else if !errors.Is(err, account.ErrNotFound) {
+		writeAccountError(w, err)
+		return
+	}
+	nodeURL := ""
+	if s.node != nil {
+		nodeURL = s.node.Address(r.Context())
+	}
+	snapshot, _, warnings, err := s.hosted.Login(r.Context(), hostedlink.LoginSpec{
+		HostURL: req.HostURL, AccountID: req.AccountID, Password: req.Password,
+		DeviceName: req.DeviceName, NodeURL: nodeURL,
+	})
+	if err != nil {
+		writeAccountError(w, err)
+		return
+	}
+	s.session.Unlock()
+	if s.node != nil {
+		s.node.EnsureAllRooms(r.Context())
+	}
+	writeJSON(w, http.StatusCreated, hostedLoginResponse{
+		AccountView: *accountView(snapshot.Account, snapshot.Device), Warnings: warnings,
+	})
 }
 
 // SessionView reports the local unlock state.
@@ -578,10 +717,26 @@ func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 	}
 	s.session.Succeeded(key)
 	expires := s.session.Unlock()
+	go s.refreshHostedAccount(req.Password)
 	writeJSON(w, http.StatusOK, SessionView{
 		HasAccount: true, Locked: false, ExpiresAt: &expires,
 		TTLSeconds: int(session.DefaultTTL.Seconds()),
 	})
+}
+
+// refreshHostedAccount runs after a successful local unlock. A hosted device
+// may be several account-key generations behind; the password login installs
+// the newest key and caches a host session. Failures are local-only and never
+// block unlocking.
+func (s *Server) refreshHostedAccount(password string) {
+	if s.hosted == nil || password == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	for _, warning := range s.hosted.RefreshFromPassword(ctx, password) {
+		s.logger.Debug("official account refresh after unlock", "warning", warning)
+	}
 }
 
 func (s *Server) handleLock(w http.ResponseWriter, r *http.Request) {
@@ -647,7 +802,7 @@ func (s *Server) handleAccountSync(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "node_disabled", "node transport is disabled")
 		return
 	}
-	result, err := s.node.SyncAccount(r.Context())
+	result, err := s.node.SyncAccountNow(r.Context())
 	if err != nil {
 		if errors.Is(err, account.ErrNotFound) {
 			writeAccountError(w, err)
@@ -659,12 +814,46 @@ func (s *Server) handleAccountSync(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+type rotateAccountKeyRequest struct {
+	Password string `json:"password"`
+}
+
 func (s *Server) handleRotateAccountKey(w http.ResponseWriter, r *http.Request) {
-	if s.node == nil {
-		writeError(w, http.StatusServiceUnavailable, "node_disabled", "node transport is disabled")
+	var req rotateAccountKeyRequest
+	if r.ContentLength != 0 {
+		if err := decodeJSON(w, r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+	}
+	snapshot, err := s.accounts.Get(r.Context())
+	if err != nil {
+		writeAccountError(w, err)
 		return
 	}
-	result, warnings, err := s.node.RotateAccountKey(r.Context())
+	hostedAccount := strings.TrimSpace(snapshot.Account.HostURL) != ""
+	var result *account.RotateKeyResult
+	var warnings []string
+	if hostedAccount {
+		if s.hosted == nil {
+			writeError(w, http.StatusServiceUnavailable, "hosted_unavailable", "official account hosting is not configured")
+			return
+		}
+		if req.Password == "" {
+			writeError(w, http.StatusBadRequest, "password_required", "the account password is required to publish a new key to the official host")
+			return
+		}
+		result, warnings, err = s.hosted.RotateAccountKey(r.Context(), req.Password)
+		if err == nil && s.node != nil {
+			warnings = append(warnings, s.node.PropagateAccountKey(r.Context())...)
+		}
+	} else {
+		if s.node == nil {
+			writeError(w, http.StatusServiceUnavailable, "node_disabled", "node transport is disabled")
+			return
+		}
+		result, warnings, err = s.node.RotateAccountKey(r.Context())
+	}
 	if err != nil {
 		writeAccountError(w, err)
 		return
@@ -949,9 +1138,31 @@ func writeAccountError(w http.ResponseWriter, err error) {
 			"this device has no recovery file; create one while it is unlocked")
 	case errors.Is(err, vault.ErrLocked):
 		writeError(w, http.StatusLocked, "locked", "unlock the node with your password")
-	case errors.Is(err, vault.ErrInvalidPassword), errors.Is(err, account.ErrInvalidCredentials):
+	case errors.Is(err, vault.ErrInvalidPassword), errors.Is(err, account.ErrInvalidCredentials),
+		errors.Is(err, hosted.ErrInvalidCredentials):
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "password is incorrect")
+	case errors.Is(err, hosted.ErrHostUnavailable):
+		writeError(w, http.StatusBadGateway, "host_unavailable", "the official account host is unreachable")
+	case errors.Is(err, hosted.ErrInvalidHost):
+		writeError(w, http.StatusBadGateway, "invalid_host", "the official account host identity is invalid")
 	default:
+		var apiError *hosted.APIError
+		if errors.As(err, &apiError) {
+			status := apiError.Status
+			if status < 400 || status > 499 {
+				status = http.StatusBadGateway
+			}
+			code := apiError.Code
+			if code == "" {
+				code = "host_error"
+			}
+			message := apiError.Message
+			if message == "" {
+				message = "the official account host rejected the request"
+			}
+			writeError(w, status, code, message)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "internal", "could not complete the account request")
 	}
 }

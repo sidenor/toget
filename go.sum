@@ -14,8 +14,6 @@ github.com/bytemare/opaque v0.18.0 h1:R0a5Xayu26uE/+ge2j0YZKotFgMuy5F9KkQTxiBPWX
 github.com/bytemare/opaque v0.18.0/go.mod h1:PUEGRLZhsF5np9IcLAZ0A1R3N9ue3p/raGFj9Q2VGcY=
 github.com/bytemare/secp256k1 v0.3.0 h1:Te2HjAtTRKbqRDBOIMKDFkILTqd6YZ+sIgXvrJ7BaB0=
 github.com/bytemare/secp256k1 v0.3.0/go.mod h1:Z2HjKm36tC+Qz51fe1eqMsAM99oTTNlvSuPmPyVXGm0=
-github.com/cloudflare/circl v1.6.5 h1:O64F26HEqNhznd/hrC5KZXVKYuKM2rx4deZDTc4ihQA=
-github.com/cloudflare/circl v1.6.5/go.mod h1:h5LNyxAc5nTue9DS5jT+48en2PSDYt3zdGnz5OstK6c=
 github.com/coder/websocket v1.8.15 h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNUA=
 github.com/coder/websocket v1.8.15/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
 github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=

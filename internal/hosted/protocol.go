@@ -34,6 +34,10 @@ const (
 	LoginBeginPath = "/host/v1/account/login/begin"
 	// LoginFinishPath finishes a PAKE login and releases encrypted account blobs.
 	LoginFinishPath = "/host/v1/account/login/finish"
+	// DeviceSessionPath exchanges a device signature for a short-lived session.
+	// It lets a logged-in device sync and rotate recovery without re-entering
+	// the account password or storing one on the host.
+	DeviceSessionPath = "/host/v1/account/device/session"
 	// SyncPath exchanges signed account device records.
 	SyncPath = "/host/v1/account/sync"
 	// PasswordBeginPath starts an authenticated password re-registration.
@@ -210,6 +214,22 @@ type AccountMaterial struct {
 	SessionToken     string                 `json:"session_token"`
 	SessionExpiresAt time.Time              `json:"session_expires_at"`
 	CreatedAt        time.Time              `json:"created_at"`
+}
+
+// DeviceSessionRequest authenticates a device with its account-signed
+// certificate and device signing key. The same identity headers are also
+// signed into the HTTP request.
+type DeviceSessionRequest struct {
+	Protocol  int    `json:"protocol"`
+	AccountID string `json:"account_id"`
+	DeviceID  string `json:"device_id"`
+}
+
+// DeviceSessionResponse is a short-lived bearer session for a known device.
+type DeviceSessionResponse struct {
+	Protocol         int       `json:"protocol"`
+	SessionToken     string    `json:"session_token"`
+	SessionExpiresAt time.Time `json:"session_expires_at"`
 }
 
 // SyncRequest exchanges the account's public device set and, after a key

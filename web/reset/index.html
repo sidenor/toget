@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="robots" content="noindex, nofollow, noarchive" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="description" content="Toget 官方账号的邮箱验证与密码找回。恢复文件只在本机解密。" />
+    <title>账号恢复 · Toget</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="brand">
+        <span class="brand-mark" aria-hidden="true">t</span>
+        <span class="brand-name">Toget</span>
+        <span class="brand-tag" data-i18n="brandTag">账号恢复</span>
+        <button class="lang" id="lang-toggle" type="button" aria-label="Switch language">EN</button>
+      </header>
+
+      <section class="card" id="view-loading" aria-live="polite">
+        <div class="spinner" aria-hidden="true"></div>
+        <h1 data-i18n="loadingTitle">正在准备安全页面</h1>
+        <p class="lede" data-i18n="loadingBody">密码和恢复文件都只在这台设备的浏览器里处理。</p>
+      </section>
+
+      <section class="card" id="view-verify" hidden aria-live="polite">
+        <div class="spinner" aria-hidden="true"></div>
+        <h1 data-i18n="verifyTitle">正在验证邮箱</h1>
+        <p class="lede" data-i18n="verifyBody">请稍候，不要关闭页面。</p>
+      </section>
+
+      <section class="card" id="view-verify-done" hidden aria-live="polite">
+        <div class="icon-badge" aria-hidden="true">✓</div>
+        <h1 data-i18n="verifyDoneTitle">邮箱已验证</h1>
+        <p class="lede" data-i18n="verifyDoneBody">现在可以关闭这个页面，回到 Toget 继续。之后就能用这个邮箱找回密码。</p>
+      </section>
+
+      <section class="card" id="view-reset" hidden>
+        <p class="eyebrow" data-i18n="resetEyebrow">账号恢复</p>
+        <h1 data-i18n="resetTitle">重设账号密码</h1>
+        <p class="lede" data-i18n="resetBody">邮箱只用来确认是你本人。要解开发件历史和账号密钥，还需要你的恢复文件——整个过程都在本机完成。</p>
+
+        <div class="account" id="account-card">
+          <div class="account-row">
+            <span class="account-label" data-i18n="accountName">账号</span>
+            <strong id="account-name">—</strong>
+          </div>
+          <div class="account-row">
+            <span class="account-label" data-i18n="accountId">账号 ID</span>
+            <code id="account-id">—</code>
+          </div>
+          <div class="account-row" id="account-email-row">
+            <span class="account-label" data-i18n="accountEmail">邮箱</span>
+            <span id="account-email">—</span>
+          </div>
+        </div>
+
+        <div class="step" id="step-file">
+          <h2 data-i18n="fileTitle">第 1 步 · 选择恢复文件</h2>
+          <p class="hint" data-i18n="fileHint">注册账号时保存的 .togetkey 文件。它不会上传，只在本机解锁账号主密钥。</p>
+          <label class="dropzone" id="dropzone" for="recovery-file" tabindex="0">
+            <span class="drop-icon" aria-hidden="true">↥</span>
+            <span class="drop-title" data-i18n="fileChoose">选择恢复文件</span>
+            <span class="drop-sub" data-i18n="fileChooseSub">或把它拖到这里</span>
+            <input id="recovery-file" type="file" accept=".togetkey,application/json" hidden />
+          </label>
+          <p class="status" id="file-status" role="status" aria-live="polite"></p>
+        </div>
+
+        <div class="step" id="step-password" hidden>
+          <div class="file-chip">
+            <span aria-hidden="true">✓</span>
+            <span id="file-chip-text" data-i18n="fileMatched">恢复文件已匹配</span>
+          </div>
+          <h2 data-i18n="passwordTitle">第 2 步 · 设置新密码</h2>
+          <label class="field">
+            <span data-i18n="newPassword">新密码</span>
+            <input id="new-password" type="password" autocomplete="new-password" minlength="8" maxlength="1024" />
+          </label>
+          <label class="field">
+            <span data-i18n="confirmPassword">再输入一次</span>
+            <input id="confirm-password" type="password" autocomplete="new-password" minlength="8" maxlength="1024" />
+          </label>
+          <label class="check">
+            <input id="show-password" type="checkbox" />
+            <span data-i18n="showPassword">显示密码</span>
+          </label>
+          <p class="hint" data-i18n="passwordHint">至少 8 个字符。这个密码以后用来登录 Toget 官方账号。</p>
+          <div class="notice">
+            <strong data-i18n="rotateTitle">恢复文件会同时换新</strong>
+            <span data-i18n="rotateBody">完成后旧恢复文件立即失效。请务必保存页面随后提供的新文件。</span>
+          </div>
+          <p class="status error" id="reset-status" role="alert" aria-live="assertive"></p>
+          <button class="button primary wide" id="reset-button" type="button" data-i18n="resetButton">重设密码</button>
+        </div>
+      </section>
+
+      <section class="card" id="view-working" hidden aria-live="polite">
+        <div class="spinner" aria-hidden="true"></div>
+        <h1 data-i18n="workingTitle">正在重新加密账号密钥</h1>
+        <p class="lede" data-i18n="workingBody">这通常只需要几秒。请不要关闭或刷新页面。</p>
+      </section>
+
+      <section class="card" id="view-done" hidden aria-live="polite">
+        <div class="icon-badge" aria-hidden="true">✓</div>
+        <h1 data-i18n="doneTitle">密码已重设</h1>
+        <p class="lede" data-i18n="doneBody">现在可以用新密码登录账号了。还差最后一步：保存新的恢复文件。</p>
+
+        <div class="notice strong">
+          <strong data-i18n="saveTitle">请立即保存恢复文件</strong>
+          <span data-i18n="saveBody">旧恢复文件已经失效。如果新文件丢了，又没有其他已登录设备，账号历史将无法再解开。</span>
+        </div>
+
+        <div class="save-row">
+          <button class="button primary" id="download-button" type="button" data-i18n="downloadButton">下载恢复文件</button>
+          <button class="button" id="copy-button" type="button" data-i18n="copyButton">复制内容</button>
+        </div>
+        <p class="filename" id="credential-filename">—</p>
+        <p class="status" id="save-status" role="status" aria-live="polite"></p>
+
+        <label class="check">
+          <input id="saved-check" type="checkbox" />
+          <span data-i18n="savedCheck">我已将新的恢复文件保存到安全位置</span>
+        </label>
+        <button class="button primary wide" id="finish-button" type="button" disabled data-i18n="finishButton">完成</button>
+        <p class="hint" data-i18n="finishHint">建议放在加密磁盘或密码管理器里，不要只留在下载文件夹。</p>
+      </section>
+
+      <section class="card" id="view-error" hidden role="alert">
+        <div class="icon-badge danger" aria-hidden="true">!</div>
+        <h1 data-i18n="errorTitle">无法继续</h1>
+        <p class="lede" id="error-message">—</p>
+        <p class="hint" id="error-hint"></p>
+        <button class="button wide" id="error-reload" type="button" data-i18n="errorReload">重新打开链接</button>
+      </section>
+
+      <p class="privacy" data-i18n="privacy">恢复文件和新密码不会离开这台设备。服务器只保存无法解密的密文。</p>
+      <noscript>
+        <p class="privacy">这个页面需要 JavaScript 和 WebAssembly 才能在本机解密。请启用后重新打开。</p>
+      </noscript>
+    </main>
+    <script src="wasm_exec.js"></script>
+    <script src="main.js"></script>
+  </body>
+</html>

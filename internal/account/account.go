@@ -714,6 +714,23 @@ func (s *Service) newAccountCode(ctx context.Context, serverID string) (string, 
 	return "", errors.New("could not allocate an account code")
 }
 
+// ValidatePassword applies the account password policy. Registration and
+// password changes use it so a password that cannot be entered locally is
+// never installed on an account host either.
+func ValidatePassword(password string) error {
+	if len(password) < minPasswordLength || len(password) > maxPasswordLength {
+		return ErrInvalidPassword
+	}
+	return nil
+}
+
+// HashPassword returns a local Argon2id verifier for a password. It is used
+// when an account is imported from an official host, where the password is
+// checked by OPAQUE and never leaves the client in plaintext.
+func HashPassword(password string) (string, error) {
+	return hashPassword(password)
+}
+
 func hashPassword(password string) (string, error) {
 	salt := make([]byte, argonSaltLength)
 	if _, err := rand.Read(salt); err != nil {

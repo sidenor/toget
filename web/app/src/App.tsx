@@ -13,6 +13,7 @@ import type {
   Attachment,
   Member,
   PairJoinView,
+  RecoveryCredential,
   Room,
   RoomEvent,
   Status,
@@ -762,6 +763,18 @@ function LockScreen({
   );
 }
 
+function downloadRecoveryCredential(credential: RecoveryCredential) {
+  const blob = new Blob([credential.content], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = credential.filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
 function Onboarding({
   t,
   error,
@@ -773,11 +786,17 @@ function Onboarding({
   setError: (value: string) => void;
   onCreated: () => Promise<void>;
 }) {
-  const [mode, setMode] = useState<"create" | "link">("create");
+  const [mode, setMode] = useState<"create" | "official" | "link">("create");
+  const [officialMode, setOfficialMode] = useState<"create" | "signin">("create");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [deviceName, setDeviceName] = useState("");
+  const [hostURL, setHostURL] = useState("");
+  const [email, setEmail] = useState("");
+  const [accountID, setAccountID] = useState("");
+  const [pendingRecovery, setPendingRecovery] = useState<RecoveryCredential | null>(null);
+  const [recoverySaved, setRecoverySaved] = useState(false);
   const [busy, setBusy] = useState(false);
   const [code, setCode] = useState("");
   const [join, setJoin] = useState<PairJoinView | null>(null);
@@ -824,9 +843,50 @@ function Onboarding({
       setError(t("onboard.mismatch"));
       return;
     }
+    if (mode === "official" && !hostURL.trim()) {
+      setError(t("onboard.hostRequired"));
+      return;
+    }
     setBusy(true);
     try {
-      await api.createAccount(name, password, deviceName || undefined);
+      const created = await api.createAccount(
+        name,
+        password,
+        deviceName || undefined,
+        mode === "official" ? { hostURL: hostURL.trim(), email: email.trim() || undefined } : undefined,
+      );
+      if (mode === "official") {
+        if (!created.recovery) {
+          setError(t("onboard.recoveryMissing"));
+          return;
+        }
+        downloadRecoveryCredential(created.recovery);
+        setPendingRecovery(created.recovery);
+        setRecoverySaved(false);
+        return;
+      }
+      await onCreated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("common.error"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function hostedSignIn(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    if (!hostURL.trim() || !accountID.trim()) {
+      setError(t("onboard.officialRequired"));
+      return;
+    }
+    if (password.length < 8) {
+      setError(t("onboard.passwordShort"));
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.hostedLogin(hostURL.trim(), accountID.trim(), password, deviceName || undefined);
       await onCreated();
     } catch (err) {
       setError(err instanceof Error ? err.message : t("common.error"));
@@ -884,7 +944,7 @@ function Onboarding({
     setError("");
   }
 
-  function switchMode(next: "create" | "link") {
+  function switchMode(next: "create" | "official" | "link") {
     if (join && !joinTerminal) return;
     setMode(next);
     setJoin(null);
@@ -905,6 +965,43 @@ function Onboarding({
     }
   }
 
+  if (pendingRecovery) {
+    return (
+      <div className="onboarding">
+        <div className="onboarding-card compact">
+          <div className="brand-mark">T</div>
+          <p className="eyebrow">{t("onboard.officialRecoveryEyebrow")}</p>
+          <h1>{t("onboard.officialRecoveryTitle")}</h1>
+          <p className="muted">{t("onboard.officialRecoveryText")}</p>
+          <p className="fine-print">{pendingRecovery.filename}</p>
+          <button
+            className="button ghost wide"
+            type="button"
+            onClick={() => downloadRecoveryCredential(pendingRecovery)}
+          >
+            {t("onboard.downloadRecovery")}
+          </button>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={recoverySaved}
+              onChange={(event) => setRecoverySaved(event.target.checked)}
+            />
+            {t("onboard.recoverySaved")}
+          </label>
+          <button
+            className="button primary wide"
+            type="button"
+            disabled={!recoverySaved}
+            onClick={() => void onCreated()}
+          >
+            {t("onboard.continue")}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="onboarding">
       <div className="onboarding-card">
@@ -923,6 +1020,15 @@ function Onboarding({
           <button
             type="button"
             role="tab"
+            aria-selected={mode === "official"}
+            className={mode === "official" ? "active" : ""}
+            onClick={() => switchMode("official")}
+          >
+            {t("onboard.tabOfficial")}
+          </button>
+          <button
+            type="button"
+            role="tab"
             aria-selected={mode === "link"}
             className={mode === "link" ? "active" : ""}
             onClick={() => switchMode("link")}
@@ -930,10 +1036,164 @@ function Onboarding({
             {t("onboard.tabLink")}
           </button>
         </div>
-        <h1>{mode === "create" ? t("onboard.title") : t("onboard.linkTitle")}</h1>
-        <p className="muted">{mode === "create" ? t("onboard.subtitle") : t("onboard.linkSubtitle")}</p>
+        <h1>
+          {mode === "create"
+            ? t("onboard.title")
+            : mode === "official"
+              ? officialMode === "create"
+                ? t("onboard.officialCreateTitle")
+                : t("onboard.officialSignInTitle")
+              : t("onboard.linkTitle")}
+        </h1>
+        <p className="muted">
+          {mode === "create"
+            ? t("onboard.subtitle")
+            : mode === "official"
+              ? officialMode === "create"
+                ? t("onboard.officialCreateSubtitle")
+                : t("onboard.officialSignInSubtitle")
+              : t("onboard.linkSubtitle")}
+        </p>
         {error && <div className="form-error">{error}</div>}
-        {mode === "create" ? (
+        {mode === "official" ? (
+          <div className="official-onboard">
+            <div className="onboard-tabs subtle" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={officialMode === "create"}
+                className={officialMode === "create" ? "active" : ""}
+                onClick={() => {
+                  setOfficialMode("create");
+                  setError("");
+                }}
+              >
+                {t("onboard.officialCreateTab")}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={officialMode === "signin"}
+                className={officialMode === "signin" ? "active" : ""}
+                onClick={() => {
+                  setOfficialMode("signin");
+                  setError("");
+                }}
+              >
+                {t("onboard.officialSignInTab")}
+              </button>
+            </div>
+            {officialMode === "create" ? (
+              <form onSubmit={submit}>
+                <label>
+                  {t("onboard.officialHost")}
+                  <input
+                    autoFocus
+                    type="url"
+                    value={hostURL}
+                    onChange={(event) => setHostURL(event.target.value)}
+                    placeholder="https://host.example.com"
+                    required
+                  />
+                </label>
+                <label>
+                  {t("onboard.name")}
+                  <input value={name} onChange={(event) => setName(event.target.value)} maxLength={64} required />
+                </label>
+                <label>
+                  {t("onboard.officialEmail")}
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
+                    placeholder={t("onboard.officialEmailHint")}
+                  />
+                </label>
+                <label>
+                  {t("onboard.password")}
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    minLength={8}
+                    required
+                  />
+                </label>
+                <label>
+                  {t("onboard.confirm")}
+                  <input
+                    type="password"
+                    value={confirm}
+                    onChange={(event) => setConfirm(event.target.value)}
+                    minLength={8}
+                    required
+                  />
+                </label>
+                <label>
+                  {t("devices.title")} · {t("devices.current")}
+                  <input
+                    value={deviceName}
+                    onChange={(event) => setDeviceName(event.target.value)}
+                    placeholder="MacBook · Chrome"
+                    maxLength={64}
+                  />
+                </label>
+                <button className="button primary wide" type="submit" disabled={busy}>
+                  {busy ? t("onboard.creating") : t("onboard.officialCreate")}
+                </button>
+                <p className="fine-print">{t("onboard.officialFine")}</p>
+              </form>
+            ) : (
+              <form onSubmit={hostedSignIn}>
+                <label>
+                  {t("onboard.officialHost")}
+                  <input
+                    autoFocus
+                    type="url"
+                    value={hostURL}
+                    onChange={(event) => setHostURL(event.target.value)}
+                    placeholder="https://host.example.com"
+                    required
+                  />
+                </label>
+                <label>
+                  {t("onboard.officialAccountID")}
+                  <input
+                    value={accountID}
+                    onChange={(event) => setAccountID(event.target.value.replace(/\D/g, ""))}
+                    inputMode="numeric"
+                    pattern="[0-9]{14}"
+                    maxLength={14}
+                    required
+                  />
+                </label>
+                <label>
+                  {t("onboard.password")}
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    minLength={8}
+                    required
+                  />
+                </label>
+                <label>
+                  {t("devices.title")} · {t("devices.current")}
+                  <input
+                    value={deviceName}
+                    onChange={(event) => setDeviceName(event.target.value)}
+                    placeholder="MacBook · Chrome"
+                    maxLength={64}
+                  />
+                </label>
+                <button className="button primary wide" type="submit" disabled={busy}>
+                  {busy ? t("onboard.linking") : t("onboard.officialSignIn")}
+                </button>
+                <p className="fine-print">{t("onboard.officialSignInHint")}</p>
+              </form>
+            )}
+          </div>
+        ) : mode === "create" ? (
           <form onSubmit={submit}>
             <label>
               {t("onboard.name")}

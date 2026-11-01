@@ -21,12 +21,22 @@ func (s *Service) RotateAccountKey(ctx context.Context) (*account.RotateKeyResul
 	if err != nil {
 		return nil, nil, err
 	}
+	return result, s.PropagateAccountKey(ctx), nil
+}
+
+// PropagateAccountKey tells room homes and account peers about the current
+// account key. Hosted rotation uses this after uploading the new bundle to the
+// official host.
+func (s *Service) PropagateAccountKey(ctx context.Context) []string {
+	if s == nil {
+		return nil
+	}
 	s.TriggerAccountSync()
 	snapshot, err := s.accounts.Get(ctx)
 	if err != nil {
-		return result, nil, err
+		return []string{"could not reload the account key: " + err.Error()}
 	}
-	return result, s.propagateAccountKey(ctx, snapshot), nil
+	return s.propagateAccountKey(ctx, snapshot)
 }
 
 // propagateAccountKey advances this account's member key in each room whose

@@ -1,15 +1,19 @@
 # Protocol (Draft)
 
-> Status: design draft plus a working LAN implementation. Nothing here is
-> frozen. The versioning rules are the part we intend to keep stable.
+> Status: working implementation across the local API, LAN node protocol,
+> relay, directory, and official account host. The official room home remains
+> design-only. Nothing here is frozen; the versioning rules are the part we
+> intend to keep stable.
 
-Toget has one protocol with three planes:
+Toget has one protocol with several surfaces:
 
-| Plane | Transport | Encoding | Used by |
+| Surface | Transport | Encoding | Used by |
 | --- | --- | --- | --- |
 | **Node protocol** | HTTP/3 over QUIC and HTTPS on `7717`, pinned self-signed certificate | JSON envelopes | Nodes on the same LAN |
+| **Relay API** | HTTPS on `7719`, WebSocket tunnel or long-poll | JSON envelopes + opaque frames | Nodes and relays across networks |
+| **Account host API** | HTTPS on `7722`, pinned host certificate | JSON + OPAQUE messages | Official-hosted accounts and the reset page |
 | **Local API** | HTTP on `127.0.0.1:7718` or a Unix socket | JSON (OpenAPI) | Local web UI, CLI, Agents on the same machine |
-| **Directory API** | HTTPS on `443` | JSON + signed manifests (design only) | Clients resolving a server code |
+| **Directory API** | HTTPS on `7720` | JSON + signed manifests | Clients resolving a server code |
 
 End-to-end encryption sits above the node protocol: relays and hosts forward ciphertext, not content.
 
@@ -568,6 +572,55 @@ Implemented today over HTTPS + JSON:
 
 See [relay.md](relay.md) for the exact wire format and numbers. Open: re-advertising a changed relay to devices that already stored a room address, multi-hop offline queueing, and the exact meaning of "no relay". Today `--no-relay` disables outbound fallback; ordinary nodes do not relay for others unless started with `toget relay`.
 
+## Official account host API
+
+`toget-official` serves the account host on `7722`. Every secret the host
+stores is ciphertext; the password itself never crosses the wire. The routes
+below are implemented and use the `hosted` package structs.
+
+| Method and path | Purpose |
+| --- | --- |
+| `GET /host/v1/health` | Liveness |
+| `GET /host/v1/info` | Host ID and short code, signed host manifest, OPAQUE configuration, and email/reset capability flags |
+| `POST /host/v1/account/register/begin` | Reserve a 14-digit account ID and return the OPAQUE registration response |
+| `POST /host/v1/account/register/finish` | Submit the OPAQUE record, password export wrap, recovery wrap, sealed key bundle, and first device record |
+| `POST /host/v1/account/login/begin` | Submit account ID and OPAQUE KE1; get KE2 and a login handle |
+| `POST /host/v1/account/login/finish` | Submit KE3; receive public metadata and the sealed blobs |
+| `POST /host/v1/account/device/session` | Exchange an account-signed device certificate and device-signed request for a short-lived bearer session |
+| `POST /host/v1/account/sync` | Exchange device records and, after rotation, the new sealed key bundle |
+| `POST /host/v1/account/password/begin` | Start authenticated OPAQUE re-registration |
+| `POST /host/v1/account/password/finish` | Install the new OPAQUE record and export wrap; revoke other sessions |
+| `POST /host/v1/account/recovery` | Replace the recovery wrap after rotating the recovery credential |
+| `POST /host/v1/account/email/verify` | Consume an email verification token |
+| `GET /host/v1/account/email/verify` | Human-readable verification result page |
+| `POST /host/v1/account/email/resend` | Send a fresh verification link |
+| `POST /host/v1/account/recover/request` | Request a password-reset email; the answer does not reveal whether the address exists |
+| `POST /host/v1/account/recover/context` | Resolve a reset token to public account metadata |
+| `POST /host/v1/account/recover/material` | Release the recovery wrap and key bundle for the reset page |
+| `POST /host/v1/account/recover/register/begin` | Start OPAQUE re-registration with a reset token |
+| `POST /host/v1/account/recover/finish` | Replace both password and recovery material atomically; mark the token used |
+
+Registration and login are OPAQUE exchanges with the host ID as server
+identity and a fixed v1 configuration returned by `/host/v1/info`. The
+password export key unwraps MK locally; the host never receives the export key.
+After the first password login, a device authenticates with
+`Authorization: Bearer <session>` obtained from a signature over its
+account-signed device certificate, so the password is not stored on the host
+and is not re-sent for sync or recovery rotation.
+
+The reset page at `/reset/` is served from the same origin and runs the same
+client code through Go/WASM. It reads the user's recovery file locally through
+the browser File API, calls `recover/context`, `recover/material`, and
+`recover/register/*`, and displays the replacement recovery file. Only new
+wrapped values and OPAQUE messages are sent. The page is served with
+`default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src
+'self'; style-src 'self'; img-src 'self' data:; base-uri 'none';
+form-action 'none'; frame-ancestors 'none'`.
+
+The host does not implement the room protocol. An official-hosted account's
+rooms use a device or a self-hosted node as their home; the official room home
+is design-only.
+
 ## Local API
 
 The local API is how the local web UI, the CLI, and Agents talk to the daemon.
@@ -579,6 +632,7 @@ The local API is how the local web UI, the CLI, and Agents talk to the daemon.
 - Endpoints mirror the node protocol conceptually: rooms, messages, agents, approvals, devices, relay, audit.
 - The CLI is a thin client over this API, so scripts and Agents use the same surface as the UI.
 - One local password protects one device. `POST /api/v1/account/reset-password` accepts a recovery file while locked, or `local: true` while unlocked; `POST /api/v1/account/change-password` requires the current password. Recovery status, create, and remove use `/api/v1/account/recovery`. See [account-recovery.md](account-recovery.md).
+- Official hosting uses the same local surface. `POST /api/v1/account` accepts `host_url` and `email` and returns the one-time recovery credential; `POST /api/v1/account/hosted/login` adds a second device with the account password; `POST /api/v1/account/rotate-key` requires the password for a hosted account; `POST /api/v1/account/sync` and unlocking the vault refresh host state. `POST /api/v1/account/recovery` with `{"official": true, "password": "..."}` rotates the official recovery file instead of the per-device one. See [account-recovery.md](account-recovery.md#official-hosted-accounts).
 
 ## Agent protocol
 

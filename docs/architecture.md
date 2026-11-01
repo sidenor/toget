@@ -83,11 +83,18 @@ paired devices receive the new private key as per-device sealed envelopes.
 The local vault is wrapped by a key derived from the account password; an
 optional per-device recovery file wraps the same vault key so a forgotten
 password can be reset while the node is locked, and an unlocked node can reset
-without the old password. The phone client and official account hosting shown
-above are still design-only. A node can optionally request PCP, NAT-PMP, or
-UPnP gateway port mappings and publish the public result as an alternate
-direct address; UDP hole punching is not implemented. See
-[account-recovery.md](account-recovery.md).
+without the old password. `toget-official` also runs an official account host
+on `7722`: clients register and log in with OPAQUE, the host stores only the
+password record, sealed MK wraps, a sealed account-key bundle, and public
+device records, and a device-signed certificate exchanges for a short-lived
+host session. Official accounts can be created and used from the CLI, the
+local API, and the local web UI; an embedded Go/WASM page at `/reset/` handles
+email recovery without uploading the recovery file. A node can optionally
+request PCP, NAT-PMP, or UPnP gateway port mappings and publish the public
+result as an alternate direct address; UDP hole punching is not implemented.
+The phone client and the official room home node are still design-only. See
+[account-recovery.md](account-recovery.md) and
+[deployment.md](deployment.md).
 
 ## Account and device model
 
@@ -153,7 +160,7 @@ Switching accounts: log out, wipe local keys and caches, then join the new accou
 | Room epoch key | Each room member endpoint | Encrypts room messages for one membership epoch |
 | Account master key (MK) | User devices; official host stores only ciphertext | Unlocks account data and history on official-hosted accounts |
 | Local vault key | Each device | Seals local private keys and secrets; wrapped by the password |
-| Recovery key (RK) | The user's per-device recovery file | Unwraps the local vault key after a forgotten-password reset |
+| Recovery key (RK) | The user's per-device recovery file, or the official account recovery file | Unwraps the local vault key or the hosted account master key after a forgotten-password reset |
 | Server root key (Ed25519) | Account host / official service | Signs the server manifest and rotates operation keys |
 | Release key | Official service | Signs version manifests; certified by the root key |
 
@@ -170,17 +177,17 @@ An **endpoint** is a trust boundary that can decrypt messages and run Agents.
 - The official service is **never** an endpoint by default.
 - The official relay sees the outer envelope: target, time, size, sender signature. It does not see the room ID or content.
 - The official account host sees account metadata and ciphertext; it does not hold room epoch keys.
-- The official room home node stores ciphertext, orders envelopes, and does not decrypt unless the user explicitly authorizes it to run an Agent.
+- The planned official room home node would store ciphertext and order envelopes; it is not implemented. It would not decrypt unless the user explicitly authorizes it to run an Agent.
 
 ## Components
 
 ### Account host
 
-- Stores account records: ID, public keys, password verifier (PAKE/Argon2id), device list, room membership, and the encrypted master-key blob for official-hosted accounts.
+- Stores account records: ID, public keys, an Argon2id password verifier for a self-hosted account, an OPAQUE registration record for an official-hosted account, device records, room membership, and sealed account-key material.
 - Assigns the 6-digit account code.
-- Verifies login; issues device tokens.
-- Can host rooms as a home node.
-- For official hosting, stores ciphertext only; it cannot decrypt message content.
+- Verifies login. Self-hosted login checks the local verifier; the official host runs OPAQUE and exchanges a device-signed certificate for a short-lived bearer session.
+- A self-hosted account host can host rooms as a home node. The official host cannot: the official room home is design-only.
+- For official hosting, stores ciphertext and OPAQUE records only; it cannot decrypt message content or account keys.
 - For self-hosting, it is the user's endpoint and can decrypt; the local administrator can reset the password.
 
 ### Daemon / node
@@ -268,7 +275,7 @@ History follows the participants, not a central server:
 
 - Every participant's machine stores a copy of the rooms it can decrypt.
 - The room home node stores a copy and orders events.
-- The official service stores a copy only when it is involved: an official-hosted account (ciphertext), an official Agent with explicit authorization, or an official room home node (ciphertext).
+- The official service stores a copy only when it is involved: an official Agent with explicit authorization, or (in the future) an official room home node storing ciphertext. The account host does not store room history; an official-hosted account's rooms live on its devices or a self-hosted home.
 - A relay stores messages only temporarily for offline delivery; it is not a permanent history store.
 - If two self-hosted machines talk and no official Agent is involved, the official service has no copy.
 - Copies are per machine, not per identity: a person and their Agent on the same machine share one local copy.
@@ -319,7 +326,7 @@ Open details: re-advertising a changed relay to devices that already stored a ro
 - **KDF:** HKDF-SHA256.
 - **AEAD:** XChaCha20-Poly1305 (preferred) or AES-256-GCM.
 - **HPKE:** RFC 9180 with X25519 + HKDF-SHA256 + ChaCha20-Poly1305, using a mature library.
-- **Password verification:** PAKE for login, Argon2id for the stored verifier and key derivation.
+- **Password verification:** OPAQUE for official-hosted login; Argon2id for a self-hosted verifier and for the local vault key wrap. OPAQUE export keys wrap the account master key.
 - **Transport:** TLS 1.3 for all connections; server identity is verified with the signed manifest, not only the certificate.
 - **No custom cryptography.** Use standard combinations and mature libraries.
 
@@ -348,7 +355,7 @@ Open details: re-advertising a changed relay to devices that already stored a ro
 1. **Self-hosted account, LAN or public.** The user's machine is the account host and endpoint. Rooms can stay on the LAN; the official service is optional.
 2. **Self-hosted account behind NAT.** The machine keeps an outbound connection to a relay; other devices reach it through the relay.
 3. **Official-hosted account.** The official service stores ciphertext and account metadata; the user's devices are endpoints.
-4. **Mixed room.** A self-hosted account and an official-hosted account share a room; the room home node is the creator's account host, and the official service stores only what its hosted participants require.
+4. **Mixed room.** A self-hosted account and an official-hosted account share a room. The home is a self-hosted node (the creator's account host, or another member's node); an official-hosted account cannot yet use the official host as a room home, so its devices sync from that node.
 5. **Relay-only node.** A public node that forwards encrypted envelopes but hosts no accounts.
 
 ## Open questions

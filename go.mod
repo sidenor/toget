@@ -3,6 +3,7 @@ module github.com/sidenor/toget
 go 1.27.3
 
 require (
+	github.com/bytemare/opaque v0.18.0
 	github.com/coder/websocket v1.8.15
 	github.com/google/uuid v1.6.0
 	github.com/quic-go/quic-go v0.64.1
@@ -23,9 +24,7 @@ require (
 	github.com/bytemare/hash v0.6.2 // indirect
 	github.com/bytemare/hash2curve v0.5.4 // indirect
 	github.com/bytemare/ksf v0.5.0 // indirect
-	github.com/bytemare/opaque v0.18.0 // indirect
 	github.com/bytemare/secp256k1 v0.3.0 // indirect
-	github.com/cloudflare/circl v1.6.5 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/gtank/ristretto255 v0.2.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect

@@ -205,6 +205,92 @@ func (s *Service) ApplyAccountKeyRotations(ctx context.Context, chain []string, 
 	return &Snapshot{Account: &rotated, Server: snapshot.Server, Device: &device}, true, nil
 }
 
+// InstallAccountKey installs an account key obtained through an authenticated
+// official-host login. The host unwraps the key bundle only after the password
+// proves the account master key; this method additionally verifies that the
+// key matches the signed rotation chain and agrees with every generation this
+// device already knows. It returns whether anything changed.
+func (s *Service) InstallAccountKey(ctx context.Context, generation int, chain []string, privateKey ed25519.PrivateKey) (*Snapshot, bool, error) {
+	if generation < 1 || len(privateKey) != ed25519.PrivateKeySize {
+		return nil, false, ErrKeyRotationEnvelope
+	}
+	snapshot, err := s.Get(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	if snapshot.Device.RevokedAt != nil {
+		return nil, false, ErrCurrentDevice
+	}
+	current := snapshot.Account.KeyGeneration
+	if current <= 0 {
+		current = 1
+	}
+	if generation < current {
+		return snapshot, false, nil
+	}
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+	if generation == current {
+		if !bytes.Equal(publicKey, snapshot.Account.PublicKey) {
+			return nil, false, ErrKeyRotationConflict
+		}
+		return snapshot, false, nil
+	}
+	keys, err := identity.VerifyAccountKeyChain(snapshot.Account.ID, chain)
+	if err != nil {
+		return nil, false, err
+	}
+	key, ok := keys[generation]
+	if !ok {
+		return nil, false, ErrKeyRotationGap
+	}
+	if !bytes.Equal(key, publicKey) {
+		return nil, false, ErrKeyRotationEnvelope
+	}
+	for g := 2; g <= generation; g++ {
+		if _, ok := keys[g]; !ok {
+			return nil, false, ErrKeyRotationGap
+		}
+	}
+	if anchored, ok := keys[current]; ok && !bytes.Equal(anchored, snapshot.Account.PublicKey) {
+		return nil, false, ErrKeyRotationConflict
+	}
+	if len(snapshot.Account.KeyRotations) > 0 {
+		local, err := identity.VerifyAccountKeyChain(snapshot.Account.ID, snapshot.Account.KeyRotations)
+		if err != nil {
+			return nil, false, fmt.Errorf("local account key history: %w", err)
+		}
+		for g, localKey := range local {
+			if incoming, ok := keys[g]; ok && !bytes.Equal(incoming, localKey) {
+				return nil, false, ErrKeyRotationConflict
+			}
+		}
+	}
+	if !s.vault.Ready() {
+		return nil, false, vault.ErrLocked
+	}
+	sealed, err := s.vault.Seal(privateKey, aadAccountKey)
+	if err != nil {
+		return nil, false, fmt.Errorf("seal account key: %w", err)
+	}
+	now := s.now().UTC().Truncate(time.Millisecond)
+	cert, err := identity.SignDeviceCertificate(snapshot.Device.ID, snapshot.Account.ID,
+		snapshot.Device.PublicKey, snapshot.Device.EncryptionPublicKey, privateKey, now)
+	if err != nil {
+		return nil, false, err
+	}
+	device := *snapshot.Device
+	device.Certificate = string(cert)
+	installed := *snapshot.Account
+	installed.PublicKey = append([]byte(nil), publicKey...)
+	installed.PrivateKey = []byte(sealed)
+	installed.KeyGeneration = generation
+	installed.KeyRotations = canonicalRotationChain(snapshot.Account.KeyRotations, chain)
+	if err := s.store.UpdateAccountKey(ctx, &installed, []Device{device}); err != nil {
+		return nil, false, err
+	}
+	return &Snapshot{Account: &installed, Server: snapshot.Server, Device: &device}, true, nil
+}
+
 // SealAccountKeyForDevice wraps the current account private key to one active
 // sibling device. ctx binds the envelope to the account, generation, and
 // recipient, so it cannot be replayed to another device.

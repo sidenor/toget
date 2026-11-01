@@ -3,18 +3,20 @@
 Toget is one repository containing the node, the official service, the local web UI, the reset page, shared packages, deployment assets, and documentation.
 
 > **Current implementation:** the working tree contains `cmd/toget`,
-> `cmd/toget-official`, `internal/{account,agent,api,approval,backup,card,config,directory,directoryproto,identity,mdns,node,notify,policy,protocol,relay,relayproto,relaytunnel,releasebuild,room,sbom,sealbox,session,storage,tool,ui,update,vault,version}`,
-> `sdk/connector`, `examples/connector-echo`, `web/app`, `api/`, `proto/`,
-> `desktop/` (an unbuilt Tauri scaffold), `scripts/`, and `docs/`. The tree below is the target layout; directories
-> such as `device`, `crypto`, `message`, `transport`, `sync`, `discovery`,
-> `official`, `platform`, `deploy`, `tests`, and the remaining `examples/*`
-> entries are planned, not present yet. The LAN node lives in `internal/node`,
-> the portable card format and QR renderer in `internal/card`, remote-room
-> sync/lifecycle code in `internal/room/remote.go`, signed release
-> verification, the update monitor, and managed installation in
-> `internal/update`, deterministic archive building in `internal/releasebuild`,
-> SBOM generation in `internal/sbom`, and the public connector contract plus Go
-> SDK in `docs/connectors.md` and `sdk/connector`.
+> `cmd/toget-official`, `internal/{account,agent,api,approval,backup,card,config,directory,directoryproto,hosted,hostedlink,identity,mdns,nat,node,notify,policy,protocol,qr,quicclient,requestauth,relay,relayproto,relaytunnel,releasebuild,room,sbom,sealbox,session,storage,tool,ui,update,vault,version}`,
+> `sdk/connector`, `examples/connector-echo`, `web/app`, `web/reset`, `api/`,
+> `proto/`, `desktop/` (an unbuilt Tauri scaffold), `scripts/`, and `docs/`.
+> The tree below is the target layout; directories such as `device`, `crypto`,
+> `message`, `transport`, `sync`, `discovery`, `platform`, `deploy`, `tests`,
+> `web/site`, `web/packages`, and the remaining `examples/*` entries are
+> planned, not present yet. The LAN node lives in `internal/node`, the
+> portable card format and QR renderer in `internal/card`, remote-room
+> sync/lifecycle code in `internal/room/remote.go`, the official account host
+> in `internal/hosted`, client-side hosted-account orchestration in
+> `internal/hostedlink`, signed release verification, the update monitor, and
+> managed installation in `internal/update`, deterministic archive building in
+> `internal/releasebuild`, SBOM generation in `internal/sbom`, and the public
+> connector contract plus Go SDK in `docs/connectors.md` and `sdk/connector`.
 
 ## Top-level tree
 
@@ -52,7 +54,8 @@ toget/
 │   │   ├── service*.go            # systemd/launchd/Windows service install/status/uninstall
 │   │   └── update.go              # update check/status/apply/finish/rollback CLI
 │   └── toget-official/
-│       ├── main.go                # directory, relay, static update service
+│       ├── main.go                # official account host, directory, relay, static update service
+│       ├── host.go                # account host startup, TLS, SMTP, embedded reset page
 │       ├── update.go              # release keygen/certify/manifest/channel/verify commands
 │       ├── release_index.go       # signed index, latest, yank
 │       ├── build.go               # reproducible archives and double-build verification
@@ -69,6 +72,8 @@ toget/
 │   ├── crypto/                    # HPKE, AEAD, KDF, PAKE wrappers; no domain logic
 │   ├── protocol/                  # generated Protobuf types and validation
 │   ├── quicclient/                # HTTP/3 probe and fallback client for pinned node/relay endpoints
+│   ├── qr/                        # terminal/PNG QR rendering
+│   ├── requestauth/               # signed node-request authentication and replay cache
 │   ├── nat/                       # STUN, PCP, NAT-PMP, and UPnP gateway port mapping
 │   ├── transport/                 # planned custom QUIC framing; implemented traffic is HTTP/3 or HTTPS + WebSocket/long-poll
 │   ├── room/                      # rooms, membership, epochs, events, ordering
@@ -85,7 +90,9 @@ toget/
 │   ├── relayproto/                # relay wire types, routes, signed envelopes
 │   ├── sealbox/                   # room key wrapping and sealed payload helpers
 │   ├── discovery/                 # planned manifest cache and manual-address book (cards live in internal/card)
-│   ├── official/                  # planned official account host (update service lives in cmd/toget-official + internal/update)
+│   ├── hosted/                    # implemented official account host: OPAQUE, sealed blobs, sessions, email, reset assets
+│   ├── hostedlink/                # implemented client-side register/login/key rotation/password/recovery orchestration
+│   ├── session/                   # local session tokens and expiry
 │   ├── update/                    # implemented signed documents, index, static service, monitor, atomic install, rollback
 │   ├── releasebuild/              # deterministic cross-platform release archives
 │   ├── sbom/                      # deterministic SPDX 2.3 document builder
@@ -124,7 +131,7 @@ toget/
 │   │       ├── components/
 │   │       ├── lib/
 │   │       └── main.tsx
-│   ├── reset/                     # static account-reset page; reads the credential locally
+│   ├── reset/                     # embedded reset page + Go/WASM; reads the credential locally
 │   ├── site/                      # project site and docs site
 │   └── packages/
 │       ├── ui/                    # design system and shared components
@@ -204,7 +211,7 @@ toget/
 - `room`, `message`, `account`, `device`, `agent`, and `sync` own the domain rules and do not import HTTP, QUIC, or SQL drivers.
 - `storage` defines interfaces; the SQLite implementation lives beside them. Domain code depends on the interface.
 - `relay` forwards opaque envelopes and must not import `message` decryption or room keys.
-- `update` owns release formats, signature verification, static serving, and managed installation; `cmd/toget-official` composes it with the directory and relay. `official` is reserved for the planned official account host.
+- `update` owns release formats, signature verification, static serving, and managed installation. `hosted` owns the official account host (OPAQUE, sealed storage, sessions, email, reset assets), and `hostedlink` owns client-side hosted-account flows. `cmd/toget-official` composes them with the directory and relay.
 - `ui` and `api` translate transport into domain calls; policy decisions belong in the domain.
 
 ### `proto/` is the node contract
@@ -220,7 +227,7 @@ toget/
 - `api/openapi.yaml` describes the local HTTP API on `127.0.0.1:7718`.
 - It covers rooms, messages, agents, approvals, policies, devices, relay, settings, and audit.
 - The CLI and the web UI are both clients of this API; neither gets a private backdoor.
-- Generated Go server types and TypeScript clients are checked in and regenerated by CI.
+- The Go server types and the web TypeScript client are currently hand-written beside their consumers; OpenAPI is the contract they follow. Generated server/client code is a future tooling step, not a checked-in artifact today.
 
 ### `desktop/` is an optional shell
 
@@ -234,7 +241,7 @@ toget/
 ### `web/` contains clients, not business logic
 
 - `web/app` is the local UI SPA. It talks only through the local API and the event stream.
-- `web/reset` is a static page. It must not load third-party scripts or telemetry; it reads the recovery credential locally with the File API and WebCrypto.
+- `web/reset` is an embedded static page plus a Go/WASM module. It must not load third-party scripts or telemetry; it reads the recovery credential locally with the File API and performs OPAQUE and XChaCha20-Poly1305 in WASM, not WebCrypto.
 - `web/site` is the public project and documentation site. It can be statically generated and deployed separately.
 - `web/packages/ui` is the design system; feature-specific components stay in the app.
 - `web/packages/api-client` and `web/packages/proto` are generated.

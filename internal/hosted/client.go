@@ -17,6 +17,7 @@ import (
 
 	"github.com/sidenor/toget/internal/account"
 	"github.com/sidenor/toget/internal/identity"
+	"github.com/sidenor/toget/internal/requestauth"
 )
 
 const maxResponseBytes = 8 << 20
@@ -31,6 +32,8 @@ var (
 	// ErrRecoveryMismatch means a recovery file does not belong to the account
 	// or host being reset.
 	ErrRecoveryMismatch = errors.New("recovery credential does not match this account")
+	// ErrSessionInvalid means a bearer session is unknown or expired.
+	ErrSessionInvalid = errors.New("invalid session")
 )
 
 // APIError is a structured host error response.
@@ -460,6 +463,25 @@ func validateDeviceRecords(records []account.DeviceRecord, accountID string, pub
 	return out, nil
 }
 
+// DeviceSession exchanges the local device key for a short-lived host
+// session. The host checks the account-signed device certificate, so this
+// works without the account password and without storing one on the host.
+func (c *Client) DeviceSession(ctx context.Context, accountID, deviceID string, deviceKey ed25519.PrivateKey) (string, time.Time, error) {
+	if !digits(accountID, 14) || deviceID == "" || len(deviceKey) != ed25519.PrivateKeySize {
+		return "", time.Time{}, ErrInvalidCredentials
+	}
+	var response DeviceSessionResponse
+	if err := c.doDeviceSigned(ctx, DeviceSessionPath, accountID, deviceID, deviceKey, DeviceSessionRequest{
+		Protocol: Protocol, AccountID: accountID, DeviceID: deviceID,
+	}, &response); err != nil {
+		return "", time.Time{}, err
+	}
+	if response.Protocol != Protocol || response.SessionToken == "" {
+		return "", time.Time{}, fmt.Errorf("%w: device session response is inconsistent", ErrInvalidHost)
+	}
+	return response.SessionToken, response.SessionExpiresAt, nil
+}
+
 // VerifyEmail consumes an email verification token.
 func (c *Client) VerifyEmail(ctx context.Context, token string) (*EmailVerifyResponse, error) {
 	var response EmailVerifyResponse
@@ -607,6 +629,110 @@ func (c *Client) RecoverMaterial(ctx context.Context, token string) (*RecoverMat
 	return &response, nil
 }
 
+// RecoveryInspection describes a reset after verifying that the recovery file
+// matches the account. It lets a reset page confirm the file before asking for
+// a new password.
+type RecoveryInspection struct {
+	AccountID     string
+	Name          string
+	EmailHint     string
+	HostID        string
+	KeyGeneration int
+	ExpiresAt     time.Time
+}
+
+type recoveryState struct {
+	info        *Info
+	context     *RecoverContext
+	material    *RecoverMaterial
+	credential  *RecoveryCredential
+	recoveryKey []byte
+	masterKey   []byte
+	bundle      *KeyBundle
+}
+
+func (s *recoveryState) clear() {
+	if s == nil {
+		return
+	}
+	wipe(s.recoveryKey)
+	wipe(s.masterKey)
+	if s.bundle != nil {
+		wipe(s.bundle.AccountPrivateKey)
+	}
+}
+
+// openRecovery verifies a reset token and recovery file, and unlocks MK.
+func (c *Client) openRecovery(ctx context.Context, token string, credentialData []byte) (*recoveryState, error) {
+	if token == "" {
+		return nil, errors.New("reset token is missing")
+	}
+	credential, recoveryKey, err := ParseRecoveryCredential(credentialData)
+	if err != nil {
+		return nil, err
+	}
+	info, err := c.Info(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !sameHostURL(credential.HostURL, c.pinnedURL) {
+		return nil, ErrRecoveryMismatch
+	}
+	recoveryContext, err := c.RecoverContext(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	if recoveryContext.AccountID != credential.AccountID ||
+		recoveryContext.HostID != info.HostID || !recoveryContext.RecoveryReady {
+		return nil, ErrRecoveryMismatch
+	}
+	material, err := c.RecoverMaterial(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	state := &recoveryState{
+		info: info, context: recoveryContext, material: material,
+		credential: credential, recoveryKey: recoveryKey,
+	}
+	if material.AccountID != credential.AccountID {
+		state.clear()
+		return nil, ErrRecoveryMismatch
+	}
+	masterKey, err := OpenRecoveryWrap(recoveryKey, material.RecoveryWrap, credential.AccountID)
+	if err != nil {
+		state.clear()
+		return nil, ErrRecoveryMismatch
+	}
+	state.masterKey = masterKey
+	bundle, err := OpenKeyBundle(masterKey, material.KeyBundle, credential.AccountID, material.KeyGeneration)
+	if err != nil {
+		state.clear()
+		return nil, ErrRecoveryMismatch
+	}
+	state.bundle = bundle
+	publicKey := ed25519.PrivateKey(bundle.AccountPrivateKey).Public().(ed25519.PublicKey)
+	if !bytes.Equal(publicKey, material.PublicKey) {
+		state.clear()
+		return nil, ErrRecoveryMismatch
+	}
+	return state, nil
+}
+
+// InspectRecovery verifies a recovery file against an account without
+// changing anything. The caller still needs the file for the actual reset.
+func (c *Client) InspectRecovery(ctx context.Context, token string, credentialData []byte) (*RecoveryInspection, error) {
+	state, err := c.openRecovery(ctx, token, credentialData)
+	if err != nil {
+		return nil, err
+	}
+	defer state.clear()
+	return &RecoveryInspection{
+		AccountID: state.credential.AccountID, Name: state.context.Name,
+		EmailHint: state.context.EmailHint, HostID: state.context.HostID,
+		KeyGeneration: state.material.KeyGeneration, ExpiresAt: state.context.ExpiresAt,
+	}, nil
+}
+
 // ResetResult is the outcome of a recovery-file-authorized password reset.
 type ResetResult struct {
 	AccountID             string
@@ -624,43 +750,20 @@ func (c *Client) ResetPassword(ctx context.Context, token string, credentialData
 	if token == "" || newPassword == "" {
 		return nil, errors.New("reset is incomplete")
 	}
-	credential, recoveryKey, err := ParseRecoveryCredential(credentialData)
+	state, err := c.openRecovery(ctx, token, credentialData)
 	if err != nil {
 		return nil, err
 	}
-	info, err := c.Info(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if !sameHostURL(credential.HostURL, c.pinnedURL) {
-		return nil, ErrRecoveryMismatch
-	}
-	context, err := c.RecoverContext(ctx, token)
-	if err != nil {
-		return nil, err
-	}
-	if context.AccountID != credential.AccountID || context.HostID != info.HostID || !context.RecoveryReady {
-		return nil, ErrRecoveryMismatch
-	}
-	material, err := c.RecoverMaterial(ctx, token)
-	if err != nil {
-		return nil, err
-	}
-	if material.AccountID != credential.AccountID {
-		return nil, ErrRecoveryMismatch
-	}
-	masterKey, err := OpenRecoveryWrap(recoveryKey, material.RecoveryWrap, credential.AccountID)
-	if err != nil {
-		return nil, ErrRecoveryMismatch
-	}
-	bundle, err := OpenKeyBundle(masterKey, material.KeyBundle, credential.AccountID, material.KeyGeneration)
-	if err != nil {
-		return nil, ErrRecoveryMismatch
-	}
-	publicKey := ed25519.PrivateKey(bundle.AccountPrivateKey).Public().(ed25519.PublicKey)
-	if !bytes.Equal(publicKey, material.PublicKey) {
-		return nil, ErrRecoveryMismatch
-	}
+	keep := false
+	defer func() {
+		if !keep {
+			state.clear()
+		}
+	}()
+	credential := state.credential
+	info := state.info
+	masterKey := state.masterKey
+	bundle := state.bundle
 
 	registrationClient, err := NewOPAQUERegistrationClient(info.OPAQUEConfig, info.HostID)
 	if err != nil {
@@ -685,6 +788,7 @@ func (c *Client) ResetPassword(ctx context.Context, token string, credentialData
 		return nil, err
 	}
 	exportWrap, err := WrapExportKey(exportKey, masterKey, credential.AccountID)
+	wipe(exportKey)
 	if err != nil {
 		return nil, err
 	}
@@ -692,6 +796,7 @@ func (c *Client) ResetPassword(ctx context.Context, token string, credentialData
 	if err != nil {
 		return nil, err
 	}
+	defer wipe(newRecoveryKey)
 	recoveryWrap, err := WrapRecoveryKey(newRecoveryKey, masterKey, credential.AccountID)
 	if err != nil {
 		return nil, err
@@ -710,6 +815,7 @@ func (c *Client) ResetPassword(ctx context.Context, token string, credentialData
 	if err != nil {
 		return nil, err
 	}
+	keep = true
 	return &ResetResult{
 		AccountID: credential.AccountID, MasterKey: masterKey,
 		AccountPrivateKey:     ed25519.PrivateKey(append([]byte(nil), bundle.AccountPrivateKey...)),
@@ -740,6 +846,31 @@ func (c *Client) do(ctx context.Context, method, path, sessionToken string, requ
 	if sessionToken != "" {
 		req.Header.Set("Authorization", "Bearer "+sessionToken)
 	}
+	return c.execute(req, response)
+}
+
+// doDeviceSigned signs a request with the device key and sends the account and
+// device identity headers. The body is hashed exactly as sent.
+func (c *Client) doDeviceSigned(ctx context.Context, path, accountID, deviceID string, key ed25519.PrivateKey, request, response any) error {
+	data, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.origin+path, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(requestauth.HeaderAccount, accountID)
+	req.Header.Set(requestauth.HeaderDevice, deviceID)
+	if err := requestauth.Sign(req, data, key, c.now().UTC()); err != nil {
+		return err
+	}
+	return c.execute(req, response)
+}
+
+func (c *Client) execute(req *http.Request, response any) error {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrHostUnavailable, err)

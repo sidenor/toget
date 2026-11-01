@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sidenor/toget/internal/account"
+	"github.com/sidenor/toget/internal/hosted"
 	"github.com/sidenor/toget/internal/identity"
 	"github.com/sidenor/toget/internal/vault"
 )
@@ -60,10 +61,12 @@ type AccountSyncResponse struct {
 
 // AccountSyncResult summarizes one account-sync round.
 type AccountSyncResult struct {
-	Peers    int      `json:"peers"`
-	Synced   int      `json:"synced"`
-	Warnings []string `json:"warnings,omitempty"`
-	Revoked  []string `json:"revoked,omitempty"`
+	Peers      int      `json:"peers"`
+	Synced     int      `json:"synced"`
+	Host       bool     `json:"host,omitempty"`
+	HostSynced bool     `json:"host_synced,omitempty"`
+	Warnings   []string `json:"warnings,omitempty"`
+	Revoked    []string `json:"revoked,omitempty"`
 }
 
 type accountPeerResult struct {
@@ -114,6 +117,16 @@ func (s *Service) accountSyncLoop(ctx context.Context) {
 // and revocations merge idempotently. Revocations are then propagated to room
 // homes so their epoch keys rotate even if the revoking device was offline.
 func (s *Service) SyncAccount(ctx context.Context) (*AccountSyncResult, error) {
+	return s.syncAccount(ctx, false)
+}
+
+// SyncAccountNow is SyncAccount with an immediate official-host exchange,
+// bypassing the background host-sync interval.
+func (s *Service) SyncAccountNow(ctx context.Context) (*AccountSyncResult, error) {
+	return s.syncAccount(ctx, true)
+}
+
+func (s *Service) syncAccount(ctx context.Context, forceHost bool) (*AccountSyncResult, error) {
 	if s == nil {
 		return nil, errors.New("node transport is disabled")
 	}
@@ -133,6 +146,19 @@ func (s *Service) SyncAccount(ctx context.Context) (*AccountSyncResult, error) {
 	records, err := s.accounts.ExportDeviceRecords(ctx, selfURL)
 	if err != nil {
 		return nil, err
+	}
+	hostWarnings, hostRevoked, hostAttempted, hostSynced := s.syncHostedAccount(ctx, snapshot, records, forceHost)
+	if hostAttempted {
+		// Host merges may add devices, renew certificates, or revoke this
+		// device. Refresh before choosing peer devices.
+		if fresh, getErr := s.accounts.Get(ctx); getErr == nil {
+			snapshot = fresh
+		}
+		if refreshed, exportErr := s.accounts.ExportDeviceRecords(ctx, selfURL); exportErr == nil {
+			records = refreshed
+		} else {
+			hostWarnings = append(hostWarnings, "could not refresh account records after host sync: "+exportErr.Error())
+		}
 	}
 	devices, err := s.accounts.ListDevices(ctx)
 	if err != nil {
@@ -156,7 +182,14 @@ func (s *Service) SyncAccount(ctx context.Context) (*AccountSyncResult, error) {
 			peers = append(peers, *host)
 		}
 	}
-	result := &AccountSyncResult{Peers: len(peers)}
+	result := &AccountSyncResult{
+		Peers: len(peers), Host: hostAttempted, HostSynced: hostSynced,
+		Warnings: hostWarnings,
+	}
+	hostRevokedSet := make(map[string]bool, len(hostRevoked))
+	for _, id := range hostRevoked {
+		hostRevokedSet[id] = true
+	}
 	chosen := s.nextAccountPeers(peers)
 	if len(chosen) > 0 {
 		deviceKey, err := s.accounts.UnsealDeviceKey(snapshot.Device)
@@ -178,7 +211,7 @@ func (s *Service) SyncAccount(ctx context.Context) (*AccountSyncResult, error) {
 		}
 		wg.Wait()
 		cancel()
-		revoked := make(map[string]bool)
+		revoked := hostRevokedSet
 		for i := range results {
 			if results[i].synced {
 				result.Synced++
@@ -189,6 +222,11 @@ func (s *Service) SyncAccount(ctx context.Context) (*AccountSyncResult, error) {
 			}
 		}
 		for id := range revoked {
+			result.Revoked = append(result.Revoked, id)
+		}
+		sort.Strings(result.Revoked)
+	} else {
+		for id := range hostRevokedSet {
 			result.Revoked = append(result.Revoked, id)
 		}
 		sort.Strings(result.Revoked)
@@ -215,6 +253,113 @@ func (s *Service) SyncAccount(ctx context.Context) (*AccountSyncResult, error) {
 	}
 	sort.Strings(result.Warnings)
 	return result, nil
+}
+
+// syncHostedAccount exchanges the full public device set with an official
+// account host. The host never receives an account key or room content. A
+// device session is signed by the local device key, so the host password and
+// the account master key stay on the client.
+func (s *Service) syncHostedAccount(ctx context.Context, snapshot *account.Snapshot, records []account.DeviceRecord, force bool) (warnings, revoked []string, attempted, synced bool) {
+	hostURL := strings.TrimSpace(snapshot.Account.HostURL)
+	if hostURL == "" || snapshot.Device.RevokedAt != nil {
+		return nil, nil, false, false
+	}
+	if !s.hostSyncDue(force) {
+		return nil, nil, false, false
+	}
+	attempted = true
+	deviceKey, err := s.accounts.UnsealDeviceKey(snapshot.Device)
+	if err != nil {
+		return []string{"official account sync needs an unlocked vault: " + err.Error()}, nil, true, false
+	}
+	client, err := hosted.NewClient(hostURL)
+	if err != nil {
+		return []string{"official account host address is invalid: " + err.Error()}, nil, true, false
+	}
+	roundCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	token, err := s.hostSession(roundCtx, client, snapshot, deviceKey)
+	if err != nil {
+		return []string{"official account sign-in: " + hostedError(err)}, nil, true, false
+	}
+	request := hosted.SyncRequest{Devices: records}
+	response, err := client.Sync(roundCtx, token, request)
+	if errors.Is(err, hosted.ErrSessionInvalid) {
+		s.hostSessions.Clear(snapshot.Account.ID)
+		token, err = s.hostSession(roundCtx, client, snapshot, deviceKey)
+		if err == nil {
+			response, err = client.Sync(roundCtx, token, request)
+		}
+	}
+	if err != nil {
+		return []string{"official account sync: " + hostedError(err)}, nil, true, false
+	}
+	localGeneration := accountKeyGeneration(snapshot.Account)
+	remoteGeneration := response.KeyGeneration
+	if remoteGeneration <= 0 {
+		remoteGeneration = 1
+	}
+	if remoteGeneration > localGeneration {
+		warnings = append(warnings, "the official host has a newer account key; unlock this device with the account password to install it")
+	} else if remoteGeneration < localGeneration {
+		warnings = append(warnings, "the official host does not have this device's newest account key; other devices learn it through direct account sync")
+	} else if len(response.PublicKey) > 0 && !bytes.Equal(response.PublicKey, snapshot.Account.PublicKey) {
+		warnings = append(warnings, "the official host reports a different account key at the same generation")
+	}
+	merged, err := s.accounts.MergeDeviceRecords(roundCtx, response.Devices)
+	if err != nil {
+		warnings = append(warnings, "could not merge official account device records: "+err.Error())
+		return warnings, nil, true, false
+	}
+	warnings = append(warnings, merged.Warnings...)
+	return warnings, merged.RevokedIDs, true, true
+}
+
+// hostSyncDue rate-limits official-host exchanges, which are more expensive
+// than local peer sync and must not run every 30 seconds. It records the
+// attempt before the network call so an unreachable host is not retried on
+// every loop tick.
+func (s *Service) hostSyncDue(force bool) bool {
+	if s == nil {
+		return false
+	}
+	s.hostSyncMu.Lock()
+	defer s.hostSyncMu.Unlock()
+	if !force && !s.lastHostSync.IsZero() && time.Since(s.lastHostSync) < s.hostSyncEvery {
+		return false
+	}
+	s.lastHostSync = time.Now()
+	return true
+}
+
+func (s *Service) hostSession(ctx context.Context, client *hosted.Client, snapshot *account.Snapshot, deviceKey ed25519.PrivateKey) (string, error) {
+	accountID := snapshot.Account.ID
+	if token, ok := s.hostSessions.Get(accountID); ok {
+		return token, nil
+	}
+	token, expires, err := client.DeviceSession(ctx, accountID, snapshot.Device.ID, deviceKey)
+	if err != nil {
+		return "", err
+	}
+	s.hostSessions.Set(accountID, token, expires)
+	return token, nil
+}
+
+func hostedError(err error) string {
+	if err == nil {
+		return "unknown error"
+	}
+	if errors.Is(err, hosted.ErrHostUnavailable) {
+		return "account host is unreachable"
+	}
+	if errors.Is(err, hosted.ErrInvalidHost) {
+		return "account host identity is invalid"
+	}
+	var apiError *hosted.APIError
+	if errors.As(err, &apiError) && apiError.Message != "" {
+		return apiError.Message
+	}
+	return err.Error()
 }
 
 // nextAccountPeers rotates through the device list so accounts with many

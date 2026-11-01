@@ -1,20 +1,22 @@
 # Deployment
 
-> Status: the self-hosted node path is implemented. Packaged installers,
-> official-hosted accounts, and the container image described below are still
-> planned; the binary, service installation, and update workflow are usable
-> today.
+> Status: the self-hosted node path and the official account host are
+> implemented. Packaged installers and the container image described below are
+> still planned; the binary, service installation, and update workflow are
+> usable today.
 >
 > **Implemented today:** `toget serve` provides the local account, vault,
 > SQLite log, loopback API/UI, and a same-LAN HTTPS node. `toget service`
 > writes and activates a systemd, launchd, or Windows service definition.
-> `toget-official` provides an optional relay, signed-manifest directory, and
-> static signed update service, plus key, manifest, index, yank, SBOM,
-> reproducible-build, and release-tree verification commands. The daemon checks
-> for updates on a schedule, the web UI shows an update banner and settings,
-> and `toget update` checks, stages, finishes, and rolls back managed releases.
-> Optional gateway port mapping (PCP, NAT-PMP, UPnP) is implemented; UDP hole
-> punching, public account hosting, official-hosted accounts, and packaged
+> `toget-official` provides an optional account host, relay, signed-manifest
+> directory, and static signed update service, plus key, manifest, index, yank,
+> SBOM, reproducible-build, and release-tree verification commands. The account
+> host stores OPAQUE password records and ciphertext account-key bundles, sends
+> verification and recovery email, and serves the embedded browser reset page.
+> The daemon checks for updates on a schedule, the web UI shows an update banner
+> and settings, and `toget update` checks, stages, finishes, and rolls back
+> managed releases. Optional gateway port mapping (PCP, NAT-PMP, UPnP) is
+> implemented; UDP hole punching, the official room home, and packaged
 > installers are not implemented yet.
 
 Toget is deployed as a **node**: one `toget` binary that can act as a daemon, a self-hosted account host, a relay, or the local CLI. Most users run it on one machine and never think about the rest.
@@ -26,7 +28,7 @@ Toget is deployed as a **node**: one `toget` binary that can act as a daemon, a 
 | **Local only** | This machine | LAN | This machine |
 | **Self-hosted, public** | This machine (VPS or home server with a public address) | Direct | This machine |
 | **Self-hosted behind NAT** | This machine | Outbound to a relay | This machine |
-| **Official-hosted** | The official service | The official service | The user's devices |
+| **Official-hosted** | The official service | The official service for account login; rooms use a device or self-hosted node | The user's devices |
 | **Relay-only** | No account | Public address | Nobody; it forwards ciphertext |
 | **Mixed room** | Each member's chosen host | Per member | Each member's endpoint |
 
@@ -49,6 +51,7 @@ The account host is chosen at registration and cannot be moved silently. Moving 
 | `7719` | Relay (HTTPS, pinned certificate) | Public only for `toget-official` or a self-hosted relay |
 | `7720` | Directory (HTTPS, pinned certificate) | Public only for `toget-official` or a self-hosted directory |
 | `7721` | Signed update service | Loopback by default; public only behind TLS or a reverse proxy |
+| `7722` | Official account host (HTTPS + reset page) | Public only for `toget-official`; the reset page requires a browser-reachable HTTPS origin |
 | `5353/udp` | mDNS discovery (multicast) | Local link only; no router exposure. Enabled by default; `--no-mdns` disables it |
 
 Do not expose `7718` to the network. The local UI is not designed to be a public web app. `7717` is self-authenticated by the certificate pin carried in invite codes; do not put it behind a TLS-terminating proxy, because that changes the certificate the peer pins.
@@ -132,15 +135,26 @@ toget account create
 The command asks where the account should live:
 
 - **This machine** — self-hosted. The node prints the 14-digit account ID and starts serving as the account host.
-- **Official** — the node registers with the official service and stores the account record there.
+- **Official** — the node registers with the official service and stores the account record there. Supply the host URL explicitly:
 
-**Planned:** for an official-hosted account, registration generates the account master key and the recovery credential. The credential file must be downloaded and confirmed before registration completes:
-
-```text
-toget-recovery-48392017174628-01a2b3c4.togetkey
+```bash
+toget account create --host 'https://accounts.example.com#fp=<hex>' \
+  --name Aiden --email aiden@example.com --out ~/offline/toget-account.togetkey
 ```
 
-Store it offline. It is a bearer secret: anyone with the file and the account ID can reset the password and unwrap the account key. It is never uploaded to the official service; the planned reset page reads it locally in the browser. Official hosting and the browser reset page are not implemented yet.
+For an official-hosted account, registration generates the account master key (MK) and the official recovery key (RK). The host receives only ciphertext: the password export wrap, the recovery wrap, and the account-key bundle sealed under MK. It returns the recovery file once:
+
+```text
+toget-account-recovery-48392017174628.togetkey
+```
+
+The CLI writes it with mode `0600`; the web onboarding flow requires the
+download to finish and a confirmation before continuing. Store it offline. It
+is a bearer secret: anyone with the file and the account ID can reset the
+password and unwrap the account key. It is never uploaded to the official
+service; the embedded reset page reads it locally in the browser and sends
+only the new wrapped values. See
+[account-recovery.md](account-recovery.md#official-hosted-accounts).
 
 Self-hosted accounts use a per-device recovery credential for a forgotten password while the node is locked. Create it while the node is unlocked and store it offline:
 
@@ -162,6 +176,50 @@ toget account reset-password --local
 
 The same flows are available from the local UI at `127.0.0.1:7718`: the lock screen accepts a recovery file, and Settings has password change, local reset, and recovery-file management. If the machine is locked, the password is forgotten, and no recovery file exists, the sealed local history cannot be opened. If the machine is lost and there is no backup, the data is lost. Full-disk encryption, locking the node, and regular tested backups are strongly recommended. See [account-recovery.md](account-recovery.md).
 
+## Run the official account host
+
+`toget-official` can run the account host together with the relay and
+directory, or by itself:
+
+```bash
+toget-official --home /var/lib/toget-official \
+  --host-listen 0.0.0.0:7722 \
+  --host-public-url https://accounts.example.com \
+  --host-tls-cert /etc/toget/host/fullchain.pem \
+  --host-tls-key /etc/toget/host/privkey.pem \
+  --host-smtp-addr smtp.example.com:587 \
+  --host-smtp-user toget --host-smtp-from accounts@example.com \
+  --no-relay --no-directory
+
+# The SMTP password is read from the environment, not the command line.
+export TOGET_HOST_SMTP_PASSWORD='...'
+```
+
+- `--host-public-url` is the browser-facing HTTPS origin used in verification
+  and reset links. Without it, the host falls back to the listen address, which
+  only works for loopback testing; email recovery needs a public origin.
+- The account host always serves TLS. With no certificate flags it creates a
+  self-signed certificate under `<home>/host/`; supply a real certificate for
+  a public host. The pinned URL printed at startup carries the host key
+  fingerprint, which clients pin on first use.
+- The database defaults to `<home>/host/accounts.db`; TLS defaults to
+  `<home>/host/tls.crt` and `tls.key`. Back up the database and host key, but
+  note that neither contains account master keys.
+- The embedded reset page is served at `/reset/` from the binary. Use
+  `--host-reset-dir` only to override it during development. It needs no
+  third-party scripts and the host serves it under a strict CSP.
+- `--host-smtp-*` enables email verification and recovery. Without SMTP the
+  host still supports password login, device sessions, and key rotation, and
+  serves the reset page, but users cannot receive verification or reset links.
+- `--no-host` turns the account host off for a relay/directory-only
+  deployment.
+
+The host stores OPAQUE registration records, sealed blobs, device records,
+sessions, and encrypted email metadata. It cannot read account keys, room
+content, or the plaintext password. The official room home is not implemented;
+an official-hosted account uses its own devices or a self-hosted node as the
+room home, so the host is not an archive of room history.
+
 ## Connect from another device
 
 ```bash
@@ -169,6 +227,18 @@ toget device enroll --account 48392017-174628
 ```
 
 The new device shows a request; an existing device or the account host approves it. The account key signs the new device certificate, and the current room epoch keys are wrapped to it. The new device then syncs room history up to its access.
+
+For an official-hosted account, a new device authenticates with the account password instead of an enrollment approval:
+
+```bash
+toget account login --host 'https://accounts.example.com#fp=<hex>' \
+  --account-id 48392017174628
+```
+
+The OPAQUE exchange unwraps MK, MK opens the account-key bundle, and the device
+publishes its account-signed certificate to the host. This initializes the
+device's own local vault; the host never stores the password. See
+[account-recovery.md](account-recovery.md#sign-in-on-another-device).
 
 Device roles:
 
@@ -330,8 +400,9 @@ artifact hash, extract a staged version directory, run a health check, switch
 `current`, optionally restart, and roll back automatically on failure. The
 previous version is retained for `update rollback`. The UI shows the available
 release, level, changelog, staging state, and rollback controls. Forced
-releases can be postponed for at most 24 hours in the UI, but enforcement for
-official-hosted accounts is still planned.
+releases can be postponed for at most 24 hours in the UI. The official account
+host does not enforce a release level; a user who controls the binary can
+still postpone or bypass it.
 
 Release operators can generate reproducible archives and SBOMs with
 `toget-official release build`, sign manifests/channels/indexes, yank a bad
@@ -346,7 +417,7 @@ What matters, in order:
 1. **Account and device keys** — without them, encrypted history is unreadable.
 2. **Room history and local data** — `/var/lib/toget/data` or the platform equivalent.
 3. **Configuration** — relay parent, ports, Agent policies.
-4. **Recovery credential** — per device; required to reset a forgotten password while the node is locked. Store it offline.
+4. **Recovery credentials** — the per-device file resets a forgotten local password while the node is locked; the official recovery file restores an official-hosted account through the reset page. They are different files; store both offline if the account uses official hosting.
 
 A backup is only useful if restore is tested. `toget backup` writes an
 encrypted archive, and Settings → Backup and restore can create, download,

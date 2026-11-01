@@ -1,3 +1,7 @@
+//go:build !js
+
+// The account host's storage and HTTP service are native-only. The reset
+// page compiles this package for GOOS=js and only needs the client.
 package hosted
 
 import (
@@ -53,8 +57,6 @@ var (
 	ErrPendingRegistration = errors.New("pending registration not found")
 	// ErrEmailTokenInvalid means a token is unknown, expired, or already used.
 	ErrEmailTokenInvalid = errors.New("invalid email token")
-	// ErrSessionInvalid means a bearer session is unknown or expired.
-	ErrSessionInvalid = errors.New("invalid session")
 	// ErrKeyMaterial means a key update is malformed or would rewrite history.
 	ErrKeyMaterial = errors.New("invalid account key material")
 	// ErrTooManyPending means the host is at its signup limit.
@@ -231,6 +233,9 @@ func OpenStore(path string) (*Store, error) {
 	if err := store.migrate(context.Background()); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if path != ":memory:" {
+		_ = os.Chmod(path, 0o600)
 	}
 	return store, nil
 }
@@ -949,6 +954,24 @@ func (s *Store) ListDevices(ctx context.Context, accountID string) ([]account.De
 		records = append(records, record)
 	}
 	return records, rows.Err()
+}
+
+// GetDevice returns one stored public device record.
+func (s *Store) GetDevice(ctx context.Context, accountID, deviceID string) (*account.DeviceRecord, error) {
+	var encoded []byte
+	err := s.db.QueryRowContext(ctx,
+		`SELECT record FROM hosted_devices WHERE account_id = ? AND id = ?`, accountID, deviceID).Scan(&encoded)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrAccountNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("hosted: get device: %w", err)
+	}
+	var record account.DeviceRecord
+	if err := json.Unmarshal(encoded, &record); err != nil {
+		return nil, fmt.Errorf("hosted: decode device record: %w", err)
+	}
+	return &record, nil
 }
 
 // SyncDevices validates and merges public device records. Revocation is

@@ -1,3 +1,6 @@
+//go:build !js
+
+// Email delivery runs on the account host, not in the browser reset page.
 package hosted
 
 import (

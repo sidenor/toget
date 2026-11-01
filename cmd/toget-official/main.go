@@ -1,6 +1,7 @@
-// Command toget-official composes the optional public infrastructure: a
-// relay and a signed-manifest directory. Both are built from the same
-// internal packages as a self-hosted node, not as a separate implementation.
+// Command toget-official composes the optional public infrastructure: an
+// account host, relay, signed-manifest directory, and update service. They are
+// built from the same internal packages as a self-hosted node, not as a
+// separate implementation.
 package main
 
 import (
@@ -51,14 +52,31 @@ func newRootCommand() *cobra.Command {
 		updateTLSCert   string
 		updateTLSKey    string
 		updateInsecure  bool
+
+		noHost              bool
+		hostListen          string
+		hostPublicURL       string
+		hostName            string
+		hostTLSCert         string
+		hostTLSKey          string
+		hostDB              string
+		hostResetDir        string
+		hostSMTPAddr        string
+		hostSMTPUser        string
+		hostSMTPPassword    string
+		hostSMTPFrom        string
+		hostSMTPFromName    string
+		hostSMTPImplicitTLS bool
 	)
 	cmd := &cobra.Command{
 		Use:   "toget-official",
-		Short: "Run the optional Toget relay and directory",
+		Short: "Run the optional Toget account host, relay, and directory",
 		Long: "Run the optional public Toget services.\n\n" +
-			"The relay forwards opaque, signed requests and never has room keys. " +
-			"The directory maps short server codes to self-certifying signed manifests. " +
-			"Both are optional; every self-hosted node works without them.",
+			"The account host stores only ciphertext and OPAQUE password records, so it " +
+			"cannot read account keys. The relay forwards opaque, signed requests and " +
+			"never has room keys. The directory maps short server codes to " +
+			"self-certifying signed manifests. All of them are optional; every " +
+			"self-hosted node works without them.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			paths, err := officialPaths(home)
 			if err != nil {
@@ -72,8 +90,28 @@ func newRootCommand() *cobra.Command {
 			if ctx == nil {
 				ctx = context.Background()
 			}
-			if noRelay && noDirectory && updateDir == "" {
-				return errors.New("the relay, directory, and update service are all disabled")
+			if noRelay && noDirectory && updateDir == "" && noHost {
+				return errors.New("the relay, directory, update service, and account host are all disabled")
+			}
+
+			if !noHost {
+				host, err := startAccountHost(ctx, paths, hostOptions{
+					Listen: hostListen, PublicURL: hostPublicURL, Name: hostName,
+					CertPath: hostTLSCert, KeyPath: hostTLSKey, DatabasePath: hostDB,
+					ResetDir: hostResetDir, SMTPAddr: hostSMTPAddr, SMTPUser: hostSMTPUser,
+					SMTPPassword: hostSMTPPassword, SMTPFrom: hostSMTPFrom,
+					SMTPFromName: hostSMTPFromName, SMTPImplicitTLS: hostSMTPImplicitTLS,
+				}, logger)
+				if err != nil {
+					return err
+				}
+				defer func() {
+					shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					_ = host.Close(shutdownCtx)
+				}()
+				fmt.Printf("Accounts:  %s\n", host.pinnedURL)
+				fmt.Printf("Public:    %s\n", host.publicURL)
 			}
 
 			if updateDir != "" {
@@ -158,6 +196,20 @@ func newRootCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&noRelay, "no-relay", false, "do not run the relay")
 	cmd.Flags().BoolVar(&noDirectory, "no-directory", false, "do not run the directory")
 	cmd.Flags().BoolVar(&noQUIC, "no-quic", false, "disable HTTP/3 on the relay")
+	cmd.Flags().BoolVar(&noHost, "no-host", false, "do not run the official account host")
+	cmd.Flags().StringVar(&hostListen, "host-listen", "0.0.0.0:7722", "official account host listen address")
+	cmd.Flags().StringVar(&hostPublicURL, "host-public-url", "", "browser-facing HTTPS origin for account emails (defaults to the listen address)")
+	cmd.Flags().StringVar(&hostName, "host-name", "Toget Official Accounts", "account host display name")
+	cmd.Flags().StringVar(&hostTLSCert, "host-tls-cert", "", "TLS certificate for the account host (default: <home>/host/tls.crt)")
+	cmd.Flags().StringVar(&hostTLSKey, "host-tls-key", "", "TLS private key for the account host (default: <home>/host/tls.key)")
+	cmd.Flags().StringVar(&hostDB, "host-db", "", "account host database (default: <home>/host/accounts.db)")
+	cmd.Flags().StringVar(&hostResetDir, "host-reset-dir", "", "override the embedded reset page directory")
+	cmd.Flags().StringVar(&hostSMTPAddr, "host-smtp-addr", "", "SMTP relay host:port for verification and recovery email")
+	cmd.Flags().StringVar(&hostSMTPUser, "host-smtp-user", "", "SMTP username")
+	cmd.Flags().StringVar(&hostSMTPPassword, "host-smtp-password", "", "SMTP password (prefer TOGET_HOST_SMTP_PASSWORD)")
+	cmd.Flags().StringVar(&hostSMTPFrom, "host-smtp-from", "", "sender address for account email")
+	cmd.Flags().StringVar(&hostSMTPFromName, "host-smtp-from-name", "Toget Accounts", "sender display name for account email")
+	cmd.Flags().BoolVar(&hostSMTPImplicitTLS, "host-smtp-implicit-tls", false, "use implicit TLS (SMTPS, usually port 465)")
 	cmd.Flags().StringVar(&updateDir, "update-dir", "", "release tree to serve (channels/, manifests/, daemon/, sbom/)")
 	cmd.Flags().StringVar(&updateListen, "update-listen", "127.0.0.1:7721", "update service listen address")
 	cmd.Flags().StringVar(&updateTLSCert, "update-tls-cert", "", "TLS certificate for the update service")

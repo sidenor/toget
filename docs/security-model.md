@@ -1,6 +1,9 @@
 # Security Model (Draft)
 
-> Status: design draft. This document describes the intended trust boundaries. It is not a claim that the first release is secure for high-stakes use.
+> Status: this document describes the intended trust boundaries and the
+> controls implemented in the current tree. It is not a claim that the first
+> release is secure for high-stakes use. The official room home remains
+> design-only; everything else marked implemented here exists in the code.
 
 Toget's security model follows one rule: **the endpoint is the trust boundary**. An endpoint is a machine that holds keys and can decrypt room content. The official service is never an endpoint.
 
@@ -11,7 +14,7 @@ Toget's security model follows one rule: **the endpoint is the trust boundary**.
 - Agent credentials, API keys, and local file access.
 - Approval decisions and the audit trail.
 - The per-device vault master key (MK); on official-hosted accounts, the account master key.
-- Recovery credentials, both per-device files and the planned official-account credential.
+- Recovery credentials, both per-device files and the official-account recovery file.
 - Server root keys and release signing keys.
 - Metadata: who talks to whom, when, and how often.
 
@@ -23,7 +26,7 @@ Toget's security model follows one rule: **the endpoint is the trust boundary**.
 | Other room members | Only what is shared in the room | Their epoch keys | Room events | Leaving rotates the epoch |
 | Official relay | No | No | Target server, account/device IDs, path, time, size | Sees the relay envelope and signed inner headers |
 | Official account host (official-hosted account) | No | No | Account record, device list, room membership, ciphertext sizes | Blind store |
-| Official room home node | No | No | Room event ordering, member list | Ciphertext only |
+| Official room home node (design only) | No | No | Room event ordering, member list | Ciphertext only; not implemented yet |
 | Official Agent, explicitly authorized | Scoped only | Scoped only | Scoped only | Visible and revocable authorization |
 | Self-hosted account host | Yes | Yes | Yes | It is the user's endpoint |
 | Relay run by a third party | No | No | Same as official relay | Same envelope rules |
@@ -272,12 +275,26 @@ An attacker who compromises the official account host gets account records, devi
 Controls:
 
 - Message content and room epoch keys are not stored there.
-- The official host stores `Enc(KEK(password), MK)` and `Enc(RK, MK)`, never the password, KEK, MK, or RK in plaintext.
-- Login uses PAKE, so the password is not sent to the host.
-- The host cannot silently add a device: new devices require the account key or an existing device's approval.
-- Users can review and revoke devices; revocation rotates room keys.
+- The host stores the OPAQUE registration record, `Enc(export key, MK)`,
+  `Enc(RK, MK)`, and `Enc(MK, account key bundle)`. It never receives the
+  password, MK, RK, or account private key in plaintext.
+- Login uses OPAQUE, so the password is not sent to the host. A host
+  compromise exposes a registration record that permits an offline dictionary
+  attack; OPAQUE's client-side key stretching and a strong password slow it
+  down.
+- A host session requires an account-signed device certificate and a
+  device-signed request; the host cannot mint a session for a device the
+  account did not authorize.
+- The host cannot forge account signatures or decrypt the sealed blobs it
+  stores.
+- Users can review and revoke devices from a signed-in device; revoked devices
+  lose host sessions.
 
-Residual risk: an attacker with the ciphertext can attempt offline guessing against the password-wrapped MK. Argon2id and a strong password policy slow this down; the recovery key is high-entropy and not guessable.
+Residual risk: an attacker with the host database and host key material can
+attempt offline password guessing against the OPAQUE record, and can see
+account, device, session, and email metadata. The recovery key is
+high-entropy and not guessable. Rotating the account key publishes a new
+generation and ciphertext; old ciphertext is not retroactively protected.
 
 ### Compromised official service (insider or operator)
 
@@ -407,18 +424,38 @@ Controls:
 
 Residual risk: access to the unlocked process, the OS user, or the local API token is equivalent to access to sealed local data. Lock the node when leaving and use full-disk encryption on a shared machine.
 
-### Recovery credential compromise (official-hosted design)
+### Recovery credential compromise (official-hosted)
 
-For official-hosted accounts, the planned recovery credential is a bearer secret: whoever holds it and the account ID can reset the password and unwrap the account master key.
+For official-hosted accounts, the official recovery credential is a bearer
+secret: whoever holds it together with a valid email reset link and the account
+ID can reset the host password and unwrap the account master key.
 
-Planned controls:
+Controls:
 
-- It is generated client-side and downloaded at registration; registration cannot complete without the download confirmation.
-- The filename includes the 14-digit account ID; the file contains a checksum and the official server fingerprint.
-- The static reset page is open source and reads the file locally with the browser's File API. The file is never uploaded. WebCrypto unwraps MK and re-wraps it with the new password's KEK; only the new wrapped blob and verifier are sent.
-- Logged-in devices can regenerate it; the old credential becomes void.
+- It is generated client-side and returned once at registration. The web
+  onboarding flow requires the download to complete and be confirmed before
+  continuing; the CLI writes it with mode `0600`.
+- The filename includes the 14-digit account ID. The file contains the host
+  URL (including the pinned key fragment when one was supplied), a creation
+  time, the 32-byte recovery key, and a SHA-256 checksum over those fields.
+- The reset page is embedded in `toget-official`, has no third-party scripts,
+  and runs the same Go hosted-client code as a desktop device through Go/WASM.
+  It reads the file locally through the File API; the file is never uploaded.
+  The page unwraps MK, performs a fresh OPAQUE registration for the new
+  password, and sends only the new password wrap, recovery wrap, and OPAQUE
+  record.
+- The host replaces the old password material atomically and marks the reset
+  token used. The page then shows a new recovery file; the old one stops
+  working immediately.
+- A signed-in device can rotate the file without email; the old file becomes
+  void.
+- The reset page requires `--host-public-url` to be reachable from the user's
+  browser. A loopback-only host cannot serve email links off-machine.
 
-The current tree implements only the per-device local-vault recovery described above; official hosting and the browser reset page are not implemented.
+Residual risk: email plus the recovery file is enough to take over the
+account. Treat the file like a private key and keep it offline. Losing both the
+file and every signed-in device makes the account's encrypted data
+unrecoverable.
 
 ### Account takeover via email
 

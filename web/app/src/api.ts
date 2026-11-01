@@ -11,7 +11,9 @@ import type {
   CardView,
   AuditResponse,
   CreateRoomResponse,
+  CreatedAccount,
   Device,
+  HostedLoginResult,
   Invite,
   Member,
   DiscoveredPeer,
@@ -90,11 +92,32 @@ export const api = {
   unlock: (password: string) => request<SessionInfo>("/api/v1/session", json({ password })),
   lock: () => request<void>("/api/v1/session", { method: "DELETE" }),
 
-  createAccount: (name: string, password: string, deviceName?: string) =>
-    request<Account>("/api/v1/account", json({ name, password, device_name: deviceName })),
+  createAccount: (
+    name: string,
+    password: string,
+    deviceName?: string,
+    official?: { hostURL: string; email?: string },
+  ) =>
+    request<CreatedAccount>(
+      "/api/v1/account",
+      json({
+        name,
+        password,
+        device_name: deviceName,
+        host_url: official?.hostURL,
+        email: official?.email,
+      }),
+    ),
+  hostedLogin: (hostURL: string, accountID: string, password: string, deviceName?: string) =>
+    request<HostedLoginResult>(
+      "/api/v1/account/hosted/login",
+      json({ host_url: hostURL, account_id: accountID, password, device_name: deviceName }),
+    ),
   account: () => request<Account>("/api/v1/account"),
   recovery: () => request<RecoveryStatus>("/api/v1/account/recovery"),
   createRecovery: () => request<RecoveryCredential>("/api/v1/account/recovery", json({})),
+  createOfficialRecovery: (password: string) =>
+    request<RecoveryCredential>("/api/v1/account/recovery", json({ official: true, password })),
   removeRecovery: () => request<void>("/api/v1/account/recovery", { method: "DELETE" }),
   changePassword: (currentPassword: string, newPassword: string) =>
     request<SessionInfo>("/api/v1/account/change-password", json({ current_password: currentPassword, new_password: newPassword })),
@@ -241,7 +264,8 @@ export const api = {
 
   devices: () => request<{ devices: Device[] }>("/api/v1/devices"),
   syncAccount: () => request<AccountSyncResult>("/api/v1/account/sync", json({})),
-  rotateAccountKey: () => request<RotateAccountKeyResult>("/api/v1/account/rotate-key", json({})),
+  rotateAccountKey: (password?: string) =>
+    request<RotateAccountKeyResult>("/api/v1/account/rotate-key", json(password ? { password } : {})),
   revokeDevice: (id: string) =>
     request<{ ok?: boolean; warnings?: string[] } | null>(`/api/v1/devices/${encodeURIComponent(id)}`, {
       method: "DELETE",

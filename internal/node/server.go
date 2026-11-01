@@ -22,6 +22,7 @@ import (
 	"github.com/sidenor/toget/internal/account"
 	"github.com/sidenor/toget/internal/card"
 	"github.com/sidenor/toget/internal/config"
+	"github.com/sidenor/toget/internal/hosted"
 	"github.com/sidenor/toget/internal/identity"
 	"github.com/sidenor/toget/internal/mdns"
 	"github.com/sidenor/toget/internal/nat"
@@ -48,6 +49,12 @@ type Options struct {
 	// AccountSyncInterval controls how often paired devices exchange account
 	// records. Zero uses the default.
 	AccountSyncInterval time.Duration
+	// HostSyncInterval controls how often an official-hosted account exchanges
+	// device records with its account host. Zero uses five minutes.
+	HostSyncInterval time.Duration
+	// HostSessions caches short-lived official-host sessions shared with the
+	// local API. Nil creates a private cache.
+	HostSessions *hosted.SessionCache
 	// Relay is a pinned relay URL, "auto" to discover one from the directory,
 	// or empty/"off" to disable relay fallback.
 	Relay string
@@ -135,6 +142,10 @@ type Service struct {
 	accountSyncMu      sync.Mutex
 	accountSyncTrigger chan struct{}
 	accountSyncCursor  int
+	hostSyncEvery      time.Duration
+	hostSessions       *hosted.SessionCache
+	hostSyncMu         sync.Mutex
+	lastHostSync       time.Time
 
 	relaySetting     string
 	relaySettingMu   sync.RWMutex
@@ -192,6 +203,14 @@ func New(opts Options) (*Service, error) {
 	accountSyncInterval := opts.AccountSyncInterval
 	if accountSyncInterval <= 0 {
 		accountSyncInterval = defaultAccountSyncEvery
+	}
+	hostSyncInterval := opts.HostSyncInterval
+	if hostSyncInterval <= 0 {
+		hostSyncInterval = 5 * time.Minute
+	}
+	hostSessions := opts.HostSessions
+	if hostSessions == nil {
+		hostSessions = hosted.NewSessionCache()
 	}
 	relaySetting := strings.TrimSpace(opts.Relay)
 	if relaySetting == "off" {
@@ -270,6 +289,8 @@ func New(opts Options) (*Service, error) {
 		listen: listen, advertise: strings.TrimSpace(opts.Advertise),
 		logger: logger, syncEvery: interval, accountSyncEvery: accountSyncInterval,
 		accountSyncTrigger: make(chan struct{}, 1),
+		hostSyncEvery:      hostSyncInterval,
+		hostSessions:       hostSessions,
 		nonces:             NewNonceCache(),
 		relaySetting:       relaySetting, relaySave: opts.SaveRelay,
 		relayWake: make(chan struct{}, 1), relayBase: relayBase, relayFP: relayFP,

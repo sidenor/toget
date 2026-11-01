@@ -2854,6 +2854,29 @@ select {
   box-shadow: 0 1px 4px rgb(0 0 0 / 8%);
 }
 
+.onboard-tabs.subtle {
+  margin-bottom: 14px;
+  border-radius: 10px;
+}
+
+.onboard-tabs.subtle button {
+  border-radius: 7px;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 12px 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.checkbox-row input {
+  width: auto;
+  margin-top: 2px;
+}
+
 .onboarding-card textarea {
   width: 100%;
   resize: vertical;

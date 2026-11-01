@@ -12,7 +12,7 @@ Start here:
 | [Notifications](notifications.md) | Content-free Web Push, subscriptions, quiet hours, limits |
 | [Protocol](protocol.md) | Node protocol, end-to-end envelope, local API, versioning |
 | [Security model](security-model.md) | Assets, who can see what, threats, controls, limits |
-| [Account recovery](account-recovery.md) | Per-device vault recovery, password change, local reset, limits |
+| [Account recovery](account-recovery.md) | Per-device vault recovery, official-hosted accounts, browser reset page, limits |
 | [Relay and directory](relay.md) | Cross-network routing, trust boundaries, quotas, limits |
 | [LAN discovery](discovery.md) | mDNS advertisement, verified lookup, privacy, limits |
 | [Business cards](cards.md) | Portable signed cards, QR codes for cards, invites, and pairing, saved-card pinning, limits |
@@ -56,4 +56,10 @@ Start here:
 
 ## Status
 
-All documents are drafts. The architecture and protocol will change as the first version is built. Decisions that are expensive to reverse should be recorded as ADRs before implementation.
+The documents describe a working implementation, not only a design. Local,
+LAN, relay, directory, update, and official-hosted account flows are
+implemented and tested; the official room home, desktop shell, and packaged
+installers remain design-only. The architecture and protocol will still
+change. Decisions that are expensive to reverse should be recorded as ADRs
+before implementation, and docs that claim a feature is done must match the
+code.

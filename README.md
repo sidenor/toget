@@ -46,6 +46,8 @@ and directory:
 
 ```bash
 go run ./cmd/toget-official
+# Accounts:  https://<host>:7722#fp=...
+# Public:    https://<host>:7722
 # Relay:     https://<host>:7719#fp=...
 # Directory: https://<host>:7720#fp=...
 ```
@@ -62,6 +64,36 @@ or UPnP) and publish the resulting public address as an alternate. That only
 works when the router cooperates; UDP hole punching is not implemented, so
 symmetric NAT, CGNAT, and locked-down networks still need the relay. See
 [Relay and directory](docs/relay.md).
+
+The same binary also runs an **official account host** on `7722`. Point it at a
+public HTTPS origin and an SMTP relay to enable verification and recovery
+email:
+
+```bash
+export TOGET_HOST_SMTP_PASSWORD='...'
+go run ./cmd/toget-official --home ~/.local/share/toget-official \
+  --host-public-url https://accounts.example.com \
+  --host-smtp-addr smtp.example.com:587 --host-smtp-from accounts@example.com \
+  --host-smtp-user toget --no-relay --no-directory
+```
+
+Create an official-hosted account, or add a second device to one:
+
+```bash
+toget account create --host 'https://accounts.example.com#fp=<hex>' \
+  --name Aiden --email aiden@example.com --out ~/offline/toget-account.togetkey
+toget account login --host 'https://accounts.example.com#fp=<hex>' \
+  --account-id 48392017174628
+```
+
+The host stores OPAQUE password records and sealed blobs, never the password or
+the account key. Registration returns the official recovery file once; store it
+offline. If the password is forgotten, request a reset email, open `/reset/` on
+the account host, and supply that file locally in the browser. Without it, the
+host cannot decrypt the account and cannot reset it. The official room home
+node is still design-only: an official-hosted account's rooms live on its
+devices or a self-hosted node. See
+[Account recovery](docs/account-recovery.md#official-hosted-accounts).
 
 Requirements: Go 1.27+, Node 24, and pnpm 9. Or install the pinned toolchain
 with `mise install`.
@@ -264,14 +296,20 @@ verified through its pinned TLS certificate and signed manifests. Portable
 business cards can be copied as text or shown as a QR code, and a saved card
 pins the full server ID for its short code. Room invites and device-pairing
 codes can also be shown as QR codes and scanned from a still image.
+Official-hosted accounts are implemented end to end: `toget-official` runs an
+OPAQUE account host that stores only password records and ciphertext, devices
+register and sign in without sending the password, and the embedded Go/WASM
+reset page restores a forgotten password with the offline recovery file plus
+an email link. The host cannot read account keys. The official room home node
+is not implemented.
 
 Releases are signed and reproducible, ship with SPDX SBOMs, and can be
 verified as a complete tree before publication. Nodes check for updates on a
 schedule, show an in-app banner, stage a release without restarting, and roll
 back on failure. Gateway port mapping (PCP, NAT-PMP, UPnP) is available as an
 optional public alternate, but UDP hole punching is not implemented. Also not
-implemented yet: multiple accounts on one node, a bundled model, and
-server-enforced forced updates for official-hosted accounts. The daemon runs
+implemented yet: multiple accounts on one node, a bundled model, the official
+room home, and server-enforced forced updates for official-hosted accounts. The daemon runs
 Agents locally on a mention, through Claude Code or any command that speaks the
 runtime protocol. Many parts will change as we learn.
 That is exactly why the project is open this early. If you care about
@@ -325,6 +363,8 @@ Toget 以本地节点的方式运行。单机上可以创建账号、创建房�
 
 ```bash
 go run ./cmd/toget-official
+# Accounts:  https://<host>:7722#fp=...
+# Public:    https://<host>:7722
 # Relay:     https://<host>:7719#fp=...
 # Directory: https://<host>:7720#fp=...
 ```
@@ -338,13 +378,40 @@ TCP/UDP 端口映射（PCP、NAT-PMP、UPnP），把公网地址作为备用直�
 UDP 打洞尚未实现，对称 NAT、运营商级 NAT 和封闭网络仍然要走中继。详见
 [中继与目录](docs/relay.md)。
 
+同一个 `toget-official` 还会在 `7722` 上运行**官方账号托管**。配置公网 HTTPS 地址和 SMTP 后即可发送验证和找回邮件：
+
+```bash
+export TOGET_HOST_SMTP_PASSWORD='...'
+go run ./cmd/toget-official --home ~/.local/share/toget-official \
+  --host-public-url https://accounts.example.com \
+  --host-smtp-addr smtp.example.com:587 --host-smtp-from accounts@example.com \
+  --host-smtp-user toget --no-relay --no-directory
+```
+
+创建官方托管账号，或在第二台设备上登录：
+
+```bash
+toget account create --host 'https://accounts.example.com#fp=<hex>' \
+  --name Aiden --email aiden@example.com --out ~/offline/toget-account.togetkey
+toget account login --host 'https://accounts.example.com#fp=<hex>' \
+  --account-id 48392017174628
+```
+
+官方托管只保存 OPAQUE 密码记录和密封密文，拿不到密码、账号私钥或房间密钥。注册时只会返回一次官方恢复文件，请离线保存；忘记密码时申请邮件链接，在账号托管的 `/reset/` 页面本地读取恢复文件完成重置。没有这个文件，官方服务无法解密账号，也无法重置。官方房间首页节点还没有实现：官方托管账号的房间目前放在自己的设备或自建节点上。详见 [账号找回](docs/account-recovery.md#official-hosted-accounts)。
+
 ```bash
 pnpm install
 pnpm --filter @toget/app build
 go run ./cmd/toget serve
 ```
 
-打开 <http://127.0.0.1:7718> 创建账号。目前还没有密码找回服务，但可以用下面的「设备配对」把同一账号连到第二台设备，也可以用备份把账号迁移到新机器。现阶段密码只作为本地登录的 Argon2id 校验值，还不能解锁本地保险库，请依赖系统权限和全盘加密保护数据目录。
+打开 <http://127.0.0.1:7718> 创建账号。本地密码用 Argon2id 校验，同时派生包装本地保险库的密钥；账号和设备私钥在磁盘上保持加密。解锁时创建每设备恢复文件：
+
+```bash
+go run ./cmd/toget account recovery create --out ~/offline/toget-recovery.togetkey
+```
+
+忘记密码且节点已锁定时用 `account reset-password --recovery <文件>`，节点仍解锁时可用 `account reset-password --local`。每台设备的密码和保险库相互独立；没有恢复文件、又忘记锁定节点的密码时，密封的历史无法打开。也可以用下面的「设备配对」把同一账号连到第二台设备，或用备份迁移账号。请用系统权限、全盘加密和定期恢复演练保护数据目录。
 
 也可以让服务在后台运行，再用 CLI：
 
@@ -442,6 +509,6 @@ toget update rollback               # 放弃待确认更新，或回到上一版
 - [代码结构](docs/repo-layout.md)
 - [路线图](docs/roadmap.md)
 
-**早期实现：本地、局域网和跨网络中继房间已经可用。** 当前版本有账号与设备身份、端到端加密的房间密钥代次、加密的哈希链事件日志、附件、备份恢复、本地 API、CLI 和双语 React 网页。同一局域网内的两个节点可以用邀请码加入房间、互发消息并同步历史；第二台设备可以通过配对恢复同一账号并同步房间，无需拷贝私钥。远程房间支持附件、自主退出和本地归档。Agent 可以注册、加入房间，通过本地审批和工具回执卡片受控，也可以用房间策略按工具、对象、金额和时段预授权日常操作；本机 Agent 运行时，网页会显示有大小上限的临时过程输出，最终回答才是写入时间线的持久记录。可选的中继和签名目录已经能跨网络工作，支持直连优先、自动发现中继、运行期切换中继、多跳路由、逐跳签名、环路检测、字节配额、WebSocket 隧道（长轮询回退）和有限的离线队列；`toget relay` 可以不建账号、不建数据库，单独运行一个中继。同一局域网里的节点还能通过 mDNS 相互发现，不依赖目录也能用服务器代码找到对方；发现的地址仍会通过固定 TLS 证书和签名清单验证。名片可以复制成文本或显示为二维码，保存后会把完整服务器 ID 固定到对应的八位代码上。房间邀请码和设备配对码也可以显示成二维码，并从图片中识别。
+**早期实现：本地、局域网和跨网络中继房间已经可用。** 当前版本有账号与设备身份、端到端加密的房间密钥代次、加密的哈希链事件日志、附件、备份恢复、本地 API、CLI 和双语 React 网页。同一局域网内的两个节点可以用邀请码加入房间、互发消息并同步历史；第二台设备可以通过配对恢复同一账号并同步房间，无需拷贝私钥。远程房间支持附件、自主退出和本地归档。Agent 可以注册、加入房间，通过本地审批和工具回执卡片受控，也可以用房间策略按工具、对象、金额和时段预授权日常操作；本机 Agent 运行时，网页会显示有大小上限的临时过程输出，最终回答才是写入时间线的持久记录。可选的中继和签名目录已经能跨网络工作，支持直连优先、自动发现中继、运行期切换中继、多跳路由、逐跳签名、环路检测、字节配额、WebSocket 隧道（长轮询回退）和有限的离线队列；`toget relay` 可以不建账号、不建数据库，单独运行一个中继。同一局域网里的节点还能通过 mDNS 相互发现，不依赖目录也能用服务器代码找到对方；发现的地址仍会通过固定 TLS 证书和签名清单验证。名片可以复制成文本或显示为二维码，保存后会把完整服务器 ID 固定到对应的八位代码上。房间邀请码和设备配对码也可以显示成二维码，并从图片中识别。官方托管账号已经端到端打通：`toget-official` 运行 OPAQUE 账号托管，只保存密码记录和密文；设备注册和登录都不发送密码；内置的 Go/WASM 重置页面用离线恢复文件加邮件链接找回密码。托管方读不到账号密钥。官方房间首页节点还没有实现。
 
-网关端口映射（PCP、NAT-PMP、UPnP）已经可用，会作为可选的公网备用地址；UDP 打洞还没有实现。还没有实现的还有：同一节点登录多个账号、自带模型，以及面向官方托管账号的强制更新服务端执行（本地定时检查、更新命令和回滚已经可用）。守护进程会在被 @ 时在本地运行 Agent，可以用 Claude Code，也可以用任何实现了运行时协议的命令。很多地方仍会调整。欢迎开 issue 关注、分享场景，或直接参与建设。项目理念见 [docs/philosophy.md](docs/philosophy.md)，参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+网关端口映射（PCP、NAT-PMP、UPnP）已经可用，会作为可选的公网备用地址；UDP 打洞还没有实现。还没有实现的还有：同一节点登录多个账号、自带模型、官方房间首页，以及面向官方托管账号的强制更新服务端执行（本地定时检查、更新命令和回滚已经可用）。守护进程会在被 @ 时在本地运行 Agent，可以用 Claude Code，也可以用任何实现了运行时协议的命令。很多地方仍会调整。欢迎开 issue 关注、分享场景，或直接参与建设。项目理念见 [docs/philosophy.md](docs/philosophy.md)，参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。

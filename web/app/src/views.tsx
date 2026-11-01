@@ -21,6 +21,7 @@ import type {
   Policy,
   PolicyDecision,
   PolicyRule,
+  RecoveryCredential,
   RecoveryStatus,
   RestoreStatus,
   RestoreUpload,
@@ -29,6 +30,18 @@ import type {
   UpdateStatusView,
 } from "./types";
 import { Badge, CopyButton, Modal, Spinner } from "./ui";
+
+function downloadRecoveryCredential(credential: RecoveryCredential) {
+  const blob = new Blob([credential.content], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = credential.filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
 
 export type CommonProps = {
   t: Translate;
@@ -508,7 +521,11 @@ export function DevicesView({ t, notify, onError }: CommonProps) {
     setSyncingAccount(true);
     try {
       const result = await api.syncAccount();
-      const summary = t("devices.syncResult", { synced: result.synced, peers: result.peers });
+      const base = t("devices.syncResult", { synced: result.synced, peers: result.peers });
+      const host = result.host
+        ? ` ${result.host_synced ? t("devices.syncHost") : t("devices.syncHostFailed")}`
+        : "";
+      const summary = `${base}${host}`;
       const warnings = result.warnings || [];
       notify(warnings.length ? `${summary} ${warnings.join(" · ")}` : summary);
       await load();
@@ -525,7 +542,17 @@ export function DevicesView({ t, notify, onError }: CommonProps) {
     setPairWarnings([]);
     setRotatingKey(true);
     try {
-      const result = await api.rotateAccountKey();
+      const account = await api.account();
+      let password: string | undefined;
+      if (account.host_url) {
+        const entered = window.prompt(t("devices.rotatePassword"));
+        if (!entered) {
+          setRotatingKey(false);
+          return;
+        }
+        password = entered;
+      }
+      const result = await api.rotateAccountKey(password);
       notify(t("devices.rotateResult", { generation: result.generation, devices: result.devices }));
       setPairWarnings(result.warnings || []);
       await load();
@@ -2187,7 +2214,7 @@ export function SettingsView({
   canInstall,
   onInstallApp,
 }: CommonProps & UpdateControls & {
-  account: { id: string; name: string; server_id: string };
+  account: { id: string; name: string; server_id: string; host_url?: string };
   status: { listen: string; version: { app: string; protocol: number; schema: number } } | null;
   lang: Lang;
   setLang: (lang: Lang) => void;
@@ -2219,6 +2246,9 @@ export function SettingsView({
   const [passwordBusy, setPasswordBusy] = useState(false);
   const [passwordError, setPasswordError] = useState("");
   const [localReset, setLocalReset] = useState(false);
+  const [officialRecoveryPassword, setOfficialRecoveryPassword] = useState("");
+  const [officialRecoveryBusy, setOfficialRecoveryBusy] = useState(false);
+  const [officialRecoveryError, setOfficialRecoveryError] = useState("");
 
   function iosHint() {
     return /iphone|ipad|ipod/i.test(navigator.userAgent);
@@ -2359,6 +2389,22 @@ export function SettingsView({
     }
   }
 
+  async function rotateOfficialRecovery() {
+    if (!window.confirm(t("settings.officialRecoveryConfirm"))) return;
+    setOfficialRecoveryBusy(true);
+    setOfficialRecoveryError("");
+    try {
+      const created = await api.createOfficialRecovery(officialRecoveryPassword);
+      downloadRecoveryCredential(created);
+      setOfficialRecoveryPassword("");
+      notify(t("settings.officialRecoveryCreated"));
+    } catch (err) {
+      setOfficialRecoveryError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setOfficialRecoveryBusy(false);
+    }
+  }
+
   async function removeRecovery() {
     if (!window.confirm(t("settings.recoveryRemoveConfirm"))) return;
     setRecoveryBusy(true);
@@ -2404,6 +2450,7 @@ export function SettingsView({
           <p className="mono big">{formatAccountID(account.id)}</p>
           <p className="muted">{account.name}</p>
           <p className="fine-print mono">{account.server_id}</p>
+          {account.host_url && <p className="fine-print">{t("settings.officialHost")}: {account.host_url}</p>}
           <button className="button ghost" onClick={() => void lock()}>
             {t("settings.lockNow")}
           </button>
@@ -2411,6 +2458,7 @@ export function SettingsView({
         <article className="panel wide">
           <h2>{t("settings.passwordTitle")}</h2>
           <p className="muted">{t("settings.passwordText")}</p>
+          {account.host_url && <p className="fine-print">{t("settings.officialPasswordNote")}</p>}
           <form className="settings-form" onSubmit={submitPassword}>
             {localReset ? (
               <>
@@ -2500,6 +2548,34 @@ export function SettingsView({
             </>
           )}
         </article>
+        {account.host_url && (
+          <article className="panel">
+            <h3>{t("settings.officialRecoveryTitle")}</h3>
+            <p className="muted">{t("settings.officialRecoveryText")}</p>
+            <p className="fine-print">{account.host_url}</p>
+            {officialRecoveryError && <div className="form-error">{officialRecoveryError}</div>}
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void rotateOfficialRecovery();
+              }}
+            >
+              <label>
+                {t("settings.officialRecoveryPassword")}
+                <input
+                  type="password"
+                  value={officialRecoveryPassword}
+                  onChange={(event) => setOfficialRecoveryPassword(event.target.value)}
+                  minLength={8}
+                  required
+                />
+              </label>
+              <button className="button ghost" type="submit" disabled={officialRecoveryBusy}>
+                {officialRecoveryBusy ? t("settings.recoveryBusy") : t("settings.officialRecoveryRotate")}
+              </button>
+            </form>
+          </article>
+        )}
         <article className="panel">
           <h2>{t("settings.node")}</h2>
           <dl className="facts vertical">

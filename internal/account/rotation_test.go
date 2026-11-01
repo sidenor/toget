@@ -109,6 +109,59 @@ func TestRotateKeyReSignsActiveDevices(t *testing.T) {
 	}
 }
 
+func TestInstallAccountKeyFromHostLogin(t *testing.T) {
+	ctx := context.Background()
+	source, _, _ := newRotationService(t, t.TempDir())
+	created, err := source.Create(ctx, "Aiden", "testpass123", "one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldKey, err := source.UnsealPrivateKey(created.Account)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newPub, newKey, err := identity.NewAccountKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	statement, err := identity.SignAccountKeyRotation(created.Account.ID, 2,
+		ed25519.PublicKey(created.Account.PublicKey), oldKey, newPub, newKey, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, wrongKey, err := identity.NewAccountKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := source.InstallAccountKey(ctx, 2, []string{statement}, wrongKey); !errors.Is(err, account.ErrKeyRotationEnvelope) {
+		t.Fatalf("mismatched key error = %v", err)
+	}
+	installed, changed, err := source.InstallAccountKey(ctx, 2, []string{statement}, newKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed || installed.Account.KeyGeneration != 2 || !bytes.Equal(installed.Account.PublicKey, newPub) {
+		t.Fatalf("installed account = %+v, changed = %v", installed.Account, changed)
+	}
+	cert, err := identity.VerifyDeviceCertificate([]byte(installed.Device.Certificate), newPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cert.DeviceID != installed.Device.ID {
+		t.Fatalf("certificate device = %q", cert.DeviceID)
+	}
+	stored, err := source.UnsealPrivateKey(installed.Account)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stored, newKey) {
+		t.Fatal("installed private key does not match")
+	}
+	if _, changed, err := source.InstallAccountKey(ctx, 2, []string{statement}, newKey); err != nil || changed {
+		t.Fatalf("reinstall changed = %v, error = %v", changed, err)
+	}
+}
+
 func TestApplyAccountKeyRotationsInstallsSealedKey(t *testing.T) {
 	ctx := context.Background()
 	source, _, _ := newRotationService(t, t.TempDir())

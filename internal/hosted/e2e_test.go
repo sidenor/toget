@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"errors"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -193,6 +194,25 @@ func TestHostedAccountLifecycle(t *testing.T) {
 		t.Fatalf("reset mail = %+v", resetMessage)
 	}
 	resetToken := tokenFromMessage(t, resetMessage, "reset")
+	inspection, err := h.client.InspectRecovery(ctx, resetToken, registered.RecoveryCredentialRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspection.AccountID != registered.AccountID || inspection.Name != "Aiden" ||
+		inspection.EmailHint == "" || inspection.KeyGeneration != 1 {
+		t.Fatalf("inspection = %+v", inspection)
+	}
+	wrongCredential, _, err := hosted.NewRecoveryCredential(registered.AccountID, h.client.PinnedURL(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongRaw, err := wrongCredential.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.InspectRecovery(ctx, resetToken, wrongRaw); !errors.Is(err, hosted.ErrRecoveryMismatch) {
+		t.Fatalf("wrong recovery file inspection error = %v", err)
+	}
 	reset, err := h.client.ResetPassword(ctx, resetToken, registered.RecoveryCredentialRaw, "reset password one")
 	if err != nil {
 		t.Fatal(err)

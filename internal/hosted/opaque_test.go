@@ -142,24 +142,35 @@ func TestOPAQUEUnknownAccountUsesFakeRecord(t *testing.T) {
 	}
 }
 
-func TestOPAQUERegistrationRequiresConsistentIdentity(t *testing.T) {
+func TestOPAQUERegistrationRecordIsBoundToAccount(t *testing.T) {
 	server, configBytes := opaqueSetup(t)
 	recordBytes, _ := register(t, server, configBytes, testAccount, "password")
-	if _, err := server.RegistrationRecord("12345678000002", recordBytes); err != nil {
-		// The record itself is bound to the credential identifier in its
-		// envelope, so wrapping under another ID must not produce a usable
-		// login. If the library accepts this record, a login must fail.
-		clientRecord, _ := server.RegistrationRecord("12345678000002", recordBytes)
-		client, _ := hosted.NewOPAQUEClient(configBytes, "12345678000002", testHostID)
-		ke1, _ := client.LoginInit("password")
-		enrollment, err := server.LoginBegin("12345678000002", clientRecord, ke1)
-		if err == nil {
-			ke3, _, err := client.LoginFinish(enrollment.KE2)
-			if err == nil {
-				if err := server.LoginFinish(enrollment.Output, enrollment.Fake, ke3); err == nil {
-					t.Fatal("a record registered under another account completed login")
-				}
-			}
-		}
+
+	// Re-labeling a registration record with another account ID must not make
+	// that account's login succeed. The OPAQUE envelope binds the credentialed
+	// identity even though the host store indexes records by account ID.
+	const otherAccount = "12345678000002"
+	clientRecord, err := server.RegistrationRecord(otherAccount, recordBytes)
+	if err != nil {
+		t.Fatalf("record could not be decoded: %v", err)
+	}
+	client, err := hosted.NewOPAQUEClient(configBytes, otherAccount, testHostID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ke1, err := client.LoginInit("password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment, err := server.LoginBegin(otherAccount, clientRecord, ke1)
+	if err != nil {
+		return // Rejecting the mismatched record up front is also correct.
+	}
+	ke3, _, err := client.LoginFinish(enrollment.KE2)
+	if err != nil {
+		return
+	}
+	if err := server.LoginFinish(enrollment.Output, enrollment.Fake, ke3); err == nil {
+		t.Fatal("a record registered under another account completed login")
 	}
 }

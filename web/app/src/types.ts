@@ -23,6 +23,8 @@ export type Device = {
 export type AccountSyncResult = {
   peers: number;
   synced: number;
+  host?: boolean;
+  host_synced?: boolean;
   warnings?: string[];
   revoked?: string[];
 };
@@ -50,9 +52,18 @@ export type Account = {
   name: string;
   server_id: string;
   server_code: string;
+  host_url?: string;
   key_generation: number;
   created_at: string;
   device?: Device;
+};
+
+export type CreatedAccount = Account & {
+  recovery?: RecoveryCredential;
+};
+
+export type HostedLoginResult = Account & {
+  warnings?: string[];
 };
 
 export type Status = {

@@ -29,6 +29,8 @@ import (
 	"github.com/sidenor/toget/internal/approval"
 	"github.com/sidenor/toget/internal/backup"
 	"github.com/sidenor/toget/internal/config"
+	"github.com/sidenor/toget/internal/hosted"
+	"github.com/sidenor/toget/internal/hostedlink"
 	"github.com/sidenor/toget/internal/identity"
 	"github.com/sidenor/toget/internal/mdns"
 	"github.com/sidenor/toget/internal/node"
@@ -493,19 +495,21 @@ func runServe(ctx context.Context) error {
 		}
 	}()
 
+	hostSessions := hosted.NewSessionCache()
 	nodeService, err = node.New(node.Options{
-		Accounts:   accounts,
-		Rooms:      rooms,
-		Paths:      paths,
-		Listen:     cfg.NodeListen,
-		Advertise:  cfg.NodeAdvertise,
-		Relay:      cfg.NodeRelay,
-		Directory:  cfg.NodeDirectory,
-		MDNS:       cfg.NodeMDNS,
-		QUIC:       cfg.NodeQUIC,
-		NAT:        cfg.NodeNAT,
-		STUN:       cfg.NodeSTUN,
-		NATGateway: cfg.NodeNATGateway,
+		Accounts:     accounts,
+		Rooms:        rooms,
+		Paths:        paths,
+		Listen:       cfg.NodeListen,
+		Advertise:    cfg.NodeAdvertise,
+		Relay:        cfg.NodeRelay,
+		Directory:    cfg.NodeDirectory,
+		MDNS:         cfg.NodeMDNS,
+		QUIC:         cfg.NodeQUIC,
+		NAT:          cfg.NodeNAT,
+		STUN:         cfg.NodeSTUN,
+		NATGateway:   cfg.NodeNATGateway,
+		HostSessions: hostSessions,
 		SaveRelay: func(setting string) error {
 			return saveNodeRelay(paths, setting)
 		},
@@ -572,6 +576,7 @@ func runServe(ctx context.Context) error {
 	backupService := backup.NewService(db, paths)
 	handler := api.New(api.Options{
 		Accounts:      accounts,
+		Hosted:        hostedlink.New(accounts, hostSessions),
 		Rooms:         rooms,
 		Agents:        agents,
 		Policies:      policies,
@@ -842,6 +847,7 @@ func newUnlockCommand() *cobra.Command {
 func newAccountCommand() *cobra.Command {
 	cmd := &cobra.Command{Use: "account", Short: "Manage the local account"}
 	cmd.AddCommand(newAccountCreateCommand())
+	cmd.AddCommand(newAccountLoginCommand())
 	cmd.AddCommand(newAccountShowCommand())
 	cmd.AddCommand(newAccountSyncCommand())
 	cmd.AddCommand(newAccountRotateCommand())
@@ -882,6 +888,8 @@ func newAccountChangePasswordCommand() *cobra.Command {
 					return errors.New("passwords do not match")
 				}
 			}
+			var accountView api.AccountView
+			official := c.Get(cmd.Context(), "/api/v1/account", &accountView) == nil && accountView.HostURL != ""
 			var state api.SessionView
 			if err := c.Post(cmd.Context(), "/api/v1/account/change-password", map[string]string{
 				"current_password": currentPassword, "new_password": newPassword,
@@ -891,7 +899,11 @@ func newAccountChangePasswordCommand() *cobra.Command {
 			if jsonFlag {
 				return printJSON(state)
 			}
-			fmt.Println("Password changed. This device is unlocked; other devices are unchanged.")
+			if official {
+				fmt.Println("Password changed on the official host and this device. Other devices keep their existing local unlock password until changed there.")
+			} else {
+				fmt.Println("Password changed. This device is unlocked; other devices are unchanged.")
+			}
 			return nil
 		},
 	}
@@ -907,7 +919,55 @@ func newAccountRecoveryCommand() *cobra.Command {
 	}
 	cmd.AddCommand(newAccountRecoveryStatusCommand())
 	cmd.AddCommand(newAccountRecoveryCreateCommand())
+	cmd.AddCommand(newAccountRecoveryRotateOfficialCommand())
 	cmd.AddCommand(newAccountRecoveryRemoveCommand())
+	return cmd
+}
+
+func newAccountRecoveryRotateOfficialCommand() *cobra.Command {
+	var out, password string
+	cmd := &cobra.Command{
+		Use:   "rotate-official",
+		Short: "Rotate the official account recovery file",
+		Long: "Rotate the recovery file stored by the official account host. This is separate\n" +
+			"from this device's local recovery file. The account password is required.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var err error
+			if password == "" {
+				password, err = promptPassword("Account password: ")
+				if err != nil {
+					return err
+				}
+			}
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			// Unlock with the same password when needed; a hosted account uses
+			// one password on the host and in this device's vault.
+			if err := c.Post(cmd.Context(), "/api/v1/session", map[string]string{"password": password}, nil); err != nil {
+				return err
+			}
+			var created api.RecoveryCredentialView
+			if err := c.Post(cmd.Context(), "/api/v1/account/recovery", map[string]any{
+				"official": true, "password": password,
+			}, &created); err != nil {
+				return err
+			}
+			path, err := saveRecoveryCredential(created, out)
+			if err != nil {
+				return fmt.Errorf("recovery was rotated but the file could not be saved: %w; run the command again", err)
+			}
+			if jsonFlag {
+				return printJSON(map[string]any{"path": path, "filename": created.Filename, "created_at": created.CreatedAt})
+			}
+			fmt.Printf("Official recovery file written to:\n  %s\n\n", path)
+			fmt.Println("Store it offline. The previous official recovery file no longer works.")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&out, "out", "", "output path (default: the suggested recovery filename)")
+	cmd.Flags().StringVar(&password, "password", "", "account password (prompted when omitted)")
 	return cmd
 }
 
@@ -1153,20 +1213,35 @@ func writePrivateFile(path string, content []byte) error {
 }
 
 func newAccountRotateCommand() *cobra.Command {
-	return &cobra.Command{
+	var password string
+	cmd := &cobra.Command{
 		Use:   "rotate-key",
 		Short: "Rotate the account signing key and re-sign active devices",
+		Long: "Rotate the account signing key. For an official account, the password is\n" +
+			"also required so the new key bundle can be encrypted for the host.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, _, _, err := localClient()
 			if err != nil {
 				return err
+			}
+			var accountView api.AccountView
+			official := c.Get(cmd.Context(), "/api/v1/account", &accountView) == nil && accountView.HostURL != ""
+			if official && password == "" {
+				password, err = promptPassword("Account password: ")
+				if err != nil {
+					return err
+				}
 			}
 			var result struct {
 				Generation int      `json:"generation"`
 				Devices    int      `json:"devices"`
 				Warnings   []string `json:"warnings"`
 			}
-			if err := c.Post(cmd.Context(), "/api/v1/account/rotate-key", nil, &result); err != nil {
+			var request any
+			if official {
+				request = map[string]string{"password": password}
+			}
+			if err := c.Post(cmd.Context(), "/api/v1/account/rotate-key", request, &result); err != nil {
 				return err
 			}
 			if jsonFlag {
@@ -1180,6 +1255,8 @@ func newAccountRotateCommand() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&password, "password", "", "account password, required for an official account (prompted when omitted)")
+	return cmd
 }
 
 func newAccountSyncCommand() *cobra.Command {
@@ -1199,6 +1276,13 @@ func newAccountSyncCommand() *cobra.Command {
 				return printJSON(result)
 			}
 			fmt.Printf("Account sync: %d peer(s), %d reachable.\n", result.Peers, result.Synced)
+			if result.Host {
+				if result.HostSynced {
+					fmt.Println("Official host: synced.")
+				} else {
+					fmt.Println("Official host: not synced; see warnings below.")
+				}
+			}
 			if len(result.Revoked) > 0 {
 				fmt.Printf("Newly revoked: %s\n", strings.Join(result.Revoked, ", "))
 			}
@@ -1211,10 +1295,12 @@ func newAccountSyncCommand() *cobra.Command {
 }
 
 func newAccountCreateCommand() *cobra.Command {
-	var name, password, deviceName string
+	var name, password, deviceName, hostURL, email, out string
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create the account for this node",
+		Long: "Create a local account, or with --host an official-hosted account.\n" +
+			"An official account returns a recovery file once; save it offline before continuing.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, _, _, err := localClient()
 			if err != nil {
@@ -1242,22 +1328,139 @@ func newAccountCreateCommand() *cobra.Command {
 			if deviceName == "" {
 				deviceName, _ = os.Hostname()
 			}
-			var created api.AccountView
-			if err := c.Post(cmd.Context(), "/api/v1/account", map[string]string{
-				"name": name, "password": password, "device_name": deviceName,
-			}, &created); err != nil {
+			if err := validateOfficialOutput(hostURL, out); err != nil {
 				return err
 			}
-			if jsonFlag {
-				return printJSON(created)
+			var created struct {
+				api.AccountView
+				Recovery *api.RecoveryCredentialView `json:"recovery,omitempty"`
 			}
-			fmt.Printf("Account created.\n\nID:     %s\nName:   %s\nServer: %s\n\n", formatAccountID(created.ID), created.Name, created.ServerID)
+			request := map[string]string{
+				"name": name, "password": password, "device_name": deviceName,
+			}
+			if hostURL != "" {
+				request["host_url"] = hostURL
+				request["email"] = email
+			}
+			if err := c.Post(cmd.Context(), "/api/v1/account", request, &created); err != nil {
+				return err
+			}
+			var recoveryPath string
+			if created.Recovery != nil {
+				recoveryPath, err = saveRecoveryCredential(*created.Recovery, out)
+				if err != nil {
+					return fmt.Errorf("account created, but the official recovery file could not be saved: %w; create a new one with `toget account recovery rotate-official`", err)
+				}
+			} else if hostURL != "" {
+				return errors.New("the official host did not return a recovery file; create a new one with `toget account recovery rotate-official`")
+			}
+			if jsonFlag {
+				return printJSON(map[string]any{
+					"account": created.AccountView, "recovery_path": recoveryPath,
+				})
+			}
+			fmt.Printf("Account created.\n\nID:     %s\nName:   %s\nServer: %s\n", formatAccountID(created.ID), created.Name, created.ServerID)
+			if created.HostURL != "" {
+				fmt.Printf("Host:   %s\n", created.HostURL)
+			}
+			fmt.Println()
+			if recoveryPath != "" {
+				fmt.Printf("Recovery file written to:\n  %s\n\n", recoveryPath)
+				fmt.Println("Store it offline like a private key. Without it, a forgotten official password cannot recover the account.")
+				return nil
+			}
 			fmt.Println("Keep your password safe. This account lives on this machine.")
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "display name")
 	cmd.Flags().StringVar(&password, "password", "", "password (prompted when omitted)")
+	cmd.Flags().StringVar(&deviceName, "device-name", "", "name of this device")
+	cmd.Flags().StringVar(&hostURL, "host", "", "official account host URL (creates a hosted account)")
+	cmd.Flags().StringVar(&email, "email", "", "email for official account recovery (optional)")
+	cmd.Flags().StringVar(&out, "out", "", "recovery file path for an official account")
+	return cmd
+}
+
+func validateOfficialOutput(hostURL, out string) error {
+	if out != "" && hostURL == "" {
+		return errors.New("--out is only used when creating an official account with --host")
+	}
+	return nil
+}
+
+func saveRecoveryCredential(credential api.RecoveryCredentialView, out string) (string, error) {
+	path := credential.Filename
+	if out != "" {
+		path = out
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	written, err := writeRecoveryFile(absolute, []byte(credential.Content), out == "")
+	if err != nil {
+		return "", err
+	}
+	return written, nil
+}
+
+func newAccountLoginCommand() *cobra.Command {
+	var hostURL, accountID, password, deviceName string
+	cmd := &cobra.Command{
+		Use:   "login",
+		Short: "Sign in to an official account on this device",
+		Long: "Authenticate to an official account host and add this device to the account.\n" +
+			"The account password is used once to create the local vault; it is not stored.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if hostURL == "" {
+				hostURL = prompt("Official host URL: ")
+			}
+			if accountID == "" {
+				accountID = prompt("Account ID (14 digits): ")
+			}
+			if accountID == "" {
+				return errors.New("an account ID is required")
+			}
+			var err error
+			if password == "" {
+				password, err = promptPassword("Account password: ")
+				if err != nil {
+					return err
+				}
+			}
+			if deviceName == "" {
+				deviceName, _ = os.Hostname()
+			}
+			c, _, _, err := localClient()
+			if err != nil {
+				return err
+			}
+			var loggedIn struct {
+				api.AccountView
+				Warnings []string `json:"warnings,omitempty"`
+			}
+			if err := c.Post(cmd.Context(), "/api/v1/account/hosted/login", map[string]string{
+				"host_url": hostURL, "account_id": accountID,
+				"password": password, "device_name": deviceName,
+			}, &loggedIn); err != nil {
+				return err
+			}
+			if jsonFlag {
+				return printJSON(loggedIn)
+			}
+			fmt.Printf("Signed in.\n\nID:     %s\nName:   %s\nHost:   %s\nDevice: %s\n\n",
+				formatAccountID(loggedIn.ID), loggedIn.Name, loggedIn.HostURL, deviceName)
+			for _, warning := range loggedIn.Warnings {
+				fmt.Printf("warning: %s\n", warning)
+			}
+			fmt.Println("This device is now part of the account. Use account sync to reach your other devices.")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&hostURL, "host", "", "official account host URL")
+	cmd.Flags().StringVar(&accountID, "account", "", "14-digit account ID")
+	cmd.Flags().StringVar(&password, "password", "", "account password (prompted when omitted)")
 	cmd.Flags().StringVar(&deviceName, "device-name", "", "name of this device")
 	return cmd
 }
@@ -1280,6 +1483,11 @@ func newAccountShowCommand() *cobra.Command {
 			}
 			fmt.Printf("ID:     %s\nName:   %s\nServer: %s\nKey:    generation %d\n",
 				formatAccountID(a.ID), a.Name, a.ServerID, a.KeyGeneration)
+			if a.HostURL != "" {
+				fmt.Printf("Host:   %s\n", a.HostURL)
+			} else {
+				fmt.Println("Host:   local (no official host)")
+			}
 			return nil
 		},
 	}

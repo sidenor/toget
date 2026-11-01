@@ -1,12 +1,15 @@
 # Product
 
-> Status: design draft, with a working early build. Local, same-LAN, and early
-> cross-network rooms work, including portable invite codes, encrypted history
-> sharing, incremental sync, attachments, backup/restore, and the
-> approval/tool control plane. Agents run through Claude Code or a local
-> connector; Toget does not include its own model runtime. Optional gateway
-> port mapping is available, but UDP hole punching is not implemented yet.
-> Names and scope will change as the first version is built.
+> Status: working early build. Local, same-LAN, and cross-network rooms work,
+> including portable invite codes, encrypted history sharing, incremental
+> sync, attachments, backup/restore, and the approval/tool control plane.
+> Agents run through Claude Code or a local connector; Toget does not include
+> its own model runtime. Official-hosted accounts work end to end: OPAQUE
+> login, blind key storage, required recovery file, email verification, and
+> the embedded browser reset page. The official room home node is still
+> design-only. Optional gateway port mapping is available, but UDP hole
+> punching is not implemented yet. Names and scope will change as the first
+> version is built.
 
 ## One sentence
 
@@ -59,7 +62,7 @@ Toget is also a **control surface for Agents**: you can see what an Agent is doi
 | --- | --- | --- |
 | **`toget` daemon / CLI** | One binary. Runs the local node, stores local data, supervises Agents, exposes the local API, and provides the CLI. | M1 |
 | **Local web UI** | Room list, conversation, Agent status, approval cards, device and relay settings. Bound to `127.0.0.1:7718` or a Unix socket. | M1 |
-| **Account host** | Stores account records, verifies login, assigns the account code, keeps the device list, and can host rooms. Self-hosted first; official hosting in M5. | M1 / M5 |
+| **Account host** | Stores account records, verifies login, assigns the account code, and keeps the device list. A self-hosted host can also host rooms; the official host cannot yet. Self-hosted and official hosting are both implemented. | M1 / M5 |
 | **Relay** | Forwards encrypted envelopes when direct connections fail. Any public node can relay; the official service is the default. | M4 |
 | **Official directory** | Maps a server code to a signed server manifest. Optional; saved [business cards](cards.md), QR codes, and manual addresses also work. | M4 |
 | **Phone / tablet App** | A client device: chat, approvals, notifications. Not a persistent node, not a relay, not an account root. | Later |
@@ -117,11 +120,11 @@ The trust boundary follows the hosting choice:
 | Hosting | Endpoint (can decrypt) | Official can read? | Password recovery |
 | --- | --- | --- | --- |
 | **Self-hosted** | The user's own server | No | Local recovery file, or an unlocked-device reset; data stays on the machine |
-| **Official** | The user's devices; official stores ciphertext | No | Email restores login; the recovery credential restores old history |
+| **Official** | The user's devices; official stores ciphertext | No | The recovery file plus an email link resets the password; without the file, the account cannot be reset |
 | **Official + official Agent** | The official Agent, only with explicit authorization | Not by default; the authorization scope is visible | Same as official |
 
 - The official service never holds a universal key.
-- In the planned official-hosted flow, accounts must download a **recovery credential** at registration. It is a high-entropy key that can unwrap the account's master key after a password reset. Without it, an email reset restores login but cannot open old history.
+- Official-hosted accounts download a **recovery credential** at registration; the web onboarding flow requires the download and a confirmation before continuing. It is a high-entropy key that unwraps the account master key after a password reset. Without it, an email link cannot complete a reset. The service never receives the file.
 - Self-hosted accounts can use a **per-device recovery file** to reset a forgotten password while the node is locked. Without one, the only reset path is while the node is already unlocked, because the daemon needs the in-memory vault key to re-wrap it. A forgotten password plus a locked node and no recovery file means the sealed local history cannot be opened. If the machine is lost and there is no backup, the data is lost; we say so plainly. See [account-recovery.md](account-recovery.md).
 
 ## Core loop
@@ -162,7 +165,12 @@ The first usable version should prove one loop end to end. Delivery is staged in
 - sync a second device of the same account;
 - run entirely on a LAN, with the official service optional.
 
-Stages after the MVP add relay and the official directory (M4); official hosting and recovery credentials, with signed reproducible releases, periodic update checks, an in-app update prompt, and rollback already implemented (M5); and daily-use features such as PWA install and audit export, with policy language v1 already implemented (M6). Server-enforced forced updates for official-hosted accounts are not implemented, because official-hosted accounts do not exist yet.
+The relay, official directory, official hosting, recovery credentials, signed
+reproducible releases, periodic update checks, the in-app update prompt, and
+rollback are implemented (M4/M5). Daily-use features such as PWA install and
+audit export are implemented, as is policy language v1 (M6). The official room
+home and server-enforced forced updates for official-hosted accounts are not
+implemented.
 
 ## Explicit non-goals for the MVP
 
