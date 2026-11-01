@@ -717,7 +717,8 @@ An inviter prepares a `member.invited` event and current-epoch key, plus any
 older epoch keys allowed by the chosen history policy. The host receives the
 SHA-256 of the invite secret, never the secret itself, and stores the epoch
 keys wrapped under a key derived from that secret. The single-use code carries
-the secret, host URL, pinned host ID, room ID, room name, and topic. Joining
+the secret, host URL with its certificate or host identity pin, room ID, room
+name, and topic. Joining
 requires a device-signed request; the joiner redeems the secret, unwraps the
 invited epochs, rewraps them to its own device, imports the visible snapshot,
 and uploads its own key packages. No existing member needs to be online.
