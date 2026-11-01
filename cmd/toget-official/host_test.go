@@ -19,6 +19,8 @@ func TestAccountHostDirectAddress(t *testing.T) {
 		{listen: "127.0.0.1:7722", direct: "accounts.example.com:0", wantErr: true},
 		{listen: "127.0.0.1:7722", direct: "accounts.example.com:65536", wantErr: true},
 		{listen: "127.0.0.1:7722", direct: "accounts.example.com:https", wantErr: true},
+		{listen: "127.0.0.1:7722", direct: "accounts.example.com:+443", wantErr: true},
+		{listen: "127.0.0.1:7722", direct: "accounts.example.com:0443", want: "accounts.example.com:443"},
 		{listen: "127.0.0.1:7722", direct: "0.0.0.0:443", wantErr: true},
 		{listen: "127.0.0.1:7722", direct: "[::]:443", wantErr: true},
 		{listen: "127.0.0.1:7722", direct: ":443", wantErr: true},

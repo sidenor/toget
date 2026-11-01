@@ -294,11 +294,14 @@ func accountHostDirectAddress(listen, directAddress string) (string, error) {
 	if strings.Contains(host, ":") && net.ParseIP(strings.Trim(host, "[]")) == nil {
 		return "", errors.New("account host direct address has an invalid IPv6 host")
 	}
+	if strings.Trim(port, "0123456789") != "" {
+		return "", errors.New("account host direct address has an invalid port")
+	}
 	portNumber, err := strconv.Atoi(port)
 	if err != nil || portNumber < 1 || portNumber > 65535 {
 		return "", errors.New("account host direct address has an invalid port")
 	}
-	return net.JoinHostPort(strings.Trim(host, "[]"), port), nil
+	return net.JoinHostPort(strings.Trim(host, "[]"), strconv.Itoa(portNumber)), nil
 }
 
 func isWildcardHost(host string) bool {
