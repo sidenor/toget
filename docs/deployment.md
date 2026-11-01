@@ -37,7 +37,9 @@ The account host is chosen at registration and cannot be moved silently. Moving 
 
 ## Requirements
 
-- Linux `amd64`/`arm64`/`armv7`, macOS `amd64`/`arm64`, or Windows `amd64`.
+- Linux `amd64`/`arm64`, macOS `amd64`/`arm64`, or Windows `amd64`. Linux
+  `armv7` currently fails to build because an upstream Argon2 dependency
+  assumes a 64-bit `int`; do not deploy it until that dependency is fixed.
 - 1 CPU core and 256 MB of RAM for a small node; more if it runs Agents.
 - Disk: a few hundred MB for the binary and local data, plus room history and attachments.
 - A stable outbound connection. Inbound reachability is optional; a relay covers NAT and firewalls.
