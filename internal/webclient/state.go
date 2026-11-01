@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	roompkg "github.com/sidenor/toget/internal/room"
 )
 
 // StateVersion is the on-disk browser-state format.
@@ -148,6 +150,7 @@ type RoomState struct {
 	ID               string `json:"id"`
 	Name             string `json:"name"`
 	Topic            string `json:"topic,omitempty"`
+	Kind             string `json:"kind,omitempty"`
 	HomeURL          string `json:"home_url"`
 	HostID           string `json:"host_id"`
 	OwnerAccountID   string `json:"owner_account_id"`
@@ -388,6 +391,9 @@ type RoomSummary struct {
 	ID             string     `json:"id"`
 	Name           string     `json:"name"`
 	Topic          string     `json:"topic,omitempty"`
+	Kind           string     `json:"kind,omitempty"`
+	PeerAccountID  string     `json:"peer_account_id,omitempty"`
+	PeerName       string     `json:"peer_name,omitempty"`
 	OwnerAccountID string     `json:"owner_account_id"`
 	Epoch          int        `json:"epoch"`
 	MemberCount    int        `json:"member_count"`
@@ -401,7 +407,7 @@ type RoomSummary struct {
 	LastAt         *time.Time `json:"last_at,omitempty"`
 }
 
-func roomSummary(room *RoomState, deviceID string) RoomSummary {
+func roomSummary(room *RoomState, accountID, deviceID string) RoomSummary {
 	if room == nil {
 		return RoomSummary{}
 	}
@@ -412,11 +418,20 @@ func roomSummary(room *RoomState, deviceID string) RoomSummary {
 		}
 	}
 	summary := RoomSummary{
-		ID: room.ID, Name: room.Name, Topic: room.Topic,
+		ID: room.ID, Name: room.Name, Topic: room.Topic, Kind: room.Kind,
 		OwnerAccountID: room.OwnerAccountID, Epoch: room.Epoch,
 		MemberCount: len(activeMembers(room)), Unread: unread,
 		History: room.History, JoinedAt: room.JoinedAt,
 		ReadSeq: room.ReadSeq, LastSeq: room.LastSeq,
+	}
+	if room.Kind == roompkg.RoomKindDirect {
+		for _, member := range room.Members {
+			if member.Status == "active" && member.AccountID != accountID {
+				summary.PeerAccountID = member.AccountID
+				summary.PeerName = member.DisplayName
+				break
+			}
+		}
 	}
 	if len(room.Messages) > 0 {
 		last := room.Messages[len(room.Messages)-1]

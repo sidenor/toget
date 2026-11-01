@@ -5,8 +5,8 @@ import {
   useState,
 } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
-import { memberAvatar, roomAvatar } from "./avatars";
-import { clock, dayKey, dayLabel } from "./helpers";
+import { memberAvatar, roomSummaryAvatar } from "./avatars";
+import { clock, dayKey, dayLabel, roomTitle } from "./helpers";
 import type { Profile, RoomView } from "./types";
 import { Avatar, Icon } from "./ui";
 
@@ -82,8 +82,14 @@ export function ChatView({
       list.scrollHeight - list.scrollTop - list.clientHeight < 90;
   };
 
-  const subtitle = `${room.members.length} 位成员 · 端到端加密`;
-  const avatar = roomAvatar(room.summary.id, room.summary.name);
+  const direct = room.summary.kind === "direct";
+  const title = roomTitle(room.summary);
+  const subtitle = direct
+    ? room.summary.peer_name?.trim()
+      ? "1:1 私密聊天 · 端到端加密"
+      : "等待好友加入 · 端到端加密"
+    : `${room.members.length} 位成员 · 端到端加密`;
+  const avatar = roomSummaryAvatar(room.summary);
   const showLocked = room.locked_count > 0;
 
   return (
@@ -96,7 +102,7 @@ export function ChatView({
         )}
         <Avatar spec={avatar} size={isMobile ? 36 : 38} />
         <div className="chat-head-copy">
-          <h2>{room.summary.name}</h2>
+          <h2>{title}</h2>
           <p>
             <Icon name="lock" size={11} />
             {subtitle}
@@ -133,9 +139,11 @@ export function ChatView({
           {messages.length === 0 && !sending && (
             <div className="chat-empty">
               <Avatar spec={avatar} size={68} />
-              <h2>{room.summary.name}</h2>
+              <h2>{title}</h2>
               <p>
-                {room.summary.topic?.trim() || "这个房间还没有消息"}
+                {direct && !room.summary.peer_name?.trim()
+                  ? "邀请已经准备好，把链接发给好友就可以开始聊天。"
+                  : room.summary.topic?.trim() || "这个房间还没有消息"}
               </p>
             </div>
           )}

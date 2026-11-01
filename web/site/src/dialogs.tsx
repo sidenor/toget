@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { memberAvatar, roomAvatar } from "./avatars";
-import { copyText, downloadFile, expiryLabel } from "./helpers";
+import { memberAvatar, roomSummaryAvatar } from "./avatars";
+import { copyText, downloadFile, expiryLabel, roomTitle } from "./helpers";
 import type {
   AccountDevice,
   InviteResult,
@@ -373,7 +373,7 @@ export function RoomInfoDialog({
     return () => window.clearTimeout(timer);
   }, [copied]);
 
-  const avatar = roomAvatar(room.summary.id, room.summary.name);
+  const avatar = roomSummaryAvatar(room.summary);
   const ownerName =
     room.members.find(
       (member) => member.account_id === room.summary.owner_account_id,
@@ -504,7 +504,7 @@ export function RoomInfoDialog({
           </div>
         ) : (
           <div className="room-info-copy">
-            <h3>{room.summary.name}</h3>
+            <h3>{roomTitle(room.summary)}</h3>
             <p>
               {room.summary.topic?.trim() ||
                 `${room.members.length} 位成员 · 端到端加密`}

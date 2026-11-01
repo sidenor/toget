@@ -1,4 +1,4 @@
-import type { AvatarSpec, Tone } from "./types";
+import type { AvatarSpec, RoomSummary, Tone } from "./types";
 
 const TONES: Tone[] = ["jade", "sky", "peach", "lilac", "sand", "rose", "slate"];
 
@@ -28,6 +28,13 @@ export function avatarFor(
 
 export function roomAvatar(roomId: string, name: string): AvatarSpec {
   return avatarFor(`room:${roomId}`, name || "房");
+}
+
+export function roomSummaryAvatar(room: RoomSummary): AvatarSpec {
+  if (room.kind === "direct" && room.peer_account_id) {
+    return memberAvatar(room.peer_account_id, room.peer_name || "好友");
+  }
+  return roomAvatar(room.id, room.name);
 }
 
 export function memberAvatar(accountId: string, name: string): AvatarSpec {

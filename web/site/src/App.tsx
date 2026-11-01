@@ -3,6 +3,14 @@ import { AuthScreen } from "./Auth";
 import type { AuthValues } from "./Auth";
 import { AgentsPage } from "./AgentsPage";
 import { ChatView } from "./ChatView";
+import {
+  AddFriendDialog,
+  FriendsOverview,
+  FriendsPage,
+  FriendsSidebar,
+  friendEntries,
+} from "./FriendsPage";
+import type { FriendEntry } from "./FriendsPage";
 import { MePage } from "./MePage";
 import {
   MembersList,
@@ -21,11 +29,12 @@ import {
   RecoveryDialog,
   RoomInfoDialog,
 } from "./dialogs";
-import { profileAvatar, roomAvatar } from "./avatars";
-import { listTime, roomPreview } from "./helpers";
+import { profileAvatar, roomSummaryAvatar } from "./avatars";
+import { listTime, roomPreview, roomTitle } from "./helpers";
 import type {
   AccountDevice,
   AuthResult,
+  FriendInviteResult,
   InviteResult,
   Profile,
   RecoveryFile,
@@ -57,6 +66,7 @@ type AuthMode = "login" | "register";
 type ModalKind =
   | "create"
   | "join"
+  | "addFriend"
   | "roomInfo"
   | "logout"
   | "rotate"
@@ -242,6 +252,7 @@ export default function App() {
   const syncDepth = useRef(0);
   const lastWarningRef = useRef<string | null>(null);
   const pendingInviteRef = useRef(readPendingInvite());
+  const chatOriginRef = useRef<Tab>("chats");
   const refreshRef = useRef<() => void>(() => {});
 
   const persistState = useCallback(async (target: SiteClient) => {
@@ -762,6 +773,7 @@ export default function App() {
     () => aggregateMembers(allRoomViews),
     [allRoomViews],
   );
+  const friends = useMemo(() => friendEntries(rooms), [rooms]);
   const selectedMember = useMemo(
     () =>
       selectedMemberID
@@ -789,9 +801,16 @@ export default function App() {
   };
 
   const closeRoom = () => {
+    const returnTab = chatOriginRef.current;
+    chatOriginRef.current = "chats";
     setActiveRoomID(null);
     activeRoomRef.current = null;
     setRoomView(null);
+    rememberActiveRoom(null);
+    if (isMobile && returnTab === "friends") {
+      setTab("friends");
+      tabRef.current = "friends";
+    }
   };
 
   const selectMember = (member: StoredMember) => {
@@ -801,11 +820,12 @@ export default function App() {
   };
 
   const openRoom = useCallback(
-    async (roomID: string) => {
+    async (roomID: string, origin: Tab = "chats") => {
       const target = clientRef.current;
       if (!target) {
         return;
       }
+      chatOriginRef.current = origin;
       setTab("chats");
       tabRef.current = "chats";
       setSelectedMemberID(null);
@@ -1009,7 +1029,7 @@ export default function App() {
       await persistState(target);
       setModal(null);
       setInviteCode("");
-      setToast(`已加入「${view.summary.name}」。`);
+      setToast(`已加入「${roomTitle(view.summary)}」。`);
       setOnline(true);
       setSyncError(null);
       return true;
@@ -1061,6 +1081,35 @@ export default function App() {
       setRevision((value) => value + 1);
       await persistState(target);
       return result;
+    } catch (cause) {
+      return failAction(cause);
+    }
+  };
+
+  const createFriendInvite = async (
+    name: string,
+  ): Promise<FriendInviteResult> => {
+    const target = clientRef.current;
+    if (!target) {
+      throw new SiteError("internal", "安全模块还没有准备好。");
+    }
+    try {
+      const view = await target.call<RoomView>("createRoom", {
+        name: name.trim() || "新的好友",
+        topic: "",
+        kind: "direct",
+      });
+      const invite = await target.call<InviteResult>("createInvite", {
+        room_id: view.summary.id,
+        history: "all",
+        ttl_hours: 168,
+      });
+      setRooms(target.rooms());
+      setRevision((value) => value + 1);
+      await persistState(target);
+      setOnline(true);
+      setSyncError(null);
+      return { room: view, invite };
     } catch (cause) {
       return failAction(cause);
     }
@@ -1271,6 +1320,7 @@ export default function App() {
   }
 
   const showChat = tab === "chats";
+  const showFriends = tab === "friends";
   const showMembers = tab === "members";
   const showAgents = tab === "agents";
   const hideMobileNav =
@@ -1327,6 +1377,24 @@ export default function App() {
         />
       );
     }
+  } else if (showFriends) {
+    content = isMobile ? (
+      <FriendsPage
+        entries={friends}
+        onOpen={(roomID) => void openRoom(roomID, "friends")}
+        onAdd={() => setModal("addFriend")}
+        onJoin={() => {
+          setInviteCode("");
+          setModal("join");
+        }}
+      />
+    ) : (
+      <FriendsOverview
+        entries={friends}
+        onOpen={(roomID) => void openRoom(roomID, "friends")}
+        onAdd={() => setModal("addFriend")}
+      />
+    );
   } else if (showMembers) {
     if (isMobile) {
       content = selectedMember ? (
@@ -1399,6 +1467,7 @@ export default function App() {
           profile={profile}
           rooms={rooms}
           members={members}
+          friends={friends}
           tab={tab}
           activeRoomID={activeRoomID}
           selectedMemberID={selectedMemberID}
@@ -1406,6 +1475,7 @@ export default function App() {
           onOpenRoom={openRoom}
           onSelectMember={selectMember}
           onCreate={() => setModal("create")}
+          onAddFriend={() => setModal("addFriend")}
           onJoin={() => {
             setInviteCode("");
             setModal("join");
@@ -1453,6 +1523,18 @@ export default function App() {
           isMobile={isMobile}
           onClose={() => setModal(null)}
           onCreate={createRoom}
+        />
+      )}
+
+      {modal === "addFriend" && (
+        <AddFriendDialog
+          isMobile={isMobile}
+          onClose={() => setModal(null)}
+          onCreateInvite={createFriendInvite}
+          onJoinExisting={() => {
+            setInviteCode("");
+            setModal("join");
+          }}
         />
       )}
 
@@ -1579,6 +1661,7 @@ function Sidebar({
   profile,
   rooms,
   members,
+  friends,
   tab,
   activeRoomID,
   selectedMemberID,
@@ -1586,12 +1669,14 @@ function Sidebar({
   onOpenRoom,
   onSelectMember,
   onCreate,
+  onAddFriend,
   onJoin,
   onMe,
 }: {
   profile: Profile;
   rooms: RoomSummary[];
   members: StoredMember[];
+  friends: FriendEntry[];
   tab: Tab;
   activeRoomID: string | null;
   selectedMemberID: string | null;
@@ -1599,6 +1684,7 @@ function Sidebar({
   onOpenRoom: (roomID: string) => void;
   onSelectMember: (member: StoredMember) => void;
   onCreate: () => void;
+  onAddFriend: () => void;
   onJoin: () => void;
   onMe: () => void;
 }) {
@@ -1630,6 +1716,14 @@ function Sidebar({
         </button>
         <button
           type="button"
+          className={tab === "friends" ? "active" : ""}
+          aria-pressed={tab === "friends"}
+          onClick={() => onTab("friends")}
+        >
+          好友
+        </button>
+        <button
+          type="button"
           className={tab === "members" ? "active" : ""}
           aria-pressed={tab === "members"}
           onClick={() => onTab("members")}
@@ -1646,7 +1740,14 @@ function Sidebar({
         </button>
       </div>
 
-      {tab === "members" ? (
+      {tab === "friends" ? (
+        <FriendsSidebar
+          entries={friends}
+          onOpen={onOpenRoom}
+          onAdd={onAddFriend}
+          onJoin={onJoin}
+        />
+      ) : tab === "members" ? (
         <MembersList
           members={members}
           profile={profile}
@@ -1710,7 +1811,7 @@ function RoomList({
   const needle = query.trim().toLocaleLowerCase("zh-CN");
   const visible = needle
     ? rooms.filter((room) =>
-        `${room.name} ${room.topic ?? ""} ${room.last_text ?? ""}`
+        `${roomTitle(room)} ${room.name} ${room.topic ?? ""} ${room.last_text ?? ""}`
           .toLocaleLowerCase("zh-CN")
           .includes(needle),
       )
@@ -1746,12 +1847,12 @@ function RoomList({
             onClick={() => onOpen(room.id)}
           >
             <Avatar
-              spec={roomAvatar(room.id, room.name)}
+              spec={roomSummaryAvatar(room)}
               size={mobile ? 50 : 46}
             />
             <span className="chat-row-copy">
               <span className="chat-row-top">
-                <strong>{room.name}</strong>
+                <strong>{roomTitle(room)}</strong>
                 <span className="chat-row-time">
                   {listTime(room.last_at ?? room.joined_at)}
                 </span>
@@ -1906,6 +2007,7 @@ function TabBar({
 }) {
   const items: { id: Tab; label: string; icon: IconName }[] = [
     { id: "chats", label: "消息", icon: "chats" },
+    { id: "friends", label: "好友", icon: "friend" },
     { id: "members", label: "成员", icon: "contacts" },
     { id: "agents", label: "Agent", icon: "sparkle" },
     { id: "me", label: "我", icon: "person" },

@@ -184,7 +184,7 @@ textarea {
 
 .side-tabs {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 2px;
   margin: 0 16px 12px;
   padding: 3px;
@@ -1263,7 +1263,7 @@ textarea {
   left: 0;
   z-index: 30;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   padding: 6px 12px calc(6px + env(safe-area-inset-bottom));
   background: var(--nav-bg);
   border-top: 1px solid var(--line);
@@ -2611,6 +2611,114 @@ textarea {
 .members-empty p {
   max-width: 240px;
   text-align: center;
+}
+
+/* Friends */
+
+.friends-overview-page {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.friend-page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.friend-add-button {
+  flex: none;
+}
+
+.friends-inner {
+  padding-top: 24px;
+}
+
+.friend-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.friend-card {
+  min-height: 74px;
+}
+
+.friend-pending {
+  flex: none;
+  padding: 1px 5px;
+  color: var(--accent);
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  background: var(--accent-soft);
+  border-radius: 5px;
+}
+
+.friends-empty {
+  min-height: 360px;
+}
+
+.friends-empty p {
+  max-width: 260px;
+  text-align: center;
+  line-height: 1.65;
+}
+
+.friend-invite-result {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.friend-invite-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+}
+
+.friend-invite-check {
+  display: grid;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 50%;
+}
+
+.friend-invite-head strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.friend-invite-head p {
+  margin: 3px 0 0;
+  color: var(--text-3);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.friend-invite-note {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 11.5px;
+  line-height: 1.65;
+}
+
+.friend-join-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.friend-join-line .text-button {
+  padding: 0;
+  font-size: 12px;
 }
 
 .member-detail-page {

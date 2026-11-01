@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -260,6 +261,57 @@ func TestBrowserAccountRoomAndMultiDevice(t *testing.T) {
 	}
 	if _, err := alice.SendMessage(ctx, view.Summary.ID, "离开后仍可继续"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDirectRoomKindAndInviteLimit(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	alice := register(t, f, "Alice", "alice@example.com")
+	bob := register(t, f, "Bob", "bob@example.com")
+
+	view, err := alice.CreateRoom(ctx, webclient.CreateRoomInput{Name: "小王", Kind: "direct"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Summary.Kind != "direct" || view.Summary.PeerName != "" || view.Summary.MemberCount != 1 {
+		t.Fatalf("direct room = %+v", view.Summary)
+	}
+	invite, err := alice.CreateInvite(ctx, view.Summary.ID, webclient.InviteInput{
+		History: "all", TTLHours: 24,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := bob.JoinInvite(ctx, invite.Code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined.Summary.Kind != "direct" {
+		t.Fatalf("joined kind = %q", joined.Summary.Kind)
+	}
+	if joined.Summary.PeerAccountID != alice.Profile().AccountID || joined.Summary.PeerName != "Alice" {
+		t.Fatalf("joined peer = %+v", joined.Summary)
+	}
+
+	aliceView, err := alice.SyncRoom(ctx, view.Summary.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if aliceView.Summary.Kind != "direct" ||
+		aliceView.Summary.PeerAccountID != bob.Profile().AccountID ||
+		aliceView.Summary.PeerName != "Bob" {
+		t.Fatalf("alice peer = %+v", aliceView.Summary)
+	}
+
+	for _, client := range []*webclient.Client{alice, bob} {
+		_, err := client.CreateInvite(ctx, view.Summary.ID, webclient.InviteInput{
+			History: "all", TTLHours: 24,
+		})
+		var clientErr *webclient.Error
+		if !errors.As(err, &clientErr) || clientErr.Code != "direct_room_full" {
+			t.Fatalf("invite in full direct room = %v", err)
+		}
 	}
 }
 

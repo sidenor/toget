@@ -18,6 +18,7 @@ export type IconName =
   | "file"
   | "chats"
   | "contacts"
+  | "friend"
   | "person"
   | "lock"
   | "info"
@@ -101,6 +102,13 @@ const paths: Record<IconName, ReactNode> = {
       <path d="M3.7 19.1c.5-3.1 2.7-5 5.4-5s4.9 1.9 5.4 5" />
       <circle cx="17.1" cy="9.2" r="2.3" />
       <path d="M16.2 14.3c2.4.2 4.1 1.8 4.4 4.2" />
+    </>
+  ),
+  friend: (
+    <>
+      <circle cx="9.6" cy="7.8" r="3.4" />
+      <path d="M3.2 20c.6-3.7 2.9-5.8 6.4-5.8 1.1 0 2.1.2 3 .7" />
+      <path d="M17.4 20s-3.5-2.1-3.5-4.3a1.9 1.9 0 0 1 3.5-1.1 1.9 1.9 0 0 1 3.5 1.1c0 2.2-3.5 4.3-3.5 4.3Z" />
     </>
   ),
   person: (

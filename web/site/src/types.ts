@@ -8,7 +8,7 @@ export interface AvatarSpec {
 
 export type Theme = "light" | "dark" | "system";
 
-export type Tab = "chats" | "members" | "agents" | "me";
+export type Tab = "chats" | "friends" | "members" | "agents" | "me";
 
 export type ViewMode = "chats" | "member";
 
@@ -36,6 +36,9 @@ export interface RoomSummary {
   id: string;
   name: string;
   topic?: string;
+  kind?: string;
+  peer_account_id?: string;
+  peer_name?: string;
   owner_account_id: string;
   epoch: number;
   member_count: number;
@@ -117,6 +120,11 @@ export interface InviteResult {
   code: string;
   history: string;
   expires_at: string;
+}
+
+export interface FriendInviteResult {
+  room: RoomView;
+  invite: InviteResult;
 }
 
 export interface ApiError {

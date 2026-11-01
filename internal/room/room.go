@@ -95,6 +95,10 @@ const (
 	HomeKindOfficial = "official"
 )
 
+// RoomKindDirect marks a private one-to-one room. The kind is sealed inside
+// the room.created payload, so the blind host never learns it.
+const RoomKindDirect = "direct"
+
 // Member is an account's membership in a room.
 type Member struct {
 	RoomID              string     `json:"room_id"`
@@ -189,6 +193,8 @@ const (
 type RoomCreatedPayload struct {
 	Name  string `json:"name"`
 	Topic string `json:"topic,omitempty"`
+	// Kind is empty for a normal group room and "direct" for a 1:1 room.
+	Kind string `json:"kind,omitempty"`
 }
 
 type RoomSettingsChangedPayload struct {

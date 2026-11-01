@@ -88,7 +88,10 @@ The same origin serves the public web client at `/`. Its build is embedded from
 building `toget-official`. `--host-site-dir web/site/dist` overrides the
 embedded copy during development. The client calls the host's `/host/v1` API
 for registration, sign-in, rooms, invites, history, and recovery, and keeps its
-encrypted account vault in the browser's IndexedDB.
+encrypted account vault in the browser's IndexedDB. A signed-in visitor can add
+a friend from **Friends**; the resulting 1:1 room is an ordinary encrypted room
+whose kind is sealed with the rest of the room state, so the host cannot tell it
+apart.
 
 The same site has an **Agents** page that manages Agents on the visitor's own
 computer. After `curl -fsSL https://toget.vu/install.sh | sh` and

@@ -45,6 +45,8 @@ type RoomView struct {
 type CreateRoomInput struct {
 	Name  string `json:"name"`
 	Topic string `json:"topic"`
+	// Kind is empty for a group room or "direct" for a 1:1 room.
+	Kind string `json:"kind"`
 }
 
 // InviteInput controls an invitation.
@@ -71,13 +73,15 @@ func (c *Client) Rooms() []RoomSummary {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	deviceID := ""
+	accountID := ""
 	if c.state.Account != nil {
 		deviceID = c.state.Account.Device.ID
+		accountID = c.state.Account.ID
 	}
 	rooms := c.activeRoomsLocked()
 	summaries := make([]RoomSummary, 0, len(rooms))
 	for _, room := range rooms {
-		summaries = append(summaries, roomSummary(room, deviceID))
+		summaries = append(summaries, roomSummary(room, accountID, deviceID))
 	}
 	sort.SliceStable(summaries, func(i, j int) bool {
 		left, right := summaries[i], summaries[j]
@@ -223,6 +227,10 @@ func (c *Client) CreateRoom(ctx context.Context, input CreateRoomInput) (*RoomVi
 	if len([]rune(topic)) > maxRoomTopicRunes {
 		return nil, Errorf("invalid_topic", "房间说明最多 280 个字。")
 	}
+	kind, err := normalizeRoomKind(input.Kind)
+	if err != nil {
+		return nil, err
+	}
 	client, err := c.hostedClient()
 	if err != nil {
 		return nil, err
@@ -242,7 +250,7 @@ func (c *Client) CreateRoom(ctx context.Context, input CreateRoomInput) (*RoomVi
 	}
 	actor := c.actorLocked()
 	event, err := room.BuildOfficialEvent(roomID, 1, nil, room.EventRoomCreated, actor,
-		room.RoomCreatedPayload{Name: name, Topic: topic}, 1, key, now)
+		room.RoomCreatedPayload{Name: name, Topic: topic, Kind: kind}, 1, key, now)
 	if err != nil {
 		return nil, Errorf("internal", "无法创建房间事件。")
 	}
@@ -260,7 +268,8 @@ func (c *Client) CreateRoom(ctx context.Context, input CreateRoomInput) (*RoomVi
 		return nil, mapRoomError(err)
 	}
 	roomState := &RoomState{
-		ID: roomID, Name: name, Topic: topic, HomeURL: c.origin, HostID: c.state.Account.HostID,
+		ID: roomID, Name: name, Topic: topic, Kind: kind,
+		HomeURL: c.origin, HostID: c.state.Account.HostID,
 		OwnerAccountID: c.state.Account.ID, Epoch: 1, Head: response.Room.Head,
 		LastSeq: 1, LastID: event.ID, LastHash: event.Hash, LastEnvelopeHash: event.EnvelopeHash,
 		Keys: map[int][]byte{1: key}, DeviceRegistered: true,
@@ -376,6 +385,9 @@ func (c *Client) CreateInvite(ctx context.Context, roomID string, input InviteIn
 	if roomState == nil {
 		return nil, Errorf("room_not_found", "找不到这个房间。")
 	}
+	if roomState.Kind == room.RoomKindDirect && len(activeMembers(roomState)) >= 2 {
+		return nil, Errorf("direct_room_full", "这是 1:1 房间，已经有两位成员了。")
+	}
 	history := strings.TrimSpace(input.History)
 	switch history {
 	case "", room.HistoryNone:
@@ -452,6 +464,7 @@ func (c *Client) CreateInvite(ctx context.Context, roomID string, input InviteIn
 			code, err := encodeOfficialInvite(inviteCode{
 				Secret: secret, URL: c.hostURLWithIDLocked(), ServerID: c.state.Account.HostID,
 				RoomID: roomState.ID, RoomName: roomState.Name, RoomTopic: roomState.Topic,
+				RoomKind: roomState.Kind,
 			})
 			if err != nil {
 				return nil, Errorf("internal", "无法生成邀请码。")
@@ -501,7 +514,7 @@ func (c *Client) JoinInvite(ctx context.Context, rawCode string) (*RoomView, err
 		return nil, mapRoomError(err)
 	}
 	roomState := &RoomState{
-		ID: code.RoomID, Name: code.RoomName, Topic: code.RoomTopic,
+		ID: code.RoomID, Name: code.RoomName, Topic: code.RoomTopic, Kind: code.RoomKind,
 		HomeURL: c.origin, HostID: c.state.Account.HostID,
 		OwnerAccountID: response.Room.OwnerAccountID, Epoch: maxInt(response.Room.Epoch, 1),
 		Head: response.Room.Head, History: response.History, JoinedAt: response.JoinedAt,
@@ -985,6 +998,9 @@ func (c *Client) projectEventLocked(roomState *RoomState, event *room.Event, dev
 		}
 		roomState.Name = payload.Name
 		roomState.Topic = payload.Topic
+		if kind, err := normalizeRoomKind(payload.Kind); err == nil {
+			roomState.Kind = kind
+		}
 		roomState.UpdatedAt = at
 		c.appendSystemLocked(roomState, event, author, "创建了房间")
 		return true
@@ -1207,7 +1223,7 @@ func (c *Client) viewLocked(roomState *RoomState) *RoomView {
 	devices := make([]DeviceInfo, len(roomState.Devices))
 	copy(devices, roomState.Devices)
 	return &RoomView{
-		Summary: roomSummary(roomState, deviceID), Messages: messages,
+		Summary: roomSummary(roomState, accountID, deviceID), Messages: messages,
 		Members: members, Devices: devices,
 		Epoch: roomState.Epoch, MyRole: role, CanRename: role == "owner",
 		CanInvite:        len(roomState.Keys[roomState.Epoch]) == 32,
@@ -1218,13 +1234,15 @@ func (c *Client) viewLocked(roomState *RoomState) *RoomView {
 
 func (c *Client) summariesLocked() []RoomSummary {
 	deviceID := ""
+	accountID := ""
 	if c.state.Account != nil {
 		deviceID = c.state.Account.Device.ID
+		accountID = c.state.Account.ID
 	}
 	rooms := c.activeRoomsLocked()
 	summaries := make([]RoomSummary, 0, len(rooms))
 	for _, roomState := range rooms {
-		summaries = append(summaries, roomSummary(roomState, deviceID))
+		summaries = append(summaries, roomSummary(roomState, accountID, deviceID))
 	}
 	sort.SliceStable(summaries, func(i, j int) bool {
 		if summaries[i].LastAt != nil && summaries[j].LastAt != nil && !summaries[i].LastAt.Equal(*summaries[j].LastAt) {
@@ -1451,6 +1469,7 @@ type inviteCode struct {
 	ServerID  string `json:"server_id"`
 	RoomID    string `json:"room_id"`
 	RoomName  string `json:"room_name,omitempty"`
+	RoomKind  string `json:"room_kind,omitempty"`
 	HomeKind  string `json:"home_kind,omitempty"`
 	RoomTopic string `json:"room_topic,omitempty"`
 }
@@ -1458,6 +1477,11 @@ type inviteCode struct {
 func encodeOfficialInvite(code inviteCode) (string, error) {
 	code.Protocol = inviteProtocol
 	code.HomeKind = inviteKindOfficial
+	kind, err := normalizeRoomKind(code.RoomKind)
+	if err != nil {
+		return "", Errorf("invalid_invite", "邀请中的房间类型无效。")
+	}
+	code.RoomKind = kind
 	if len(code.Secret) < 16 || code.RoomID == "" || code.ServerID == "" {
 		return "", Errorf("invalid_invite", "邀请信息不完整。")
 	}
@@ -1505,7 +1529,23 @@ func decodeOfficialInvite(raw, origin, hostID string) (*inviteCode, error) {
 	if len([]rune(code.RoomName)) > maxRoomNameRunes || len([]rune(code.RoomTopic)) > maxRoomTopicRunes {
 		return nil, Errorf("invalid_invite", "邀请中的房间信息无效。")
 	}
+	kind, err := normalizeRoomKind(code.RoomKind)
+	if err != nil {
+		return nil, Errorf("invalid_invite", "邀请中的房间类型无效。")
+	}
+	code.RoomKind = kind
 	return &code, nil
+}
+
+func normalizeRoomKind(kind string) (string, error) {
+	switch strings.TrimSpace(kind) {
+	case "", "group":
+		return "", nil
+	case room.RoomKindDirect:
+		return room.RoomKindDirect, nil
+	default:
+		return "", Errorf("invalid_room_kind", "房间类型无效。")
+	}
 }
 
 func sha256Bytes(data []byte) []byte {

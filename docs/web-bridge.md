@@ -243,4 +243,7 @@ must use HTTPS.
 - Website access depends on the browser allowing a public HTTPS origin to call
   `http://localhost` (Private Network Access). Current Chrome, Edge, and Safari
   allow it after the preflight; some embedded browsers do not.
-- There is no friends or 1:1 room UI yet.
+- A 1:1 room is an ordinary encrypted room whose `kind` is sealed inside the
+  `room.created` payload. The host cannot verify or enforce that limit, so a
+  modified client could still add a third member; the official clients refuse
+  a third invitation.

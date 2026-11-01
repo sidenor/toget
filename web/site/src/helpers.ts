@@ -73,10 +73,20 @@ export function expiryLabel(iso: string): string {
   return `${prefix} ${clock(iso)}`;
 }
 
+export function roomTitle(room: RoomSummary): string {
+  if (room.kind === "direct" && room.peer_name?.trim()) {
+    return room.peer_name.trim();
+  }
+  return room.name;
+}
+
 export function roomPreview(room: RoomSummary): string {
   const text = (room.last_text || "").trim();
   if (text) {
     return text;
+  }
+  if (room.kind === "direct" && !room.peer_name?.trim()) {
+    return "等待好友加入";
   }
   const topic = (room.topic || "").trim();
   if (topic) {
