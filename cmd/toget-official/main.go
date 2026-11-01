@@ -62,6 +62,7 @@ func newRootCommand() *cobra.Command {
 		hostTLSKey          string
 		hostDB              string
 		hostResetDir        string
+		hostSiteDir         string
 		hostSMTPAddr        string
 		hostSMTPUser        string
 		hostSMTPPassword    string
@@ -103,7 +104,8 @@ func newRootCommand() *cobra.Command {
 				host, err := startAccountHost(ctx, paths, hostOptions{
 					Listen: hostListen, PublicURL: hostPublicURL, DirectAddress: hostDirectAddress, Name: hostName,
 					CertPath: hostTLSCert, KeyPath: hostTLSKey, DatabasePath: hostDB,
-					ResetDir: hostResetDir, SMTPAddr: hostSMTPAddr, SMTPUser: hostSMTPUser,
+					ResetDir: hostResetDir, SiteDir: hostSiteDir,
+					SMTPAddr: hostSMTPAddr, SMTPUser: hostSMTPUser,
 					SMTPPassword: hostSMTPPassword, SMTPFrom: hostSMTPFrom,
 					SMTPFromName: hostSMTPFromName, SMTPImplicitTLS: hostSMTPImplicitTLS,
 					RoomMemberLimit: hostRoomMembers, RoomDeviceLimit: hostRoomDevices,
@@ -223,6 +225,7 @@ func newRootCommand() *cobra.Command {
 	cmd.Flags().StringVar(&hostTLSKey, "host-tls-key", "", "TLS private key for the account host (default: <home>/host/tls.key)")
 	cmd.Flags().StringVar(&hostDB, "host-db", "", "account host database (default: <home>/host/accounts.db)")
 	cmd.Flags().StringVar(&hostResetDir, "host-reset-dir", "", "override the embedded reset page directory")
+	cmd.Flags().StringVar(&hostSiteDir, "host-site-dir", "", "override the embedded public site directory")
 	cmd.Flags().StringVar(&hostSMTPAddr, "host-smtp-addr", "", "SMTP relay host:port for verification and recovery email")
 	cmd.Flags().StringVar(&hostSMTPUser, "host-smtp-user", "", "SMTP username")
 	cmd.Flags().StringVar(&hostSMTPPassword, "host-smtp-password", "", "SMTP password (prefer TOGET_HOST_SMTP_PASSWORD)")

@@ -83,6 +83,12 @@ When the origin is behind NAT, also pass
 direct fingerprint URL. Otherwise `Accounts:` is omitted instead of showing a
 private address; the `Proxy:` URL still works through the public origin.
 
+The same origin serves the public web app at `/`. Its build is embedded from
+`web/site/dist`; rebuild it with `pnpm --filter @toget/site build` before
+building `toget-official`. `--host-site-dir web/site/dist` overrides the
+embedded copy during development. The current page is a visual preview backed
+by local sample data; account and room APIs are not wired into it yet.
+
 Create an official-hosted account, or add a second device to one:
 
 ```bash
@@ -409,6 +415,11 @@ go run ./cmd/toget-official --home ~/.local/share/toget-official \
 `--host-direct-address <公网主机:端口>`，启动时才会打印可用的直连指纹地址；
 否则 `Accounts:` 会省略，而不是显示外网不可达的私有地址。经公网域名的
 `Proxy:` 地址不受影响。
+
+官方源站的根路径 `/` 还提供前端页面，构建产物从 `web/site/dist` 内嵌。
+改完前端先运行 `pnpm --filter @toget/site build`；开发时可以用
+`--host-site-dir web/site/dist` 覆盖内嵌版本。当前页面是使用本地示例数据的
+视觉预览，尚未接入账号和房间 API。
 
 创建官方托管账号，或在第二台设备上登录：
 

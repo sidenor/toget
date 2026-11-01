@@ -3,6 +3,7 @@ version: "3"
 vars:
   BIN_DIR: bin
   WEB: web/app
+  SITE: web/site
 
 tasks:
   default:
@@ -18,24 +19,26 @@ tasks:
     interactive: true
 
   build:
-    desc: Build both binaries with the embedded web UI
-    deps: [web:build]
+    desc: Build both binaries with the embedded web UIs
+    deps: [web:build, site:build]
     cmds:
       - mkdir -p {{.BIN_DIR}}
       - go build -trimpath -o {{.BIN_DIR}}/toget ./cmd/toget
       - go build -trimpath -o {{.BIN_DIR}}/toget-official ./cmd/toget-official
 
   test:
-    desc: Run Go tests and the web type check
+    desc: Run Go tests and the web type checks
     cmds:
       - go test ./...
       - task: web:check
+      - task: site:check
 
   lint:
-    desc: Run Go vet and the web type check
+    desc: Run Go vet and the web type checks
     cmds:
       - go vet ./...
       - task: web:check
+      - task: site:check
 
   generate:
     desc: Regenerate Protobuf Go and TypeScript types
@@ -66,7 +69,25 @@ tasks:
     cmds:
       - pnpm exec tsc --noEmit
 
+  site:build:
+    desc: Build the public site served by toget-official
+    dir: "{{.SITE}}"
+    cmds:
+      - pnpm build
+
+  site:dev:
+    desc: Run the public site dev server
+    dir: "{{.SITE}}"
+    cmds:
+      - pnpm dev
+
+  site:check:
+    desc: Type-check the public site
+    dir: "{{.SITE}}"
+    cmds:
+      - pnpm exec tsc --noEmit
+
   clean:
     desc: Remove build output and local binaries
     cmds:
-      - rm -rf {{.BIN_DIR}} web/app/dist coverage.out
+      - rm -rf {{.BIN_DIR}} web/app/dist web/site/dist coverage.out

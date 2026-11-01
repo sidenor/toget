@@ -13,6 +13,8 @@ build/
 target/
 !web/app/dist/
 !web/app/dist/**
+!web/site/dist/
+!web/site/dist/**
 !web/reset/dist/
 !web/reset/dist/**
 

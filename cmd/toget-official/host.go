@@ -19,7 +19,9 @@ import (
 	"github.com/sidenor/toget/internal/hosted"
 	"github.com/sidenor/toget/internal/identity"
 	"github.com/sidenor/toget/internal/node"
+	siteserve "github.com/sidenor/toget/internal/site"
 	resetpage "github.com/sidenor/toget/web/reset"
+	website "github.com/sidenor/toget/web/site"
 )
 
 type hostOptions struct {
@@ -31,6 +33,7 @@ type hostOptions struct {
 	KeyPath         string
 	DatabasePath    string
 	ResetDir        string
+	SiteDir         string
 	SMTPAddr        string
 	SMTPUser        string
 	SMTPPassword    string
@@ -150,7 +153,24 @@ func startAccountHost(parent context.Context, paths config.Paths, options hostOp
 		cleanup()
 		return nil, err
 	}
-	handler := service.Handler()
+	siteFS := website.Assets()
+	if dir := strings.TrimSpace(options.SiteDir); dir != "" {
+		info, err := os.Stat(dir)
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("site directory: %w", err)
+		}
+		if !info.IsDir() {
+			cleanup()
+			return nil, fmt.Errorf("site directory is not a directory: %s", dir)
+		}
+		siteFS = os.DirFS(dir)
+	}
+	handler, err := siteserve.NewRouter(service.Handler(), siteFS)
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
 	server := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,

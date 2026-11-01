@@ -72,8 +72,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @toget/app build
-      - name: Check the committed web build is current
-        run: git diff --exit-code -- web/app/dist
+      - run: pnpm --filter @toget/site build
+      - name: Check the committed web builds are current
+        run: git diff --exit-code -- web/app/dist web/site/dist
 
   proto:
     name: Protobuf lint and generation

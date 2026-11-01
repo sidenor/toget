@@ -3,13 +3,13 @@
 Toget is one repository containing the node, the official service, the local web UI, the reset page, shared packages, deployment assets, and documentation.
 
 > **Current implementation:** the working tree contains `cmd/toget`,
-> `cmd/toget-official`, `internal/{account,agent,api,approval,backup,card,config,directory,directoryproto,hosted,hostedlink,identity,mdns,nat,node,notify,policy,protocol,qr,quicclient,requestauth,relay,relayproto,relaytunnel,releasebuild,room,sbom,sealbox,session,storage,tool,ui,update,vault,version}`,
-> `sdk/connector`, `examples/connector-echo`, `web/app`, `web/reset`, `api/`,
+> `cmd/toget-official`, `internal/{account,agent,api,approval,backup,card,config,directory,directoryproto,hosted,hostedlink,identity,mdns,nat,node,notify,policy,protocol,qr,quicclient,requestauth,relay,relayproto,relaytunnel,releasebuild,room,sbom,sealbox,session,site,storage,tool,ui,update,vault,version}`,
+> `sdk/connector`, `examples/connector-echo`, `web/app`, `web/site`, `web/reset`, `api/`,
 > `proto/`, `desktop/` (an unbuilt Tauri scaffold), `scripts/`, and `docs/`.
 > The tree below is the target layout; directories such as `device`, `crypto`,
 > `message`, `transport`, `sync`, `discovery`, `platform`, `deploy`, `tests`,
-> `web/site`, `web/packages`, and the remaining `examples/*` entries are
-> planned, not present yet. The LAN node lives in `internal/node`, the
+> `web/packages` and the remaining `examples/*` entries are planned, not
+> present yet. The LAN node lives in `internal/node`, the
 > portable card format and QR renderer in `internal/card`, remote-room
 > sync/lifecycle code in `internal/room/remote.go`, the official account host
 > in `internal/hosted`, client-side hosted-account orchestration in
@@ -132,7 +132,7 @@ toget/
 │   │       ├── lib/
 │   │       └── main.tsx
 │   ├── reset/                     # embedded reset page + Go/WASM; reads the credential locally
-│   ├── site/                      # project site and docs site
+│   ├── site/                      # public web client (embedded by toget-official)
 │   └── packages/
 │       ├── ui/                    # design system and shared components
 │       ├── api-client/            # generated from api/openapi.yaml
@@ -211,7 +211,7 @@ toget/
 - `room`, `message`, `account`, `device`, `agent`, and `sync` own the domain rules and do not import HTTP, QUIC, or SQL drivers.
 - `storage` defines interfaces; the SQLite implementation lives beside them. Domain code depends on the interface.
 - `relay` forwards opaque envelopes and must not import `message` decryption or room keys.
-- `update` owns release formats, signature verification, static serving, and managed installation. `hosted` owns the official account host (OPAQUE, sealed storage, sessions, email, reset assets), and `hostedlink` owns client-side hosted-account flows. `cmd/toget-official` composes them with the directory and relay.
+- `internal/site` owns public SPA serving, route separation, security headers, and cache policy. `update` owns release formats, signature verification, static serving, and managed installation. `hosted` owns the official account host (OPAQUE, sealed storage, sessions, email, reset assets), and `hostedlink` owns client-side hosted-account flows. `cmd/toget-official` composes them with the directory and relay.
 - `ui` and `api` translate transport into domain calls; policy decisions belong in the domain.
 
 ### `proto/` is the node contract
@@ -242,7 +242,7 @@ toget/
 
 - `web/app` is the local UI SPA. It talks only through the local API and the event stream.
 - `web/reset` is an embedded static page plus a Go/WASM module. It must not load third-party scripts or telemetry; it reads the recovery credential locally with the File API and performs OPAQUE and XChaCha20-Poly1305 in WASM, not WebCrypto.
-- `web/site` is the public project and documentation site. It can be statically generated and deployed separately.
+- `web/site` is the public web client embedded by `toget-official` at `/`. It is a static React SPA served with an SPA fallback and its own CSP/cache policy; `/host/*` and `/reset/*` stay on the account host handler. The current preview uses local sample data and is not wired to account or room APIs yet.
 - `web/packages/ui` is the design system; feature-specific components stay in the app.
 - `web/packages/api-client` and `web/packages/proto` are generated.
 

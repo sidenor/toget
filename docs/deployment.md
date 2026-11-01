@@ -12,7 +12,8 @@
 > directory, and static signed update service, plus key, manifest, index, yank,
 > SBOM, reproducible-build, and release-tree verification commands. The account
 > host stores OPAQUE password records and ciphertext account-key bundles, sends
-> verification and recovery email, and serves the embedded browser reset page.
+> verification and recovery email, and serves the embedded browser reset page and
+> public web app.
 > The daemon checks for updates on a schedule, the web UI shows an update banner
 > and settings, and `toget update` checks, stages, finishes, and rolls back
 > managed releases. Optional gateway port mapping (PCP, NAT-PMP, UPnP) is
@@ -223,6 +224,13 @@ export TOGET_HOST_SMTP_PASSWORD='...'
 - The embedded reset page is served at `/reset/` from the binary. Use
   `--host-reset-dir` only to override it during development. It needs no
   third-party scripts and the host serves it under a strict CSP.
+- The public site is served at `/` from the `web/site/dist` build embedded in
+  the binary. Rebuild it with `pnpm --filter @toget/site build` before building
+  `toget-official`. Use `--host-site-dir` only to override it during
+  development. The page and its hashed assets have their own CSP and cache
+  policy; `/host/*` and `/reset/*` keep the account host's stricter headers.
+  The current site is a front-end preview backed by local sample data and does
+  not yet call account or room APIs.
 - `--host-smtp-*` enables email verification and recovery. Without SMTP the
   host still supports password login, device sessions, and key rotation, and
   serves the reset page, but users cannot receive verification or reset links.
@@ -361,7 +369,8 @@ protocol support (not implemented), rate limiting will see the proxy's address.
 - **SSL/TLS:** Full (strict) with an Origin CA certificate, or Tunnel.
 - **Caching:** bypass cache for `accounts.example.com/host/v1/*` and
   `/reset/*`. API responses are dynamic and the reset page must match the
-  binary.
+  binary. The public site at `/` may be cached by Cloudflare: hashed
+  `/assets/*` files are immutable, while `/` and client routes revalidate.
 - **Rocket Loader, Email Obfuscation, Bot Fight Mode, Browser Integrity
   Check:** disable these for the host paths. They can rewrite HTML or challenge
   CLI and browser API requests; Toget's own rate limits and authentication are

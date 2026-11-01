@@ -4,6 +4,8 @@
   "packageManager": "pnpm@9.15.9",
   "scripts": {
     "web:dev": "pnpm --filter @toget/app dev",
-    "web:build": "pnpm --filter @toget/app build"
+    "web:build": "pnpm --filter @toget/app build",
+    "site:dev": "pnpm --filter @toget/site dev",
+    "site:build": "pnpm --filter @toget/site build"
   }
 }
