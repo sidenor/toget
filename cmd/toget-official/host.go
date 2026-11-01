@@ -86,7 +86,7 @@ func startAccountHost(parent context.Context, paths config.Paths, options hostOp
 	}
 	publicURL := "https://" + publicHost
 	if strings.TrimSpace(options.PublicURL) != "" {
-		parsed := options.PublicURL
+		parsed := strings.TrimSpace(options.PublicURL)
 		if !strings.Contains(parsed, "://") {
 			parsed = "https://" + parsed
 		}
