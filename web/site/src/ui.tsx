@@ -30,7 +30,8 @@ export type IconName =
   | "mail"
   | "eye"
   | "eyeOff"
-  | "plus";
+  | "plus"
+  | "device";
 
 const paths: Record<IconName, ReactNode> = {
   search: (
@@ -180,6 +181,12 @@ const paths: Record<IconName, ReactNode> = {
     </>
   ),
   plus: <path d="M12 5.2v13.6M5.2 12h13.6" strokeWidth="2" />,
+  device: (
+    <>
+      <rect x="3.4" y="4.8" width="17.2" height="11.6" rx="2.2" />
+      <path d="M9 19.6h6M12 16.4v3.2" />
+    </>
+  ),
 };
 
 export function Icon({

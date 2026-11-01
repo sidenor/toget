@@ -15,6 +15,7 @@ export function MePage({
   onTheme,
   onResendVerification,
   onRotateRecovery,
+  onDevices,
   onRefresh,
   onLogout,
 }: {
@@ -27,6 +28,7 @@ export function MePage({
   onTheme: (theme: Theme) => void;
   onResendVerification: () => Promise<void>;
   onRotateRecovery: () => void;
+  onDevices: () => void;
   onRefresh: () => void;
   onLogout: () => void;
 }) {
@@ -197,6 +199,16 @@ export function MePage({
               <span className="action-copy">
                 <strong>生成新的恢复文件</strong>
                 <small>旧恢复文件会立即失效</small>
+              </span>
+              <Icon name="chevronRight" size={15} />
+            </button>
+            <button type="button" className="action-row" onClick={onDevices}>
+              <span className="action-icon">
+                <Icon name="device" size={18} />
+              </span>
+              <span className="action-copy">
+                <strong>登录设备</strong>
+                <small>查看并撤销其他设备的登录</small>
               </span>
               <Icon name="chevronRight" size={15} />
             </button>

@@ -241,6 +241,10 @@ type SyncRequest struct {
 	KeyRotations  []string               `json:"key_rotations,omitempty"`
 	KeyBundle     *SealedBlob            `json:"key_bundle,omitempty"`
 	Devices       []account.DeviceRecord `json:"devices"`
+	// SessionDeviceID binds the caller's current session to this device.
+	// Signing in on a new browser uses it once, right after registering the
+	// device, so revoking that browser can end this exact session later.
+	SessionDeviceID string `json:"session_device_id,omitempty"`
 }
 
 // SyncResponse returns the converged device set.

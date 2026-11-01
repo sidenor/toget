@@ -2,6 +2,7 @@ package webclient_test
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -259,6 +260,103 @@ func TestBrowserAccountRoomAndMultiDevice(t *testing.T) {
 	}
 	if _, err := alice.SendMessage(ctx, view.Summary.ID, "离开后仍可继续"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDeviceListAndRevocation(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	alice := register(t, f, "Alice", "alice@example.com")
+	accountID := alice.Profile().AccountID
+	second := login(t, f, accountID, "待撤销的浏览器")
+	third := login(t, f, accountID, "保持登录的浏览器")
+
+	devices, err := alice.ListDevices(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 3 {
+		t.Fatalf("devices = %+v", devices)
+	}
+	if !devices[0].Current || devices[0].ID != alice.Profile().DeviceID {
+		t.Fatalf("current device is not first: %+v", devices)
+	}
+	var targetID string
+	for _, device := range devices {
+		if device.Name == "待撤销的浏览器" {
+			targetID = device.ID
+		}
+	}
+	if targetID == "" {
+		t.Fatal("second device is missing")
+	}
+	if _, err := second.RefreshRooms(ctx); err != nil {
+		t.Fatalf("second device cannot use its session: %v", err)
+	}
+	if _, err := third.RefreshRooms(ctx); err != nil {
+		t.Fatalf("third device cannot use its session: %v", err)
+	}
+	if err := alice.RevokeDevice(ctx, targetID); err != nil {
+		t.Fatal(err)
+	}
+	devices, err = alice.ListDevices(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoked := 0
+	for _, device := range devices {
+		if device.ID == targetID {
+			if device.RevokedAt == nil {
+				t.Fatalf("device was not marked revoked: %+v", device)
+			}
+			revoked++
+		}
+	}
+	if revoked != 1 {
+		t.Fatalf("revoked devices = %d (%+v)", revoked, devices)
+	}
+	// The old bearer session was deleted, and the revoked certificate cannot
+	// mint another one.
+	if _, err := second.RefreshRooms(ctx); err == nil {
+		t.Fatal("revoked device kept its session")
+	}
+	// Revoking one device must not sign out the account's other browsers.
+	if _, err := third.RefreshRooms(ctx); err != nil {
+		t.Fatalf("unrelated device lost its session: %v", err)
+	}
+	var state struct {
+		Account *struct {
+			Device struct {
+				ID         string `json:"id"`
+				PrivateKey []byte `json:"private_key"`
+			} `json:"device"`
+		} `json:"account"`
+	}
+	encoded, err := second.Export()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(encoded), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Account == nil || state.Account.Device.ID != targetID ||
+		len(state.Account.Device.PrivateKey) != ed25519.PrivateKeySize {
+		t.Fatalf("second device state = %+v", state.Account)
+	}
+	host, err := hosted.NewBrowserClient(f.origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := host.DeviceSession(ctx, accountID, targetID,
+		ed25519.PrivateKey(state.Account.Device.PrivateKey)); err == nil {
+		t.Fatal("revoked device minted a fresh session")
+	}
+	// The current device still has its session.
+	if _, err := alice.RefreshRooms(ctx); err != nil {
+		t.Fatalf("current device lost its session: %v", err)
+	}
+	if err := alice.RevokeDevice(ctx, alice.Profile().DeviceID); err == nil {
+		t.Fatal("revoked the current device")
 	}
 }
 

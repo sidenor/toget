@@ -98,6 +98,15 @@ type DeviceState struct {
 	CreatedAt            time.Time `json:"created_at"`
 }
 
+// AccountDevice is one device certificate registered to the account.
+type AccountDevice struct {
+	ID        string     `json:"device_id"`
+	Name      string     `json:"name"`
+	Current   bool       `json:"current"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
 // MemberState is a room member as last seen on the host.
 type MemberState struct {
 	AccountID           string     `json:"account_id"`

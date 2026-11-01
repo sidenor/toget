@@ -131,6 +131,16 @@ func dispatch(ctx context.Context, client *webclient.Client, op, payload string)
 		return client.Resume(ctx)
 	case "resendVerification":
 		return struct{}{}, client.ResendVerification(ctx)
+	case "listDevices":
+		return client.ListDevices(ctx)
+	case "revokeDevice":
+		var input struct {
+			DeviceID string `json:"device_id"`
+		}
+		if err := decode(payload, &input); err != nil || input.DeviceID == "" {
+			return nil, webclient.Errorf("invalid_request", "设备信息格式不正确。")
+		}
+		return map[string]bool{"ok": true}, client.RevokeDevice(ctx, input.DeviceID)
 	case "requestRecovery":
 		var input struct {
 			User string `json:"user"`

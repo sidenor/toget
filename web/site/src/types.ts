@@ -24,6 +24,14 @@ export interface Profile {
   vault_pending: boolean;
 }
 
+export interface AccountDevice {
+  device_id: string;
+  name: string;
+  current: boolean;
+  revoked_at?: string | null;
+  created_at?: string;
+}
+
 export interface RoomSummary {
   id: string;
   name: string;

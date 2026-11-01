@@ -406,7 +406,7 @@ func (s *Service) handleRegisterFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionToken, sessionExpires, sessionErr := s.createSession(r.Context(), stored.ID)
+	sessionToken, sessionExpires, sessionErr := s.createSession(r.Context(), stored.ID, record.ID)
 	if sessionErr != nil {
 		s.logger.Error("hosted session after registration failed", "error", sessionErr)
 	}
@@ -531,7 +531,7 @@ func (s *Service) handleLoginFinish(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	sessionToken, sessionExpires, err := s.createSession(r.Context(), acct.ID)
+	sessionToken, sessionExpires, err := s.createSession(r.Context(), acct.ID, "")
 	if err != nil {
 		s.internal(w, r, err)
 		return
@@ -618,7 +618,7 @@ func (s *Service) handleDeviceSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "device signature is invalid")
 		return
 	}
-	token, expires, err := s.createSession(r.Context(), acct.ID)
+	token, expires, err := s.createSession(r.Context(), acct.ID, request.DeviceID)
 	if err != nil {
 		s.internal(w, r, err)
 		return
@@ -629,7 +629,7 @@ func (s *Service) handleDeviceSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleSync(w http.ResponseWriter, r *http.Request) {
-	acct, _ := s.authenticate(w, r)
+	acct, sessionHash := s.authenticate(w, r)
 	if acct == nil {
 		return
 	}
@@ -675,6 +675,36 @@ func (s *Service) handleSync(w http.ResponseWriter, r *http.Request) {
 		}
 		s.internal(w, r, err)
 		return
+	}
+	if request.SessionDeviceID != "" {
+		if len(request.SessionDeviceID) > 128 {
+			writeError(w, http.StatusBadRequest, "invalid_device", "session device is invalid")
+			return
+		}
+		record, err := s.store.GetDevice(r.Context(), acct.ID, request.SessionDeviceID)
+		if err != nil || record.RevokedAt != nil {
+			writeError(w, http.StatusBadRequest, "invalid_device", "session device is not registered")
+			return
+		}
+		if err := s.store.BindSessionDevice(r.Context(), acct.ID, sessionHash, request.SessionDeviceID); err != nil {
+			s.internal(w, r, err)
+			return
+		}
+	}
+	// A revoked device must lose its live bearer session immediately, but
+	// only that device: other browsers on the account keep working.
+	for _, record := range request.Devices {
+		if record.RevokedAt == nil {
+			continue
+		}
+		current, err := s.store.GetDevice(r.Context(), acct.ID, record.ID)
+		if err != nil || current.RevokedAt == nil {
+			continue
+		}
+		if err := s.store.DeleteDeviceSessions(r.Context(), acct.ID, record.ID); err != nil {
+			s.internal(w, r, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, SyncResponse{
 		Protocol: Protocol, Devices: summary.Devices,
@@ -1153,7 +1183,7 @@ func (s *Service) authenticate(w http.ResponseWriter, r *http.Request) (*Account
 	return acct, hash
 }
 
-func (s *Service) createSession(ctx context.Context, accountID string) (string, time.Time, error) {
+func (s *Service) createSession(ctx context.Context, accountID, deviceID string) (string, time.Time, error) {
 	token, hash, err := NewEmailToken()
 	if err != nil {
 		return "", time.Time{}, err
@@ -1161,6 +1191,11 @@ func (s *Service) createSession(ctx context.Context, accountID string) (string, 
 	expires := s.now().UTC().Add(SessionTTL)
 	if err := s.store.CreateSession(ctx, accountID, hash, expires); err != nil {
 		return "", time.Time{}, err
+	}
+	if deviceID != "" {
+		if err := s.store.BindSessionDevice(ctx, accountID, hash, deviceID); err != nil {
+			return "", time.Time{}, err
+		}
 	}
 	return token, expires, nil
 }

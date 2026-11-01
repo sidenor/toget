@@ -13,6 +13,7 @@ import {
 import {
   ConfirmDialog,
   CreateRoomDialog,
+  DevicesDialog,
   JoinRoomDialog,
   LogoutDialog,
   RecoverAccountDialog,
@@ -22,6 +23,7 @@ import {
 import { profileAvatar, roomAvatar } from "./avatars";
 import { listTime, roomPreview } from "./helpers";
 import type {
+  AccountDevice,
   AuthResult,
   InviteResult,
   Profile,
@@ -58,6 +60,7 @@ type ModalKind =
   | "logout"
   | "rotate"
   | "recover"
+  | "devices"
   | null;
 
 interface RecoveryState {
@@ -1170,6 +1173,33 @@ export default function App() {
     }
   };
 
+  const listDevices = useCallback(async () => {
+    const target = clientRef.current;
+    if (!target) {
+      throw new SiteError("internal", "安全模块还没有准备好。");
+    }
+    try {
+      return await target.call<AccountDevice[]>("listDevices");
+    } catch (cause) {
+      return failAction(cause);
+    }
+  }, [failAction]);
+
+  const revokeDevice = useCallback(
+    async (deviceID: string) => {
+      const target = clientRef.current;
+      if (!target) {
+        throw new SiteError("internal", "安全模块还没有准备好。");
+      }
+      try {
+        await target.call("revokeDevice", { device_id: deviceID });
+      } catch (cause) {
+        return failAction(cause);
+      }
+    },
+    [failAction],
+  );
+
   if (phase === "booting") {
     return <BootScreen progress={bootProgress} />;
   }
@@ -1347,6 +1377,7 @@ export default function App() {
           setRotateError(null);
           setModal("rotate");
         }}
+        onDevices={() => setModal("devices")}
         onRefresh={() => void refreshFromHost()}
         onLogout={() => setModal("logout")}
       />
@@ -1442,6 +1473,15 @@ export default function App() {
           onRename={renameRoom}
           onLeave={leaveRoom}
           onCreateInvite={createInvite}
+        />
+      )}
+
+      {modal === "devices" && (
+        <DevicesDialog
+          isMobile={isMobile}
+          onClose={() => setModal(null)}
+          onList={listDevices}
+          onRevoke={revokeDevice}
         />
       )}
 

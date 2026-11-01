@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -130,7 +131,8 @@ func (c *Client) Login(ctx context.Context, input LoginInput) (*AuthResult, erro
 		Certificate: device.Certificate, Role: "web", CreatedAt: now,
 	}
 	syncResult, err := client.Sync(ctx, result.SessionToken, hosted.SyncRequest{
-		Devices: []account.DeviceRecord{record},
+		Devices:         []account.DeviceRecord{record},
+		SessionDeviceID: device.ID,
 	})
 	if err != nil {
 		return nil, mapHostError(err)
@@ -239,6 +241,124 @@ func (c *Client) ResendVerification(ctx context.Context) error {
 		return mapHostError(err)
 	}
 	return nil
+}
+
+// ListDevices returns every device certificate on the account, including
+// revoked ones. The host learns the set from the signed device records.
+func (c *Client) ListDevices(ctx context.Context) ([]AccountDevice, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.state.Account == nil {
+		return nil, Errorf("signed_out", "还没有登录。")
+	}
+	client, err := c.hostedClient()
+	if err != nil {
+		return nil, err
+	}
+	if err := c.refreshSessionLocked(ctx, client); err != nil {
+		return nil, err
+	}
+	records, err := c.syncAccountDevicesLocked(ctx, client)
+	if err != nil {
+		return nil, err
+	}
+	acct := c.state.Account
+	out := make([]AccountDevice, 0, len(records))
+	for _, record := range records {
+		out = append(out, AccountDevice{
+			ID: record.ID, Name: record.Name,
+			Current:   record.ID == acct.Device.ID,
+			RevokedAt: record.RevokedAt, CreatedAt: record.CreatedAt,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Current != out[j].Current {
+			return out[i].Current
+		}
+		iRevoked, jRevoked := out[i].RevokedAt != nil, out[j].RevokedAt != nil
+		if iRevoked != jRevoked {
+			return !iRevoked
+		}
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	return out, nil
+}
+
+// RevokeDevice permanently revokes another device and ends its live sessions
+// immediately. The account key signs the revocation locally; the host only
+// stores the public proof.
+func (c *Client) RevokeDevice(ctx context.Context, deviceID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	acct := c.state.Account
+	if acct == nil {
+		return Errorf("signed_out", "还没有登录。")
+	}
+	deviceID = strings.TrimSpace(deviceID)
+	if deviceID == "" {
+		return Errorf("invalid_device", "请选择要撤销的设备。")
+	}
+	if deviceID == acct.Device.ID {
+		return Errorf("invalid_device", "不能撤销正在使用的这台设备。")
+	}
+	client, err := c.hostedClient()
+	if err != nil {
+		return err
+	}
+	if err := c.refreshSessionLocked(ctx, client); err != nil {
+		return err
+	}
+	records, err := c.syncAccountDevicesLocked(ctx, client)
+	if err != nil {
+		return err
+	}
+	var target *account.DeviceRecord
+	for i := range records {
+		if records[i].ID == deviceID {
+			target = &records[i]
+			break
+		}
+	}
+	if target == nil {
+		return Errorf("device_not_found", "找不到这台设备，请刷新后再试。")
+	}
+	if target.RevokedAt != nil {
+		return nil
+	}
+	revokedAt := c.now().UTC().Truncate(time.Millisecond)
+	proof, err := identity.SignAccountRevocation(
+		acct.ID, target.ID, revokedAt, ed25519.PrivateKey(acct.PrivateKey),
+	)
+	if err != nil {
+		return Errorf("internal", "无法生成撤销证明。")
+	}
+	target.Revocation = proof
+	target.RevokedAt = &revokedAt
+	result, err := client.Sync(ctx, acct.SessionToken, hosted.SyncRequest{
+		Devices: []account.DeviceRecord{*target},
+	})
+	if err != nil {
+		return mapHostError(err)
+	}
+	for _, record := range result.Devices {
+		if record.ID == deviceID && record.RevokedAt != nil {
+			return nil
+		}
+	}
+	return Errorf("internal", "撤销没有生效，请刷新后重试。")
+}
+
+func (c *Client) syncAccountDevicesLocked(ctx context.Context, client *hosted.Client) ([]account.DeviceRecord, error) {
+	acct := c.state.Account
+	if acct == nil {
+		return nil, Errorf("signed_out", "还没有登录。")
+	}
+	result, err := client.Sync(ctx, acct.SessionToken, hosted.SyncRequest{})
+	if err != nil {
+		return nil, mapHostError(err)
+	}
+	acct.EmailVerified = result.EmailVerified
+	return result.Devices, nil
 }
 
 // RotateRecovery installs a fresh recovery file. The previous file stops

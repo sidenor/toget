@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	hostSchemaVersion = 3
+	hostSchemaVersion = 4
 
 	// SessionTTL bounds an authenticated host session.
 	SessionTTL = 12 * time.Hour
@@ -121,6 +121,13 @@ var hostSchema = []string{
 		last_used_at INTEGER NOT NULL
 	)`,
 	`CREATE INDEX IF NOT EXISTS hosted_sessions_account ON hosted_sessions(account_id)`,
+	`CREATE TABLE IF NOT EXISTS hosted_session_devices (
+		token_hash BLOB PRIMARY KEY REFERENCES hosted_sessions(token_hash) ON DELETE CASCADE,
+		account_id TEXT NOT NULL REFERENCES hosted_accounts(id) ON DELETE CASCADE,
+		device_id TEXT NOT NULL,
+		created_at INTEGER NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS hosted_session_devices_device ON hosted_session_devices(account_id, device_id)`,
 	`CREATE TABLE IF NOT EXISTS hosted_vaults (
 		account_id TEXT PRIMARY KEY REFERENCES hosted_accounts(id) ON DELETE CASCADE,
 		blob TEXT NOT NULL,
@@ -984,6 +991,36 @@ func (s *Store) CreateSession(ctx context.Context, accountID string, tokenHash [
 		`INSERT INTO hosted_sessions(token_hash, account_id, expires_at, created_at, last_used_at)
 		 VALUES(?, ?, ?, ?, ?)`,
 		tokenHash, accountID, expiresAt.UnixMilli(), now.UnixMilli(), now.UnixMilli())
+	return err
+}
+
+// BindSessionDevice associates a live bearer session with the device that
+// owns it. Revoking the device can then end exactly that session without
+// signing out every other browser on the account.
+func (s *Store) BindSessionDevice(ctx context.Context, accountID string, tokenHash []byte, deviceID string) error {
+	if !digits(accountID, 14) || len(tokenHash) != sha256.Size || deviceID == "" || len(deviceID) > 128 {
+		return errors.New("invalid session device")
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO hosted_session_devices(token_hash, account_id, device_id, created_at)
+		 SELECT token_hash, account_id, ?, ? FROM hosted_sessions
+		  WHERE token_hash = ? AND account_id = ?`,
+		deviceID, now.UnixMilli(), tokenHash, accountID)
+	return err
+}
+
+// DeleteDeviceSessions removes every live session bound to one device. It is
+// used when that device is revoked; unrelated devices stay signed in.
+func (s *Store) DeleteDeviceSessions(ctx context.Context, accountID, deviceID string) error {
+	if !digits(accountID, 14) || deviceID == "" || len(deviceID) > 128 {
+		return errors.New("invalid session device")
+	}
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM hosted_sessions WHERE account_id = ? AND token_hash IN (
+			SELECT token_hash FROM hosted_session_devices
+			 WHERE account_id = ? AND device_id = ?)`,
+		accountID, accountID, deviceID)
 	return err
 }
 

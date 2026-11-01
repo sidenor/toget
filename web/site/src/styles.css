@@ -3310,6 +3310,132 @@ textarea {
   margin-bottom: 0;
 }
 
+.devices-body {
+  min-height: 76px;
+}
+
+.devices-body .form-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.devices-body .form-note svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.devices-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 2px;
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+.devices-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 4px 0 8px;
+}
+
+.devices-error .form-alert {
+  margin-top: 0;
+}
+
+.device-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.device-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 12px 0;
+}
+
+.device-row + .device-row {
+  border-top: 1px solid var(--line-soft);
+}
+
+.device-glyph {
+  display: grid;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  color: var(--text-2);
+  background: var(--fill-2);
+  border-radius: 10px;
+}
+
+.device-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.device-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.device-name strong {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.device-copy small {
+  display: flex;
+  gap: 8px;
+  color: var(--text-3);
+  font-size: 10.5px;
+}
+
+.device-badge {
+  padding: 1px 6px;
+  color: var(--accent);
+  font-size: 9.5px;
+  font-weight: 550;
+  background: var(--accent-soft);
+  border-radius: 6px;
+}
+
+.device-badge.revoked {
+  color: var(--text-3);
+  background: var(--fill-2);
+}
+
+.device-revoke {
+  flex: none;
+  padding: 5px 9px;
+  color: var(--danger);
+  font-size: 11.5px;
+  border-radius: 8px;
+}
+
+.device-revoke:hover {
+  background: var(--danger-soft);
+}
+
+.device-row.revoked .device-copy,
+.device-row.revoked .device-glyph {
+  opacity: 0.6;
+}
+
 .confirm-message {
   color: var(--text-2);
   font-size: 12.5px;
@@ -3522,5 +3648,10 @@ textarea {
   .connection-banner + .page .mobile-detail-head {
     min-height: 58px;
     padding-top: 8px;
+  }
+
+  .device-revoke {
+    padding: 9px 12px;
+    font-size: 13px;
   }
 }

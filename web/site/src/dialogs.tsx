@@ -1,8 +1,14 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { memberAvatar, roomAvatar } from "./avatars";
 import { copyText, downloadFile, expiryLabel } from "./helpers";
-import type { InviteResult, Profile, RecoveryFile, RoomView } from "./types";
+import type {
+  AccountDevice,
+  InviteResult,
+  Profile,
+  RecoveryFile,
+  RoomView,
+} from "./types";
 import { Avatar, Icon } from "./ui";
 
 export function Modal({
@@ -892,6 +898,206 @@ export function RecoverAccountDialog({
           </label>
           <FormError message={error} />
         </form>
+      )}
+    </Modal>
+  );
+}
+
+export function DevicesDialog({
+  isMobile,
+  onClose,
+  onList,
+  onRevoke,
+}: {
+  isMobile: boolean;
+  onClose: () => void;
+  onList: () => Promise<AccountDevice[]>;
+  onRevoke: (deviceID: string) => Promise<void>;
+}) {
+  const [devices, setDevices] = useState<AccountDevice[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<AccountDevice | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(async () => {
+    setError(null);
+    try {
+      setDevices(await onList());
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : "设备列表加载失败，请重试。",
+      );
+    }
+  }, [onList]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const revoke = async () => {
+    if (!confirm) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await onRevoke(confirm.device_id);
+      setNotice(`已撤销「${confirm.name}」，这台设备下次需要重新登录。`);
+      setConfirm(null);
+      await refresh();
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : "撤销失败，请稍后再试。",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const dateLabel = (iso?: string) => {
+    if (!iso) {
+      return "";
+    }
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) {
+      return "";
+    }
+    return date.toLocaleDateString("zh-CN", {
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+    });
+  };
+
+  const footer = confirm ? (
+    <div className="dialog-actions">
+      <button
+        type="button"
+        className="secondary-button"
+        onClick={() => setConfirm(null)}
+        disabled={busy}
+      >
+        取消
+      </button>
+      <button
+        type="button"
+        className="danger-button solid"
+        onClick={() => void revoke()}
+        disabled={busy}
+      >
+        {busy ? <i className="spinner" /> : null}
+        {busy ? "正在撤销" : "撤销设备"}
+      </button>
+    </div>
+  ) : (
+    <button type="button" className="primary-button" onClick={onClose}>
+      完成
+    </button>
+  );
+
+  return (
+    <Modal
+      isMobile={isMobile}
+      title={confirm ? "撤销这台设备？" : "登录设备"}
+      subtitle={
+        confirm
+          ? undefined
+          : "这些设备都持有这个账号的设备凭证。"
+      }
+      onClose={busy ? undefined : onClose}
+      dismissible={!busy}
+      className="devices-dialog"
+      footer={footer}
+    >
+      {confirm ? (
+        <div className="confirm-message">
+          <p>
+            「<strong>{confirm.name}</strong>」的设备凭证会作废，现有登录也会失效；下次要用账号密码重新登录。
+          </p>
+          <p className="dim">
+            已经保存在那台设备上的消息不会被远程删除。
+          </p>
+          <FormError message={error} />
+        </div>
+      ) : (
+        <div className="devices-body">
+          {notice && (
+            <div className="form-note" role="status">
+              <Icon name="check" size={15} />
+              <span>{notice}</span>
+            </div>
+          )}
+          {devices === null && !error && (
+            <div className="devices-loading">
+              <i className="spinner" />
+              <span>正在读取设备…</span>
+            </div>
+          )}
+          {error && (
+            <div className="devices-error">
+              <FormError message={error} />
+              <button
+                type="button"
+                className="secondary-button small"
+                onClick={() => void refresh()}
+              >
+                重试
+              </button>
+            </div>
+          )}
+          {devices && (
+            <div className="device-list">
+              {devices.map((device) => {
+                const created = dateLabel(device.created_at);
+                return (
+                  <div
+                    className={`device-row ${
+                      device.revoked_at ? "revoked" : ""
+                    }`}
+                    key={device.device_id}
+                  >
+                    <span className="device-glyph">
+                      <Icon name="device" size={18} />
+                    </span>
+                    <span className="device-copy">
+                      <span className="device-name">
+                        <strong>{device.name}</strong>
+                        {device.current && (
+                          <span className="device-badge">这台设备</span>
+                        )}
+                        {device.revoked_at && (
+                          <span className="device-badge revoked">已撤销</span>
+                        )}
+                      </span>
+                      <small>
+                        {created && <span>{created} 加入</span>}
+                        <span className="mono">
+                          {device.device_id.slice(-8)}
+                        </span>
+                      </small>
+                    </span>
+                    {!device.current && !device.revoked_at && (
+                      <button
+                        type="button"
+                        className="device-revoke"
+                        aria-label={`撤销「${device.name}」`}
+                        onClick={() => {
+                          setError(null);
+                          setNotice(null);
+                          setConfirm(device);
+                        }}
+                      >
+                        撤销
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       )}
     </Modal>
   );
