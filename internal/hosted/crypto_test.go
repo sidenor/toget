@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sidenor/toget/internal/hosted"
+	"github.com/sidenor/toget/internal/identity"
 )
 
 const testAccount = "12345678000001"
@@ -167,13 +168,42 @@ func TestRecoveryCredential(t *testing.T) {
 	}
 }
 
+func TestRecoveryCredentialIdentityHost(t *testing.T) {
+	server, err := identity.NewServer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostURL := "https://host.example#id=" + server.ID
+	credential, key, err := hosted.NewRecoveryCredential(testAccount, hostURL, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := credential.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, parsedKey, err := hosted.ParseRecoveryCredential(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.HostURL != hostURL || !bytes.Equal(parsedKey, key) {
+		t.Fatalf("parsed = %+v", parsed)
+	}
+}
+
 func TestRecoveryCredentialRejectsBadHost(t *testing.T) {
+	server, err := identity.NewServer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cases := []string{
 		"",
 		"http://host.example:7722#fp=0123",
 		"https://host.example:7722",
 		"https://host.example:7722/path#fp=" + strings.Repeat("a", 64),
 		"https://host.example:7722#relay=x&fp=" + strings.Repeat("a", 64),
+		"https://host.example:7722#id=not-a-host-id",
+		"https://host.example:7722#id=" + server.ID + "&fp=" + strings.Repeat("a", 64),
 	}
 	for _, hostURL := range cases {
 		if _, _, err := hosted.NewRecoveryCredential(testAccount, hostURL, time.Now()); err == nil {

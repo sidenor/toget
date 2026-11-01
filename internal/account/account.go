@@ -39,8 +39,8 @@ var (
 	// ErrInvalidImport means recovered account material is malformed or does
 	// not match its own keys and certificates.
 	ErrInvalidImport = errors.New("invalid account import")
-	// ErrInvalidHostURL means an official account host address is not a
-	// pinned HTTPS origin.
+	// ErrInvalidHostURL means an official account host address is not an
+	// HTTPS origin with exactly one certificate or host-identity trust anchor.
 	ErrInvalidHostURL = errors.New("invalid account host address")
 	// ErrHostImmutable means an account that already has an official host
 	// cannot be silently moved to another one.
@@ -86,11 +86,13 @@ type Account struct {
 	// OriginServerID is the server identity that created the account. It never
 	// changes and is the discovery anchor for account-record sync.
 	OriginServerID string `json:"origin_server_id"`
-	// HostURL is the pinned official account host for an official-hosted
-	// account. It is empty for an account hosted on this machine. When set it
-	// is authoritative for account-record sync; the host is not discovered
-	// from the account ID prefix, because one official host serves many
-	// accounts.
+	// HostURL is the official account host for an official-hosted account. It
+	// carries either a direct certificate pin (#fp=/#sha256=) or a
+	// self-certifying host identity pin (#id=) for use behind a
+	// TLS-terminating proxy. It is empty for an account hosted on this
+	// machine. When set it is authoritative for account-record sync; the host
+	// is not discovered from the account ID prefix, because one official host
+	// serves many accounts.
 	HostURL string `json:"host_url,omitempty"`
 	// KeyGeneration starts at 1 and increases with every account-key rotation.
 	// KeyRotations is the signed chain from generation 1 to the current key.

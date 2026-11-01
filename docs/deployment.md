@@ -52,7 +52,7 @@ The account host is chosen at registration and cannot be moved silently. Moving 
 | `7719` | Relay (HTTPS, pinned certificate) | Public only for `toget-official` or a self-hosted relay |
 | `7720` | Directory (HTTPS, pinned certificate) | Public only for `toget-official` or a self-hosted directory |
 | `7721` | Signed update service | Loopback by default; public only behind TLS or a reverse proxy |
-| `7722` | Official account host (HTTPS + reset page) | Public only for `toget-official`; the reset page requires a browser-reachable HTTPS origin |
+| `7722` | Official account host (HTTPS + reset page) | Public only for `toget-official`; the reset page requires a browser-reachable HTTPS origin. For Cloudflare, expose 443/8443 or use a Tunnel; 7722 is not a standard proxied port |
 | `5353/udp` | mDNS discovery (multicast) | Local link only; no router exposure. Enabled by default; `--no-mdns` disables it |
 
 Do not expose `7718` to the network. The local UI is not designed to be a public web app. `7717` is self-authenticated by the certificate pin carried in invite codes; do not put it behind a TLS-terminating proxy, because that changes the certificate the peer pins.
@@ -197,12 +197,16 @@ export TOGET_HOST_SMTP_PASSWORD='...'
 ```
 
 - `--host-public-url` is the browser-facing HTTPS origin used in verification
-  and reset links. Without it, the host falls back to the listen address, which
-  only works for loopback testing; email recovery needs a public origin.
+  and reset links, and is also the origin of the proxy identity URL described
+  below. Without it, the host falls back to the listen address, which only
+  works for loopback testing; email recovery needs a public origin.
 - The account host always serves TLS. With no certificate flags it creates a
   self-signed certificate under `<home>/host/`; supply a real certificate for
-  a public host. The pinned URL printed at startup carries the host key
-  fingerprint, which clients pin on first use.
+  a public host. Startup always prints `Accounts:` with the exact origin
+  certificate fingerprint for direct connections. When `--host-public-url` is
+  set it also prints `Proxy:` with the self-certifying host ID for connections
+  through a TLS-terminating proxy. Either can be given to clients; use the one
+  that matches how the client reaches the host.
 - The database defaults to `<home>/host/accounts.db`; TLS defaults to
   `<home>/host/tls.crt` and `tls.key`. Back up the database and host key, but
   note that neither contains account master keys.
@@ -224,6 +228,142 @@ content, or the plaintext password. It can also be the home of official rooms:
 it orders sealed events and stores keys wrapped per device, but it cannot read
 room names, topics, or message text, and it is not a plaintext archive of
 history.
+
+### Put the official host behind Cloudflare or a TLS-terminating proxy
+
+A direct host address (`https://host:7722#fp=<hex>`) pins the exact TLS
+certificate of the origin. That is the strongest check, but it cannot survive
+a proxy that terminates TLS before the request reaches the origin: the client
+sees the proxy's certificate, not the origin's. For Cloudflare, Cloudflare
+Tunnel, or another TLS-terminating reverse proxy, give clients the printed
+`Proxy:` address instead:
+
+```text
+https://accounts.example.com#id=tog1:s:...
+```
+
+The client validates the proxy's publicly trusted certificate with normal Web
+PKI, fetches `/host/v1/info`, verifies the signed host manifest, and checks
+that the manifest's `server_id` equals the pinned `#id`. It performs this check
+before sending account material, and rejects redirects. A proxy therefore
+cannot impersonate the host or substitute its own OPAQUE configuration. It can
+still observe connection metadata and deny service; it cannot read the
+password, account master key, room keys, or room content. See
+[security-model.md](security-model.md#tls-terminating-proxies-and-identity-pinning).
+
+`#fp=` and `#sha256=` still mean an exact certificate pin; `#id=` means a host
+identity pin. Exactly one anchor is allowed. A direct `#fp=` address remains
+preferable whenever clients can reach the origin without TLS termination,
+because it removes the proxy from the trust path.
+
+#### Cloudflare Tunnel (recommended when the origin has no reachable port)
+
+Cloudflare Tunnel makes an outbound connection from the server, so the origin
+does not need a public address or an open inbound port. Run the host on
+loopback and point the tunnel at its HTTPS listener:
+
+```bash
+toget-official --home /var/lib/toget-official \
+  --host-listen 127.0.0.1:7722 \
+  --host-public-url https://accounts.example.com \
+  --host-trusted-proxies 127.0.0.1/32,::1/128 \
+  --host-smtp-addr smtp.example.com:587 \
+  --host-smtp-user toget --host-smtp-from accounts@example.com \
+  --no-relay --no-directory
+```
+
+A minimal `~/.cloudflared/config.yml`:
+
+```yaml
+tunnel: <tunnel-id>
+credentials-file: /etc/cloudflared/<tunnel-id>.json
+ingress:
+  - hostname: accounts.example.com
+    service: https://127.0.0.1:7722
+    originRequest:
+      noTLSVerify: true
+  - service: http_status:404
+```
+
+- The `service` URL must be `https://`, because the host only speaks TLS.
+  `noTLSVerify` tells cloudflared to accept the origin's self-signed
+  certificate. If the origin uses a Cloudflare Origin CA certificate, keep
+  `noTLSVerify: true` or configure `caPool` with the origin CA; either way the
+  client-facing certificate is the public one at Cloudflare.
+- `--host-public-url` must omit a port when the public URL is HTTPS on 443.
+  The host then advertises `accounts.example.com:443` in its signed endpoints
+  while still listening on `127.0.0.1:7722`.
+- `--host-trusted-proxies 127.0.0.1/32,::1/128` is required for correct client
+  IPs and rate limiting: cloudflared connects from loopback, and the host then
+  honors Cloudflare's `CF-Connecting-IP` (which requires `CF-Ray`) and
+  `X-Forwarded-For`. Do not add Cloudflare's public ranges when using a
+  Tunnel; the direct peer is loopback.
+- Give users the startup `Proxy:` URL. The `Accounts:` URL points at loopback
+  or the machine's outbound address and will not work for remote clients.
+
+#### Orange cloud with an origin on a standard HTTPS port
+
+Cloudflare's reverse proxy only forwards a fixed set of HTTPS ports: `443`,
+`2053`, `2083`, `2087`, `2096`, and `8443`. Port `7722` is not one of them, so
+an orange-cloud DNS record alone cannot reach a host listening on `7722`.
+Choose one of:
+
+- **Run the host on 443 or 8443.** For 443, keep `--host-listen 0.0.0.0:443`
+  and `--host-public-url https://accounts.example.com`. For 8443, include the
+  port in both the listen address and the public URL:
+  `--host-listen 0.0.0.0:8443 --host-public-url https://accounts.example.com:8443`.
+  Set the Cloudflare DNS record to proxied (orange cloud), and set SSL/TLS to
+  **Full (strict)** with a Cloudflare Origin CA certificate installed at the
+  origin. Use **Full** only if the origin certificate cannot be validated;
+  **Flexible** is wrong because Cloudflare would speak plaintext HTTP to a
+  TLS-only listener.
+- **Use a Cloudflare Origin Rule** to rewrite the destination port to `7722`.
+  This requires a plan that includes Origin Rules and still requires the origin
+  to be reachable from Cloudflare on that port. Confirm the rule rewrites the
+  port, not just the hostname, and keep the public URL on a standard port.
+- **Use a Tunnel** as above. It avoids publishing the origin entirely and is
+  the safer default for a censored or NATed network.
+
+When Cloudflare connects directly to the origin, add
+`--host-trust-cloudflare` so the published edge ranges are trusted for
+client-IP headers. The built-in list is a snapshot; refresh it periodically
+from <https://www.cloudflare.com/ips/> or pass the current ranges with
+`--host-trusted-proxies`. If the ranges change and the flag is stale, rate
+limits may key on a Cloudflare edge address instead of the real client; this
+does not expose account material, but it makes limits less accurate.
+
+If the origin accepts direct connections as well, restrict it with a host
+firewall to Cloudflare's published ranges (or to the tunnel only). Forwarded
+headers are ignored unless the direct peer is in the configured trusted set,
+so an attacker who reaches the origin directly cannot spoof a client IP.
+
+For a TLS passthrough proxy (for example nginx `stream` with SNI routing), the
+origin certificate reaches the client unchanged and `#fp=` still works. Such a
+proxy cannot add client-IP headers inside the TLS stream; without PROXY
+protocol support (not implemented), rate limiting will see the proxy's address.
+
+#### Cloudflare settings that matter
+
+- **SSL/TLS:** Full (strict) with an Origin CA certificate, or Tunnel.
+- **Caching:** bypass cache for `accounts.example.com/host/v1/*` and
+  `/reset/*`. API responses are dynamic and the reset page must match the
+  binary.
+- **Rocket Loader, Email Obfuscation, Bot Fight Mode, Browser Integrity
+  Check:** disable these for the host paths. They can rewrite HTML or challenge
+  CLI and browser API requests; Toget's own rate limits and authentication are
+  the intended controls.
+- **Managed Challenge / WAF:** do not challenge `/host/v1/*`; CLI clients
+  cannot solve an interactive challenge. If a WAF is required, scope rules to
+  paths other than the account API.
+- **Cloudflare Access:** do not put Access in front of `/host/v1/*` or
+  `/reset/*`. Toget clients do not send Access service-token headers, so an
+  Access policy would block registration and login. If the site uses Access
+  for other paths, add a bypass policy for those two prefixes. Access is not a
+  substitute for Toget account authentication.
+- **Timeouts:** the default 100-second origin timeout is ample; OPAQUE and
+  sealed-blob requests are small and short-lived.
+- **Request size:** leave the default limit; registration carries a few small
+  sealed blobs, not attachments.
 
 ## Connect from another device
 

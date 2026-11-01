@@ -21,11 +21,13 @@ import (
 )
 
 type hostHarness struct {
-	store  *hosted.Store
-	mailer *hosted.MemoryMailer
-	server *httptest.Server
-	client *hosted.Client
-	dir    string
+	store   *hosted.Store
+	mailer  *hosted.MemoryMailer
+	service *hosted.Service
+	server  *httptest.Server
+	client  *hosted.Client
+	hostID  string
+	dir     string
 }
 
 func newHostHarness(t *testing.T) *hostHarness {
@@ -60,7 +62,10 @@ func newHostHarness(t *testing.T) *hostHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &hostHarness{store: store, mailer: mailer, server: server, client: client, dir: dir}
+	return &hostHarness{
+		store: store, mailer: mailer, service: service, server: server,
+		client: client, hostID: service.HostID(), dir: dir,
+	}
 }
 
 func tokenFromMessage(t *testing.T, message hosted.Message, key string) string {

@@ -210,6 +210,13 @@ password is never sent to it, and it stores only ciphertext:
 - `Enc(RK, MK)` — the official recovery wrap;
 - `Enc(MK, account key bundle)` — the signing key material.
 
+A host address carries one trust anchor. Use `#fp=<hex>` for a direct
+connection that pins the origin certificate. Use `#id=<server-id>` when a
+Cloudflare Tunnel or another TLS-terminating proxy sits in front of the host;
+the client then validates the proxy's public certificate and verifies the
+signed host identity before sending any account material. The examples below
+show the direct form; the startup `Proxy:` address is the `#id=` form.
+
 Registration generates MK and RK on the client, uploads the wrapped blobs, and
 returns the recovery file once. The web onboarding flow requires the user to
 download it and confirm it was saved before continuing. The CLI writes it with
@@ -219,6 +226,13 @@ mode `0600`:
 toget account create --host 'https://accounts.example#fp=...' \
   --name Aiden --email aiden@example.com --out ~/offline/toget-account.togetkey
 ```
+
+The file stores the host URL exactly as supplied, including its `#fp=` or
+`#id=` anchor. When the reset page opens it, a `#id=` anchor must match the
+live host identity before recovery material is released. A browser cannot
+enforce an exact certificate pin, so a `#fp=` reset page still relies on Web
+PKI for the connection; the identity check is what a proxy deployment adds. Do
+not edit the anchor by hand.
 
 The official file uses `kind: "toget-account-recovery"` and the filename
 `toget-account-recovery-<accountID>.togetkey`. It is separate from the

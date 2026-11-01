@@ -455,26 +455,17 @@ func (s *Service) SetHostURL(ctx context.Context, hostURL string) error {
 	return s.store.UpdateAccountHost(ctx, account.ID, hostURL)
 }
 
-// ValidHostURL accepts an empty address or a pinned HTTPS account-host origin.
-// Unlike a device address, a host address carries no relay route and no path;
-// the host is reached directly at its own endpoint.
+// ValidHostURL accepts an empty address or an HTTPS account-host origin with
+// exactly one trust anchor: a certificate fingerprint (#fp= or #sha256=) or a
+// self-certifying host ID (#id=). Unlike a device address, a host address
+// carries no relay route and no path.
 func ValidHostURL(raw string) bool {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return true
 	}
-	if !ValidNodeURL(raw) {
-		return false
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil || (parsed.Path != "" && parsed.Path != "/") {
-		return false
-	}
-	values, err := url.ParseQuery(parsed.Fragment)
-	if err != nil {
-		return false
-	}
-	return values.Get("relay") == "" && values.Get("target") == ""
+	_, err := ParseHostURL(raw)
+	return err == nil
 }
 
 // ValidNodeURL accepts an empty address or an HTTPS node address carrying a

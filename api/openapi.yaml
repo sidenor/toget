@@ -3704,8 +3704,13 @@ components:
         host_url:
           type: string
           format: uri
-          description: Pinned official account host URL; absent for a self-hosted account.
-          examples: ["https://accounts.example.com#fp=..."]
+          description: |
+            Official account host URL with exactly one trust anchor; absent for
+            a self-hosted account. `#fp=<hex>` (alias `#sha256=<hex>`) pins the
+            exact origin TLS certificate for a direct connection.
+            `#id=<server-id>` validates a TLS-terminating proxy through the
+            signed host manifest.
+          examples: ["https://accounts.example.com#fp=...", "https://accounts.example.com#id=tog1:s:..."]
         key_generation:
           type: integer
           minimum: 1
@@ -3736,7 +3741,12 @@ components:
         host_url:
           type: string
           format: uri
-          description: Pinned official account host URL; absent for a self-hosted account.
+          description: |
+            Official account host URL with exactly one trust anchor; absent for
+            a self-hosted account. `#fp=<hex>` (alias `#sha256=<hex>`) pins the
+            exact origin TLS certificate for a direct connection.
+            `#id=<server-id>` validates a TLS-terminating proxy through the
+            signed host manifest.
         key_generation:
           type: integer
           minimum: 1
@@ -3756,7 +3766,11 @@ components:
         host_url:
           type: string
           format: uri
-          description: Official account host URL, including the pinned key fragment when known.
+          description: |
+            Official account host URL with exactly one trust anchor:
+            `#fp=<hex>` (alias `#sha256=<hex>`) for an exact origin
+            certificate pin, or `#id=<server-id>` behind a TLS-terminating
+            proxy.
         account_id:
           type: string
           pattern: "^[0-9]{14}$"
@@ -5890,7 +5904,10 @@ components:
           format: uri
           description: |
             Official account host URL. When set, the node registers an
-            official-hosted account instead of creating a local one.
+            official-hosted account instead of creating a local one. Supply
+            exactly one trust anchor: `#fp=<hex>` (alias `#sha256=<hex>`) for
+            an exact origin certificate pin, or `#id=<server-id>` behind a
+            TLS-terminating proxy.
         email:
           type: string
           format: email

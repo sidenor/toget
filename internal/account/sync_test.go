@@ -258,6 +258,36 @@ func TestMergeDeviceRecordsRejectsTooMany(t *testing.T) {
 	}
 }
 
+func TestSetHostURLAcceptsIdentityPinAndStaysImmutable(t *testing.T) {
+	ctx := context.Background()
+	f := newSyncFixture(t)
+	server, err := identity.NewServer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostURL := "https://accounts.example.com#id=" + server.ID
+	if err := f.service.SetHostURL(ctx, hostURL); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := f.service.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Account.HostURL != hostURL {
+		t.Fatalf("host URL = %q", snapshot.Account.HostURL)
+	}
+	other, err := identity.NewServer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.SetHostURL(ctx, "https://accounts.example.com#id="+other.ID); !errors.Is(err, account.ErrHostImmutable) {
+		t.Fatalf("second host error = %v", err)
+	}
+	if err := f.service.SetHostURL(ctx, "https://accounts.example.com#id=bad"); !errors.Is(err, account.ErrInvalidHostURL) {
+		t.Fatalf("invalid host error = %v", err)
+	}
+}
+
 func TestSetDeviceNodeURLValidates(t *testing.T) {
 	ctx := context.Background()
 	f := newSyncFixture(t)

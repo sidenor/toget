@@ -89,9 +89,12 @@ without the old password. `toget-official` also runs an official account host
 on `7722`: clients register and log in with OPAQUE, the host stores only the
 password record, sealed MK wraps, a sealed account-key bundle, and public
 device records, and a device-signed certificate exchanges for a short-lived
-host session. Official accounts can be created and used from the CLI, the
-local API, and the local web UI; an embedded Go/WASM page at `/reset/` handles
-email recovery without uploading the recovery file. A node can optionally
+host session. A direct client pins the exact origin certificate; a client
+reaching the host through a TLS-terminating proxy pins the signed host ID
+instead, so Cloudflare or a tunnel can front the service without letting the
+proxy impersonate it. Official accounts can be created and used from the CLI,
+the local API, and the local web UI; an embedded Go/WASM page at `/reset/`
+handles email recovery without uploading the recovery file. A node can optionally
 request PCP, NAT-PMP, or UPnP gateway port mappings and publish the public
 result as an alternate direct address; UDP hole punching is not implemented.
 The phone client is still design-only; the official room home is implemented

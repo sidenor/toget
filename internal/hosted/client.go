@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,10 +55,13 @@ func (e *APIError) Error() string {
 	return e.Message
 }
 
-// Client talks to one pinned account host.
+// Client talks to one account host. Direct addresses pin the host
+// certificate; identity addresses use ordinary Web PKI TLS to the edge and
+// pin the host's self-certifying ID from its signed manifest.
 type Client struct {
 	origin      string
-	pinnedURL   string
+	hostURL     string
+	hostID      string
 	fingerprint string
 	httpClient  *http.Client
 	now         func() time.Time
@@ -65,16 +70,45 @@ type Client struct {
 	info *Info
 }
 
-// NewClient creates a client for a pinned HTTPS host address. hostURL must be
-// the origin with a #fp=<sha256> certificate fingerprint.
-func NewClient(hostURL string) (*Client, error) {
-	origin, fingerprint, err := SplitPinnedURL(hostURL)
+type clientOptions struct {
+	rootCAs *x509.CertPool
+}
+
+// ClientOption customizes a hosted client. Options only affect identity-pin
+// (#id=) addresses; direct certificate pins deliberately ignore extra roots.
+type ClientOption func(*clientOptions)
+
+// WithRootCAs supplies the roots used to verify the edge certificate for an
+// identity-pin host. It is intended for tests and private deployments; nil
+// keeps the system roots.
+func WithRootCAs(roots *x509.CertPool) ClientOption {
+	return func(options *clientOptions) {
+		options.rootCAs = roots
+	}
+}
+
+// NewClient creates a client for an HTTPS host address. hostURL must carry
+// either a #fp=<sha256> certificate fingerprint for a direct connection or a
+// #id=<tog1:s:...> self-certifying host identity for a TLS-terminating proxy.
+func NewClient(hostURL string, options ...ClientOption) (*Client, error) {
+	address, err := account.ParseHostURL(hostURL)
 	if err != nil {
 		return nil, err
 	}
-	tlsConfig, err := PinnedTLSConfig(fingerprint)
-	if err != nil {
-		return nil, err
+	var tlsConfig *tls.Config
+	if address.Fingerprint != "" {
+		tlsConfig, err = PinnedTLSConfig(address.Fingerprint)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		settings := clientOptions{}
+		for _, option := range options {
+			if option != nil {
+				option(&settings)
+			}
+		}
+		tlsConfig = &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: settings.rootCAs}
 	}
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
@@ -87,10 +121,15 @@ func NewClient(hostURL string) (*Client, error) {
 		ResponseHeaderTimeout: 30 * time.Second,
 	}
 	return &Client{
-		origin: origin, pinnedURL: strings.TrimSuffix(strings.TrimSpace(hostURL), "/"),
-		fingerprint: fingerprint,
-		httpClient:  &http.Client{Transport: transport, Timeout: 60 * time.Second},
-		now:         time.Now,
+		origin: address.Origin, hostURL: strings.TrimSuffix(strings.TrimSpace(hostURL), "/"),
+		hostID: address.HostID, fingerprint: address.Fingerprint,
+		httpClient: &http.Client{
+			Transport: transport, Timeout: 60 * time.Second,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return errors.New("account host redirects are not allowed")
+			},
+		},
+		now: time.Now,
 	}, nil
 }
 
@@ -109,7 +148,7 @@ func NewBrowserClient(origin string) (*Client, error) {
 	}
 	base := strings.TrimSuffix(parsed.String(), "/")
 	return &Client{
-		origin: base, pinnedURL: base,
+		origin: base, hostURL: base,
 		httpClient: &http.Client{Timeout: 60 * time.Second},
 		now:        time.Now,
 	}, nil
@@ -118,8 +157,16 @@ func NewBrowserClient(origin string) (*Client, error) {
 // Origin returns the unpinned HTTPS origin.
 func (c *Client) Origin() string { return c.origin }
 
-// PinnedURL returns the pinned host address.
-func (c *Client) PinnedURL() string { return c.pinnedURL }
+// HostURL returns the exact host address, including its trust anchor.
+func (c *Client) HostURL() string { return c.hostURL }
+
+// PinnedURL is the historical name for HostURL. It also returns identity-pin
+// addresses, so callers that persist an account host should use this value.
+func (c *Client) PinnedURL() string { return c.hostURL }
+
+// HostID returns the expected self-certifying host ID, if this is an identity
+// pin. It is empty for direct certificate pins and the browser client.
+func (c *Client) HostID() string { return c.hostID }
 
 // Fingerprint returns the pinned certificate fingerprint, if any.
 func (c *Client) Fingerprint() string { return c.fingerprint }
@@ -132,7 +179,7 @@ func (c *Client) Info(ctx context.Context) (*Info, error) {
 		return c.info, nil
 	}
 	var info Info
-	if err := c.do(ctx, http.MethodGet, InfoPath, "", nil, &info); err != nil {
+	if err := c.doRaw(ctx, http.MethodGet, InfoPath, "", nil, &info); err != nil {
 		return nil, err
 	}
 	if info.Protocol != Protocol || info.HostID == "" || info.HostCode == "" ||
@@ -145,6 +192,9 @@ func (c *Client) Info(ctx context.Context) (*Info, error) {
 	}
 	if manifest.ServerID != info.HostID || manifest.ServerCode != info.HostCode {
 		return nil, fmt.Errorf("%w: manifest does not match the host id", ErrInvalidHost)
+	}
+	if c.hostID != "" && info.HostID != c.hostID {
+		return nil, fmt.Errorf("%w: host identity does not match the pinned host id", ErrInvalidHost)
 	}
 	if err := ValidOPAQUEConfig(info.OPAQUEConfig); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidHost, err)
@@ -291,7 +341,7 @@ func (c *Client) Register(ctx context.Context, options RegisterOptions) (*Regist
 	if err != nil {
 		return nil, err
 	}
-	credential, recoveryKey, err := NewRecoveryCredential(begin.AccountID, c.pinnedURL, now)
+	credential, recoveryKey, err := NewRecoveryCredential(begin.AccountID, c.hostURL, now)
 	if err != nil {
 		return nil, err
 	}
@@ -328,7 +378,7 @@ func (c *Client) Register(ctx context.Context, options RegisterOptions) (*Regist
 	}
 	return &RegistrationResult{
 		AccountID: begin.AccountID, AccountCode: begin.AccountCode,
-		Name: begin.Name, HostURL: c.pinnedURL,
+		Name: begin.Name, HostURL: c.hostURL,
 		HostID: info.HostID, HostCode: info.HostCode,
 		AccountPublicKey:  append([]byte(nil), accountPublicKey...),
 		AccountPrivateKey: append(ed25519.PrivateKey(nil), accountKey...),
@@ -431,7 +481,7 @@ func (c *Client) Login(ctx context.Context, accountID, password string) (*LoginR
 	}
 	return &LoginResult{
 		AccountID: material.AccountID, Name: material.Name,
-		HostID: material.HostID, HostCode: material.HostCode, HostURL: c.pinnedURL,
+		HostID: material.HostID, HostCode: material.HostCode, HostURL: c.hostURL,
 		PublicKey:     append([]byte(nil), material.PublicKey...),
 		KeyGeneration: material.KeyGeneration, KeyRotations: material.KeyRotations,
 		MasterKey: masterKey, AccountPrivateKey: privateKey, KeyBundle: bundle,
@@ -581,7 +631,7 @@ func (c *Client) RotateRecovery(ctx context.Context, sessionToken, accountID str
 	if !digits(accountID, 14) || len(masterKey) != MasterKeySize {
 		return nil, nil, errors.New("recovery rotation is incomplete")
 	}
-	credential, recoveryKey, err := NewRecoveryCredential(accountID, c.pinnedURL, c.now().UTC())
+	credential, recoveryKey, err := NewRecoveryCredential(accountID, c.hostURL, c.now().UTC())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -675,7 +725,13 @@ func (c *Client) openRecovery(ctx context.Context, token string, credentialData 
 	if err != nil {
 		return nil, err
 	}
-	if !sameHostURL(credential.HostURL, c.pinnedURL) {
+	if !sameHostURL(credential.HostURL, c.hostURL) {
+		return nil, ErrRecoveryMismatch
+	}
+	if address, err := account.ParseHostURL(credential.HostURL); err != nil ||
+		(address.HostID != "" && address.HostID != info.HostID) {
+		// Browser reset pages have no certificate pin, but an identity-pinned
+		// recovery file still names the exact host that issued it.
 		return nil, ErrRecoveryMismatch
 	}
 	recoveryContext, err := c.RecoverContext(ctx, token)
@@ -826,7 +882,26 @@ func (c *Client) ResetPassword(ctx context.Context, token string, credentialData
 	}, nil
 }
 
+// ensureVerified fetches and verifies the host identity before an
+// identity-pinned client sends account material for the first time. This
+// prevents a credential from being disclosed to an origin that presents the
+// proxy's valid edge certificate but cannot prove the pinned host ID.
+func (c *Client) ensureVerified(ctx context.Context) error {
+	if c == nil || c.hostID == "" {
+		return nil
+	}
+	_, err := c.Info(ctx)
+	return err
+}
+
 func (c *Client) do(ctx context.Context, method, path, sessionToken string, request, response any) error {
+	if err := c.ensureVerified(ctx); err != nil {
+		return err
+	}
+	return c.doRaw(ctx, method, path, sessionToken, request, response)
+}
+
+func (c *Client) doRaw(ctx context.Context, method, path, sessionToken string, request, response any) error {
 	var body io.Reader
 	if request != nil {
 		encoded, err := json.Marshal(request)
@@ -852,6 +927,9 @@ func (c *Client) do(ctx context.Context, method, path, sessionToken string, requ
 // doDeviceSigned signs a request with the device key and sends the account and
 // device identity headers. The body is hashed exactly as sent.
 func (c *Client) doDeviceSigned(ctx context.Context, path, accountID, deviceID string, key ed25519.PrivateKey, request, response any) error {
+	if err := c.ensureVerified(ctx); err != nil {
+		return err
+	}
 	data, err := json.Marshal(request)
 	if err != nil {
 		return err
@@ -922,12 +1000,33 @@ func sameHostURL(a, b string) bool {
 	parsedA, errA := url.Parse(strings.TrimSpace(a))
 	parsedB, errB := url.Parse(strings.TrimSpace(b))
 	if errA != nil || errB != nil || parsedA.Host == "" || parsedB.Host == "" ||
-		parsedA.Scheme != parsedB.Scheme || !strings.EqualFold(parsedA.Host, parsedB.Host) {
+		parsedA.Scheme != parsedB.Scheme || !strings.EqualFold(parsedA.Host, parsedB.Host) ||
+		(parsedA.Path != "" && parsedA.Path != "/") ||
+		(parsedB.Path != "" && parsedB.Path != "/") ||
+		parsedA.User != nil || parsedB.User != nil {
 		return false
 	}
-	fpA := strings.ToLower(parseFragmentValue(parsedA, "fp"))
-	fpB := strings.ToLower(parseFragmentValue(parsedB, "fp"))
-	return fpA == "" || fpB == "" || fpA == fpB
+	fpA := hostFingerprint(parsedA)
+	fpB := hostFingerprint(parsedB)
+	if fpA != "" && fpB != "" && fpA != fpB {
+		return false
+	}
+	idA := strings.TrimSpace(parseFragmentValue(parsedA, "id"))
+	idB := strings.TrimSpace(parseFragmentValue(parsedB, "id"))
+	if idA != "" && idB != "" && idA != idB {
+		return false
+	}
+	// An anchor on only one side is allowed for the same-origin browser reset
+	// page, which cannot see a certificate or host identity pin.
+	return true
+}
+
+func hostFingerprint(parsed *url.URL) string {
+	fingerprint := strings.ToLower(parseFragmentValue(parsed, "fp"))
+	if fingerprint == "" {
+		fingerprint = strings.ToLower(parseFragmentValue(parsed, "sha256"))
+	}
+	return strings.TrimPrefix(fingerprint, "sha256:")
 }
 
 func parseFragmentValue(parsed *url.URL, key string) string {

@@ -13,11 +13,12 @@ import (
 	"fmt"
 	"math/big"
 	"net"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/sidenor/toget/internal/account"
 )
 
 // TLSMaterial is a host certificate and its pinning fingerprint.
@@ -48,24 +49,25 @@ func PinnedURL(endpoint, fingerprint string) string {
 	return strings.TrimSuffix(endpoint, "/") + "#fp=" + fingerprint
 }
 
-// SplitPinnedURL returns the HTTPS origin and pinned fingerprint.
+// IdentityURL appends a self-certifying host ID to an HTTPS origin. Clients
+// use ordinary Web PKI TLS to the edge and verify this ID against the host's
+// signed manifest, so a TLS-terminating proxy can hold the edge certificate.
+func IdentityURL(endpoint, hostID string) string {
+	return strings.TrimSuffix(endpoint, "/") + "#id=" + hostID
+}
+
+// SplitPinnedURL returns the HTTPS origin and certificate fingerprint of a
+// direct host address. It intentionally rejects #id= addresses; use
+// account.ParseHostURL or NewClient for those.
 func SplitPinnedURL(raw string) (string, string, error) {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
-		return "", "", errors.New("host address must be an HTTPS URL")
-	}
-	values, _ := url.ParseQuery(parsed.Fragment)
-	fingerprint := values.Get("fp")
-	if fingerprint == "" {
-		fingerprint = values.Get("sha256")
-	}
-	fingerprint, err = ParseFingerprint(fingerprint)
+	address, err := account.ParseHostURL(raw)
 	if err != nil {
 		return "", "", err
 	}
-	parsed.Fragment = ""
-	parsed.RawFragment = ""
-	return strings.TrimSuffix(parsed.String(), "/"), fingerprint, nil
+	if address.HostID != "" {
+		return "", "", errors.New("host address uses a host identity pin, not a certificate fingerprint")
+	}
+	return address.Origin, address.Fingerprint, nil
 }
 
 // PinnedTLSConfig trusts exactly one certificate fingerprint.

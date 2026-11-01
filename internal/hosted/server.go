@@ -17,9 +17,9 @@ import (
 	"io/fs"
 	"log/slog"
 	"math/big"
-	"net"
 	"net/http"
 	"net/mail"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -59,6 +59,10 @@ type Options struct {
 	ResetFS fs.FS
 	// DisableRateLimit is for tests and trusted loopback deployments.
 	DisableRateLimit bool
+	// TrustedProxies are CIDRs whose forwarded client-IP headers are honored.
+	// Leave empty when clients connect directly; otherwise an attacker could
+	// choose their own rate-limit bucket by spoofing a header.
+	TrustedProxies []netip.Prefix
 	// RoomMemberLimit and RoomDeviceLimit bound one official room. Zero
 	// applies the default caps; values below one are rejected by New.
 	RoomMemberLimit int
@@ -69,16 +73,17 @@ type Options struct {
 
 // Service is the multi-tenant official account host.
 type Service struct {
-	store       *Store
-	mailer      Mailer
-	logger      *slog.Logger
-	host        *HostState
-	opaqueHost  *OPAQUEHost
-	publicURL   string
-	resetFS     fs.FS
-	started     time.Time
-	now         func() time.Time
-	rateLimited bool
+	store          *Store
+	mailer         Mailer
+	logger         *slog.Logger
+	host           *HostState
+	opaqueHost     *OPAQUEHost
+	publicURL      string
+	resetFS        fs.FS
+	started        time.Time
+	now            func() time.Time
+	rateLimited    bool
+	trustedProxies []netip.Prefix
 
 	roomMemberLimit int
 	roomDeviceLimit int
@@ -135,11 +140,17 @@ func New(options Options) (*Service, error) {
 	if memberLimit < 1 || deviceLimit < 1 {
 		return nil, errors.New("room limits must be at least one")
 	}
+	for _, prefix := range options.TrustedProxies {
+		if !prefix.IsValid() {
+			return nil, errors.New("trusted proxy prefix is invalid")
+		}
+	}
 	return &Service{
 		store: options.Store, mailer: options.Mailer, logger: logger,
 		host: state, opaqueHost: opaqueHost, publicURL: publicURL,
 		resetFS: options.ResetFS, started: now().UTC().Truncate(time.Second),
 		now: now, rateLimited: !options.DisableRateLimit,
+		trustedProxies:  append([]netip.Prefix(nil), options.TrustedProxies...),
 		roomMemberLimit: memberLimit, roomDeviceLimit: deviceLimit,
 		logins:       make(map[string]*pendingLogin),
 		deviceNonces: requestauth.NewNonceCache(),
@@ -204,7 +215,7 @@ func (s *Service) Handler() http.Handler {
 
 func (s *Service) generalLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.rateLimited && !s.limiter.allow("api:"+clientIP(r), generalRequestLimit, generalRequestWindow, s.now()) {
+		if s.rateLimited && !s.limiter.allow("api:"+s.clientIP(r), generalRequestLimit, generalRequestWindow, s.now()) {
 			w.Header().Set("Retry-After", "60")
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests; try again later")
 			return
@@ -1215,7 +1226,7 @@ func (s *Service) limited(w http.ResponseWriter, r *http.Request, bucket string,
 	if !s.rateLimited {
 		return false
 	}
-	key := clientIP(r) + ":" + bucket
+	key := s.clientIP(r) + ":" + bucket
 	if s.limiter.allow(key, limit, time.Minute, s.now()) {
 		return false
 	}
@@ -1307,14 +1318,6 @@ func randomToken() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(raw), nil
-}
-
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }
 
 type rateWindow struct {

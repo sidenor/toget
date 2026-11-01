@@ -12,8 +12,9 @@
 > Optional gateway port mapping (PCP, NAT-PMP, UPnP) publishes public
 > alternates; UDP hole punching is not implemented. The official account host
 > (`internal/hosted`, `cmd/toget-official`) uses OPAQUE (`bytemare/opaque`),
-> XChaCha20-Poly1305 sealed blobs, device-signed bearer sessions, and a
-> Go/WASM reset page. Go, SQLite, React, TypeScript, and Vite match this
+> XChaCha20-Poly1305 sealed blobs, device-signed bearer sessions, exact
+> certificate pins or signed-manifest host identity pins behind a
+> TLS-terminating proxy, and a Go/WASM reset page. Go, SQLite, React, TypeScript, and Vite match this
 > document.
 
 ## Decision summary

@@ -10,7 +10,7 @@ Toget has one protocol with several surfaces:
 | --- | --- | --- | --- |
 | **Node protocol** | HTTP/3 over QUIC and HTTPS on `7717`, pinned self-signed certificate | JSON envelopes | Nodes on the same LAN |
 | **Relay API** | HTTPS on `7719`, WebSocket tunnel or long-poll | JSON envelopes + opaque frames | Nodes and relays across networks |
-| **Account host API** | HTTPS on `7722`, pinned host certificate | JSON + OPAQUE messages | Official-hosted accounts and the reset page |
+| **Account host API** | HTTPS on `7722`, exact origin certificate pin (`#fp=`) or host identity pin (`#id=`) through a TLS-terminating proxy | JSON + OPAQUE messages | Official-hosted accounts and the reset page |
 | **Local API** | HTTP on `127.0.0.1:7718` or a Unix socket | JSON (OpenAPI) | Local web UI, CLI, Agents on the same machine |
 | **Directory API** | HTTPS on `7720` | JSON + signed manifests | Clients resolving a server code |
 
@@ -573,9 +573,31 @@ See [relay.md](relay.md) for the exact wire format and numbers. Open: re-adverti
 
 ## Official account host API
 
-`toget-official` serves the account host on `7722`. Every secret the host
-stores is ciphertext; the password itself never crosses the wire. The routes
-below are implemented and use the `hosted` package structs.
+`toget-official` serves the account host on `7722` by default. Every secret
+the host stores is ciphertext; the password itself never crosses the wire. The
+routes below are implemented and use the `hosted` package structs.
+
+A host address has exactly one trust anchor in its fragment:
+
+- `#fp=<hex>` (alias `#sha256=<hex>`) pins the SHA-256 of the exact origin
+  TLS certificate. This is used for direct connections. The client performs
+  TLS 1.3 with signature verification skipped, then compares the first
+  presented certificate byte-for-byte.
+- `#id=tog1:s:<base32>` pins the self-certifying host identity. This is used
+  when a proxy terminates TLS. The client uses normal Web PKI certificate
+  validation, rejects redirects, fetches `/host/v1/info`, verifies the signed
+  manifest and its `server_id`/`server_code`, and requires the manifest
+  `server_id` to equal `#id`. The check runs before registration, login,
+  recovery, or any device-signed request, so sealed material is not sent to an
+  unverified host.
+
+`GET /host/v1/info` returns the host ID, short code, signed manifest, and the
+exact v1 OPAQUE configuration. The client rejects any other OPAQUE
+configuration, so a proxy cannot downgrade or substitute the password
+exchange. Forwarded client-IP headers (`CF-Connecting-IP` with `CF-Ray`, then
+the rightmost `X-Forwarded-For`, then `X-Real-IP`) are honored only when the
+direct peer is in the host's configured trusted-proxy CIDRs. Otherwise the
+peer address is used, so a direct client cannot choose its rate-limit bucket.
 
 | Method and path | Purpose |
 | --- | --- |

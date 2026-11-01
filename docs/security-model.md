@@ -32,6 +32,7 @@ Toget's security model follows one rule: **the endpoint is the trust boundary**.
 | Self-hosted account host | Yes | Yes | Yes | It is the user's endpoint |
 | Relay run by a third party | No | No | Same as official relay | Same envelope rules |
 | Official directory | No | No | Server/account IDs, advertised endpoint, relay route, publish/lookup timing | Verifies manifests; cannot forge or redirect a pinned endpoint |
+| TLS-terminating proxy in front of the account host (Cloudflare, tunnel, reverse proxy) | No | No | Client IP, hostname, request paths and timing, account IDs/email in request bodies, OPAQUE messages and sealed blobs | Terminates TLS, so it sees the same HTTP metadata and ciphertext as the host; it cannot forge host identity when the client verifies the signed host manifest. It never sees the password, MK, RK, room keys, or plaintext content |
 | Browser push service | No | No | Subscription endpoint, delivery time, encrypted payload size | Payload is content-free and encrypted to the browser; it cannot read the event type |
 
 The official service has no universal key and no backdoor. There is no "compliance access" path to plaintext.
@@ -66,6 +67,66 @@ database. See [notifications.md](notifications.md).
 - **Official-hosted:** the user's devices are the endpoint. The official service stores ciphertext and account metadata; it cannot decrypt.
 - **Official-hosted with an official Agent:** the user explicitly authorizes a scope (a room, a data set, a time window). Only that scope is readable, the authorization is visible in the room, and it can be revoked.
 - **Mixed rooms:** each participant's hosting choice determines who can read. A self-hosted participant's server sees its own copy; an official-hosted participant's devices see theirs; the official service sees ciphertext for the parts it hosts.
+
+### TLS-terminating proxies and identity pinning
+
+A direct account host address carries an exact certificate pin:
+`https://host:7722#fp=<SHA-256 of the origin certificate>`. The client sets
+`InsecureSkipVerify`, then compares the SHA-256 of the first presented
+certificate with the pin. This binds the connection to one certificate and is
+the strongest transport check, but it fails as soon as anything terminates TLS
+before the origin. A Cloudflare-proxied host, Cloudflare Tunnel, load balancer,
+or ingress controller presents a different certificate to the client.
+
+For those deployments the host prints a second address with a self-certifying
+identity anchor:
+
+```text
+https://accounts.example.com#id=tog1:s:<base32(SHA-256(host root public key))>
+```
+
+The client:
+
+1. Connects with standard TLS 1.3 certificate validation against the system
+   (or caller-supplied) root store. The edge certificate must be valid for the
+   hostname.
+2. Rejects redirects, so the checked origin cannot be replaced by a redirect.
+3. Fetches `/host/v1/info` and verifies the signed host manifest with the
+   embedded root public key: signature, issue/expiry time, `server_id`, and
+   `server_code`.
+4. Compares the manifest `server_id` with the expected `#id`. Every account
+   request, including registration, login, recovery, and device-signed calls,
+   runs this identity check before sending account material; the first check
+   fetches `/host/v1/info`, and later calls reuse the verified result for that
+   client.
+5. Rejects a recovery credential whose host `#id` differs from the live host.
+
+A malicious proxy can therefore deny service, delay traffic, or present a
+different valid website, but it cannot make the client accept a different
+Toget host identity or substitute its OPAQUE configuration. It cannot read the
+password (OPAQUE never sends it), the account master key, recovery key, room
+keys, or room content. It does see client IPs, hostnames, paths, request
+timing, account IDs and email addresses in request bodies, OPAQUE messages,
+and sealed blobs, because it terminates TLS before forwarding the HTTP
+request. This is a metadata and availability exposure, not a content
+compromise.
+
+The identity anchor is weaker than an exact certificate pin in one respect:
+it depends on the public Web PKI being honest for the proxy hostname. That is
+the same trust the user already places in a browser for that domain. Use
+`#fp=` whenever clients can reach the origin directly, including on a LAN or
+through a TLS-passthrough proxy.
+
+A TLS-passthrough proxy does not terminate TLS, so `#fp=` still works and the
+proxy cannot inject client-IP headers inside the encrypted stream. Without
+PROXY protocol support (not implemented), the host sees the proxy's address
+for rate limiting.
+
+Forwarded client-IP headers are trusted only when the direct peer is in
+`--host-trusted-proxies`; `CF-Connecting-IP` additionally requires `CF-Ray`.
+Untrusted peers cannot choose their rate-limit bucket. Cloudflare's published
+ranges are a snapshot and must be refreshed, or the operator can pass current
+ranges explicitly. See [deployment.md](deployment.md#put-the-official-host-behind-cloudflare-or-a-tls-terminating-proxy).
 
 ### Implemented LAN boundary
 
@@ -437,7 +498,7 @@ Controls:
   onboarding flow requires the download to complete and be confirmed before
   continuing; the CLI writes it with mode `0600`.
 - The filename includes the 14-digit account ID. The file contains the host
-  URL (including the pinned key fragment when one was supplied), a creation
+  URL (including the `#fp=` or `#id=` anchor when one was supplied), a creation
   time, the 32-byte recovery key, and a SHA-256 checksum over those fields.
 - The reset page is embedded in `toget-official`, has no third-party scripts,
   and runs the same Go hosted-client code as a desktop device through Go/WASM.

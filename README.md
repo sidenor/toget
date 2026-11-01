@@ -47,7 +47,8 @@ and directory:
 ```bash
 go run ./cmd/toget-official
 # Accounts:  https://<host>:7722#fp=...
-# Public:    https://<host>:7722
+# Proxy:     https://accounts.example.com#id=...  (when --host-public-url is set)
+# Public:    https://accounts.example.com
 # Relay:     https://<host>:7719#fp=...
 # Directory: https://<host>:7720#fp=...
 ```
@@ -85,6 +86,12 @@ toget account create --host 'https://accounts.example.com#fp=<hex>' \
 toget account login --host 'https://accounts.example.com#fp=<hex>' \
   --account-id 48392017174628
 ```
+
+If the host is behind Cloudflare or another TLS-terminating proxy, give clients
+the startup `Proxy:` address (`#id=<server-id>`) instead of the direct `#fp=`
+address. The identity pin validates the proxy's public certificate and then
+verifies the signed host identity, so a proxy still cannot impersonate the
+host. See [Deployment](docs/deployment.md#put-the-official-host-behind-cloudflare-or-a-tls-terminating-proxy).
 
 The host stores OPAQUE password records and sealed blobs, never the password or
 the account key. Registration returns the official recovery file once; store it
@@ -368,7 +375,8 @@ Toget 以本地节点的方式运行。单机上可以创建账号、创建房�
 ```bash
 go run ./cmd/toget-official
 # Accounts:  https://<host>:7722#fp=...
-# Public:    https://<host>:7722
+# Proxy:     https://accounts.example.com#id=...  (when --host-public-url is set)
+# Public:    https://accounts.example.com
 # Relay:     https://<host>:7719#fp=...
 # Directory: https://<host>:7720#fp=...
 ```
@@ -400,6 +408,8 @@ toget account create --host 'https://accounts.example.com#fp=<hex>' \
 toget account login --host 'https://accounts.example.com#fp=<hex>' \
   --account-id 48392017174628
 ```
+
+如果托管服务前面是 Cloudflare 或其它会终止 TLS 的代理，请把启动时打印的 `Proxy:` 地址（`#id=<server-id>`）给客户端，而不是直连的 `#fp=` 地址。身份固定会先验证代理的公共证书，再验证签名的服务端身份，代理仍然无法冒充托管服务。详见[部署文档](docs/deployment.md#put-the-official-host-behind-cloudflare-or-a-tls-terminating-proxy)。
 
 官方托管只保存 OPAQUE 密码记录和密封密文，拿不到密码、账号私钥或房间密钥。注册时只会返回一次官方恢复文件，请离线保存；忘记密码时申请邮件链接，在账号托管的 `/reset/` 页面本地读取恢复文件完成重置。没有这个文件，官方服务无法解密账号，也无法重置。官方房间使用托管服务作为「盲房间首页」：它只排序密封事件、保存按设备封装的密钥，读不到房间名、话题或消息内容；官方房间暂不支持附件。详见 [账号找回](docs/account-recovery.md#official-hosted-accounts)。
 

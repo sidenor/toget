@@ -9,6 +9,9 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/sidenor/toget/internal/account"
+	"github.com/sidenor/toget/internal/identity"
 )
 
 const (
@@ -34,8 +37,10 @@ const (
 )
 
 // InviteCode carries a single-use secret and everything a peer needs to reach
-// the room home. The URL fragment contains the TLS certificate fingerprint;
-// it is never sent over the wire as part of an HTTP request.
+// the room home. The URL fragment contains the home's trust anchor: a TLS
+// certificate fingerprint for a node, or either a certificate fingerprint or
+// a self-certifying host ID for an official host. It is never sent over the
+// wire as part of an HTTP request.
 type InviteCode struct {
 	Protocol int    `json:"protocol"`
 	Secret   string `json:"secret"`
@@ -72,7 +77,7 @@ func EncodeInvite(code InviteCode) (string, error) {
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
 		return "", fmt.Errorf("%w: home URL is not HTTPS", ErrInvalidInviteCode)
 	}
-	if _, _, err := ParsePinnedURL(code.URL); err != nil {
+	if err := validateInviteHome(code.HomeKind, code.URL, code.ServerID); err != nil {
 		return "", err
 	}
 	data, err := json.Marshal(code)
@@ -114,10 +119,37 @@ func DecodeInvite(raw string) (*InviteCode, error) {
 	if len(code.Secret) < 16 || code.ServerID == "" || code.RoomID == "" {
 		return nil, fmt.Errorf("%w: missing fields", ErrInvalidInviteCode)
 	}
-	if _, _, err := ParsePinnedURL(code.URL); err != nil {
+	if err := validateInviteHome(code.HomeKind, code.URL, code.ServerID); err != nil {
 		return nil, err
 	}
 	return &code, nil
+}
+
+// validateInviteHome checks that an invite points at a home with a usable
+// trust anchor. Node homes always use a certificate pin. Official homes may
+// use a certificate pin or a host identity pin, and an identity pin must match
+// the server ID carried in the signed invite.
+func validateInviteHome(kind, rawURL, serverID string) error {
+	if kind == InviteKindOfficial {
+		if strings.TrimSpace(rawURL) == "" || !account.ValidHostURL(rawURL) {
+			return fmt.Errorf("%w: official home URL is invalid", ErrInvalidInviteCode)
+		}
+		if !identity.ValidServerID(serverID) {
+			return fmt.Errorf("%w: official server id is invalid", ErrInvalidInviteCode)
+		}
+		address, err := account.ParseHostURL(rawURL)
+		if err != nil {
+			return fmt.Errorf("%w: official home URL is invalid", ErrInvalidInviteCode)
+		}
+		if address.HostID != "" && address.HostID != serverID {
+			return fmt.Errorf("%w: official host id does not match the invite", ErrInvalidInviteCode)
+		}
+		return nil
+	}
+	if _, _, err := ParsePinnedURL(rawURL); err != nil {
+		return err
+	}
+	return nil
 }
 
 // IsInviteCode reports whether raw looks like an encoded invite.

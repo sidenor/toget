@@ -37,6 +37,8 @@ type hostOptions struct {
 	SMTPImplicitTLS bool
 	RoomMemberLimit int
 	RoomDeviceLimit int
+	TrustedProxies  []string
+	TrustCloudflare bool
 }
 
 type accountHost struct {
@@ -45,6 +47,7 @@ type accountHost struct {
 	server      *http.Server
 	listener    net.Listener
 	pinnedURL   string
+	identityURL string
 	publicURL   string
 	fingerprint string
 	cancel      context.CancelFunc
@@ -73,6 +76,10 @@ func startAccountHost(parent context.Context, paths config.Paths, options hostOp
 		return nil, errors.New("both --host-tls-cert and --host-tls-key are required")
 	}
 
+	directHost, err := accountHostAddress(listen, "")
+	if err != nil {
+		return nil, err
+	}
 	publicHost, err := accountHostAddress(listen, options.PublicURL)
 	if err != nil {
 		return nil, err
@@ -85,9 +92,19 @@ func startAccountHost(parent context.Context, paths config.Paths, options hostOp
 		}
 		publicURL = strings.TrimSuffix(parsed, "/")
 	}
+	trustedProxies, err := hosted.ParseTrustedProxies(options.TrustedProxies)
+	if err != nil {
+		return nil, err
+	}
+	if options.TrustCloudflare {
+		trustedProxies = append(trustedProxies, hosted.CloudflareProxyPrefixes()...)
+	}
+	if len(trustedProxies) > 0 && logger != nil {
+		logger.Info("trusting forwarded client IPs", "prefixes", len(trustedProxies))
+	}
 	endpoints := []identity.Endpoint{{Transport: "https", Addr: publicHost}}
 	material, err := hosted.LoadOrCreateTLS(certPath, keyPath, []string{
-		hostOnly(publicHost), hostOnly(listen),
+		hostOnly(publicHost), hostOnly(directHost), hostOnly(listen),
 	})
 	if err != nil {
 		return nil, err
@@ -131,6 +148,7 @@ func startAccountHost(parent context.Context, paths config.Paths, options hostOp
 		PublicURL: publicURL, ResetFS: resetFS,
 		RoomMemberLimit: options.RoomMemberLimit,
 		RoomDeviceLimit: options.RoomDeviceLimit,
+		TrustedProxies:  trustedProxies,
 	})
 	if err != nil {
 		cleanup()
@@ -157,9 +175,14 @@ func startAccountHost(parent context.Context, paths config.Paths, options hostOp
 	}
 	listener := tls.NewListener(rawListener, tlsConfig)
 	ctx, cancel := context.WithCancel(parent)
+	identityURL := ""
+	if strings.TrimSpace(options.PublicURL) != "" {
+		identityURL = hosted.IdentityURL(publicURL, service.HostID())
+	}
 	h := &accountHost{
 		store: store, service: service, server: server, listener: listener,
-		pinnedURL:   hosted.PinnedURL("https://"+publicHost, material.Fingerprint),
+		pinnedURL:   hosted.PinnedURL("https://"+directHost, material.Fingerprint),
+		identityURL: identityURL,
 		publicURL:   publicURL,
 		fingerprint: material.Fingerprint,
 		cancel:      cancel,

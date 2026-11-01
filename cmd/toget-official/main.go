@@ -69,6 +69,8 @@ func newRootCommand() *cobra.Command {
 		hostSMTPImplicitTLS bool
 		hostRoomMembers     int
 		hostRoomDevices     int
+		hostTrustedProxies  []string
+		hostTrustCloudflare bool
 	)
 	cmd := &cobra.Command{
 		Use:   "toget-official",
@@ -104,6 +106,7 @@ func newRootCommand() *cobra.Command {
 					SMTPPassword: hostSMTPPassword, SMTPFrom: hostSMTPFrom,
 					SMTPFromName: hostSMTPFromName, SMTPImplicitTLS: hostSMTPImplicitTLS,
 					RoomMemberLimit: hostRoomMembers, RoomDeviceLimit: hostRoomDevices,
+					TrustedProxies: hostTrustedProxies, TrustCloudflare: hostTrustCloudflare,
 				}, logger)
 				if err != nil {
 					return err
@@ -114,6 +117,9 @@ func newRootCommand() *cobra.Command {
 					_ = host.Close(shutdownCtx)
 				}()
 				fmt.Printf("Accounts:  %s\n", host.pinnedURL)
+				if host.identityURL != "" {
+					fmt.Printf("Proxy:     %s\n", host.identityURL)
+				}
 				fmt.Printf("Public:    %s\n", host.publicURL)
 			}
 
@@ -215,6 +221,8 @@ func newRootCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&hostSMTPImplicitTLS, "host-smtp-implicit-tls", false, "use implicit TLS (SMTPS, usually port 465)")
 	cmd.Flags().IntVar(&hostRoomMembers, "host-room-member-limit", 0, "maximum active members per official room (default 5000)")
 	cmd.Flags().IntVar(&hostRoomDevices, "host-room-device-limit", 0, "maximum devices per official room (default 20000)")
+	cmd.Flags().StringArrayVar(&hostTrustedProxies, "host-trusted-proxies", nil, "proxy CIDR or IP allowed to set client-IP headers (repeatable, comma-separated)")
+	cmd.Flags().BoolVar(&hostTrustCloudflare, "host-trust-cloudflare", false, "trust Cloudflare's published edge ranges for client-IP headers (refresh ranges periodically)")
 	cmd.Flags().StringVar(&updateDir, "update-dir", "", "release tree to serve (channels/, manifests/, daemon/, sbom/)")
 	cmd.Flags().StringVar(&updateListen, "update-listen", "127.0.0.1:7721", "update service listen address")
 	cmd.Flags().StringVar(&updateTLSCert, "update-tls-cert", "", "TLS certificate for the update service")
