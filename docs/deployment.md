@@ -292,9 +292,10 @@ ingress:
   certificate. If the origin uses a Cloudflare Origin CA certificate, keep
   `noTLSVerify: true` or configure `caPool` with the origin CA; either way the
   client-facing certificate is the public one at Cloudflare.
-- `--host-public-url` must omit a port when the public URL is HTTPS on 443.
-  The host then advertises `accounts.example.com:443` in its signed endpoints
-  while still listening on `127.0.0.1:7722`.
+- If the public URL is HTTPS on 443, the port can be omitted; the host
+  advertises `accounts.example.com:443` in its signed endpoints while still
+  listening on `127.0.0.1:7722`. Include `:8443` (or another port) when the
+  public URL uses a non-default port.
 - `--host-trusted-proxies 127.0.0.1/32,::1/128` is required for correct client
   IPs and rate limiting: cloudflared connects from loopback, and the host then
   honors Cloudflare's `CF-Connecting-IP` (which requires `CF-Ray`) and
