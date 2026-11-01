@@ -311,3 +311,35 @@ func assertNoPlaintextOnDisk(t *testing.T, dir string, values ...any) {
 		}
 	}
 }
+
+func TestHostedRegistrationWithoutEmail(t *testing.T) {
+	ctx := context.Background()
+	h := newHostHarness(t)
+	const password = "registration without an email address"
+
+	registered, err := h.client.Register(ctx, hosted.RegisterOptions{
+		Name: "No Email", Password: password, DeviceName: "Laptop",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registered.EmailSent {
+		t.Fatal("registration without an email reported a sent verification mail")
+	}
+	if h.mailer.Len() != 0 {
+		t.Fatalf("mailer received %d messages", h.mailer.Len())
+	}
+	account, err := h.store.GetAccount(ctx, registered.AccountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(account.EmailCipher) != 0 || len(account.EmailHash) != 0 {
+		t.Fatalf("email columns = %d/%d bytes, want empty", len(account.EmailCipher), len(account.EmailHash))
+	}
+	if account.EmailVerified {
+		t.Fatal("account without an email is marked verified")
+	}
+	if _, err := h.client.Login(ctx, registered.AccountID, password); err != nil {
+		t.Fatalf("login after email-less registration: %v", err)
+	}
+}

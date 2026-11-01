@@ -517,7 +517,7 @@ func (s *Store) CreatePendingRegistration(ctx context.Context, pending *PendingR
 			account_public_key, expires_at, created_at)
 		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
 		pending.AccountID, pending.AccountCode, pending.Name,
-		pending.EmailCipher, pending.EmailHash, pending.AccountPublicKey,
+		blobOrEmpty(pending.EmailCipher), blobOrEmpty(pending.EmailHash), pending.AccountPublicKey,
 		pending.ExpiresAt.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		if isConstraint(err) {
@@ -623,7 +623,7 @@ func (s *Store) FinishRegistration(ctx context.Context, finish *RegistrationFini
 		 VALUES(?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
 		pending.AccountID, pending.AccountCode, pending.Name, pending.AccountPublicKey,
 		finish.OPAQUERecord, rotations, exportJSON, recoveryJSON, bundleJSON,
-		pending.EmailCipher, pending.EmailHash, now.UnixMilli(), now.UnixMilli())
+		blobOrEmpty(pending.EmailCipher), blobOrEmpty(pending.EmailHash), now.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		if isConstraint(err) {
 			return nil, errors.New("account already exists")
@@ -1352,6 +1352,15 @@ func requireAffected(result sql.Result) error {
 
 func isConstraint(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "constraint")
+}
+
+// blobOrEmpty keeps optional BLOB columns non-NULL. SQLite does not apply a
+// column default when the INSERT names the column and binds a nil slice.
+func blobOrEmpty(value []byte) []byte {
+	if value == nil {
+		return []byte{}
+	}
+	return value
 }
 
 func ensurePrivateDir(dir string) error {
