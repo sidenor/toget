@@ -69,12 +69,15 @@ type Service struct {
 }
 
 type storedRecord struct {
+	Kind             string          `json:"kind,omitempty"`
 	ServerID         string          `json:"server_id"`
 	ServerCode       string          `json:"server_code"`
 	IdentityManifest json.RawMessage `json:"identity_manifest"`
-	NodeManifest     json.RawMessage `json:"node_manifest"`
+	NodeManifest     json.RawMessage `json:"node_manifest,omitempty"`
+	HostManifest     json.RawMessage `json:"host_manifest,omitempty"`
 	IssuedAt         time.Time       `json:"issued_at"`
 	UpdatedAt        time.Time       `json:"updated_at"`
+	ExpiresAt        time.Time       `json:"expires_at"`
 }
 
 type storeFile struct {
@@ -302,8 +305,8 @@ func (s *Service) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, directoryproto.PublishResponse{
-		Protocol: directoryproto.Protocol, ServerID: record.ServerID,
-		ServerCode: record.ServerCode, ExpiresAt: record.IssuedAt.Add(s.recordTTL),
+		Protocol: directoryproto.Protocol, Kind: record.Kind, ServerID: record.ServerID,
+		ServerCode: record.ServerCode, ExpiresAt: record.ExpiresAt,
 	})
 }
 
@@ -313,56 +316,101 @@ func (s *Service) handleLookup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	code := r.PathValue("code")
-	if len(code) != 8 {
+	if !validServerCode(code) {
 		writeError(w, http.StatusBadRequest, "invalid_code", "server code must be 8 digits")
 		return
 	}
-	for _, digit := range code {
-		if digit < '0' || digit > '9' {
-			writeError(w, http.StatusBadRequest, "invalid_code", "server code must be 8 digits")
+	response, err := s.Lookup(code)
+	if err != nil {
+		var lookupErr *lookupError
+		if errors.As(err, &lookupErr) {
+			writeError(w, lookupErr.status, lookupErr.code, lookupErr.message)
 			return
 		}
+		writeError(w, http.StatusInternalServerError, "internal", "could not look up the server")
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+// Lookup returns one verified directory record. It is exported for an account
+// host that embeds the directory and resolves records without an HTTP hop.
+func (s *Service) Lookup(code string) (*directoryproto.LookupResponse, error) {
+	if !validServerCode(code) {
+		return nil, &lookupError{status: http.StatusBadRequest, code: "invalid_code", message: "server code must be 8 digits"}
 	}
 	s.mu.Lock()
 	serverID := s.byCode[code]
 	record := s.records[serverID]
 	s.mu.Unlock()
 	if record == nil {
-		writeError(w, http.StatusNotFound, "not_found", "server is not in the directory")
-		return
+		return nil, &lookupError{status: http.StatusNotFound, code: "not_found", message: "server is not in the directory"}
 	}
 	im, err := identity.VerifyManifestJSON(record.IdentityManifest)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "corrupt_record", "stored server manifest is invalid")
-		return
+		return nil, &lookupError{status: http.StatusInternalServerError, code: "corrupt_record", message: "stored server manifest is invalid"}
 	}
 	serverKey, err := identity.DecodePublicKey(im.RootPubKey)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "corrupt_record", "stored server key is invalid")
-		return
+		return nil, &lookupError{status: http.StatusInternalServerError, code: "corrupt_record", message: "stored server key is invalid"}
 	}
-	var nm nodenet.Manifest
-	if err := json.Unmarshal(record.NodeManifest, &nm); err != nil {
-		writeError(w, http.StatusInternalServerError, "corrupt_record", "stored node manifest is invalid")
-		return
+	if im.ServerID != record.ServerID || im.ServerCode != code {
+		return nil, &lookupError{status: http.StatusInternalServerError, code: "corrupt_record", message: "stored record does not match its code"}
 	}
-	if err := nodenet.VerifyManifest(&nm, serverKey); err != nil {
-		writeError(w, http.StatusInternalServerError, "corrupt_record", "stored node manifest is invalid")
-		return
+	if time.Now().UTC().After(record.ExpiresAt) {
+		return nil, &lookupError{status: http.StatusNotFound, code: "expired", message: "the server record has expired"}
 	}
-	if im.ServerID != record.ServerID || nm.ServerID != im.ServerID || nm.ServerCode != code {
-		writeError(w, http.StatusInternalServerError, "corrupt_record", "stored record does not match its code")
-		return
+	response := &directoryproto.LookupResponse{
+		Protocol: directoryproto.Protocol, Kind: record.Kind,
+		IdentityManifest: record.IdentityManifest, UpdatedAt: record.UpdatedAt,
 	}
-	if time.Now().UTC().After(nm.ExpiresAt) {
-		writeError(w, http.StatusNotFound, "expired", "the server record has expired")
-		return
+	switch record.Kind {
+	case directoryproto.RecordKindHost:
+		hm, err := identity.VerifyHostManifest(record.HostManifest, serverKey)
+		if err != nil {
+			return nil, &lookupError{status: http.StatusInternalServerError, code: "corrupt_record", message: "stored host manifest is invalid"}
+		}
+		if hm.ServerID != im.ServerID || hm.ServerCode != im.ServerCode {
+			return nil, &lookupError{status: http.StatusInternalServerError, code: "corrupt_record", message: "stored host record does not match its server identity"}
+		}
+		response.HostManifest = record.HostManifest
+	case directoryproto.RecordKindNode:
+		var nm nodenet.Manifest
+		if err := json.Unmarshal(record.NodeManifest, &nm); err != nil {
+			return nil, &lookupError{status: http.StatusInternalServerError, code: "corrupt_record", message: "stored node manifest is invalid"}
+		}
+		if err := nodenet.VerifyManifest(&nm, serverKey); err != nil {
+			return nil, &lookupError{status: http.StatusInternalServerError, code: "corrupt_record", message: "stored node manifest is invalid"}
+		}
+		if nm.ServerID != im.ServerID || nm.ServerCode != code {
+			return nil, &lookupError{status: http.StatusInternalServerError, code: "corrupt_record", message: "stored record does not match its code"}
+		}
+		response.NodeManifest = record.NodeManifest
+		response.RelayURL = nm.RelayURL
+	default:
+		return nil, &lookupError{status: http.StatusInternalServerError, code: "corrupt_record", message: "stored record has an unknown kind"}
 	}
-	writeJSON(w, http.StatusOK, directoryproto.LookupResponse{
-		Protocol:         directoryproto.Protocol,
-		IdentityManifest: record.IdentityManifest, NodeManifest: record.NodeManifest,
-		RelayURL: nm.RelayURL, UpdatedAt: record.UpdatedAt,
-	})
+	return response, nil
+}
+
+type lookupError struct {
+	status  int
+	code    string
+	message string
+}
+
+func (e *lookupError) Error() string { return e.message }
+
+func validServerCode(code string) bool {
+	if len(code) != 8 {
+		return false
+	}
+	for _, digit := range code {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func verifyPublish(req directoryproto.PublishRequest) (*storedRecord, error) {
@@ -377,26 +425,44 @@ func verifyPublish(req directoryproto.PublishRequest) (*storedRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	var nm nodenet.Manifest
-	if err := json.Unmarshal(req.NodeManifest, &nm); err != nil {
-		return nil, errors.New("node manifest is invalid")
-	}
-	if err := nodenet.VerifyManifest(&nm, serverKey); err != nil {
-		return nil, fmt.Errorf("node manifest is invalid: %w", err)
-	}
-	if nm.ServerID != im.ServerID || nm.ServerCode != im.ServerCode {
-		return nil, errors.New("node manifest does not match the server identity")
-	}
-	parsed, err := url.Parse(nm.Endpoint)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
-		return nil, errors.New("node endpoint must be an HTTPS URL")
-	}
-	return &storedRecord{
-		ServerID: im.ServerID, ServerCode: im.ServerCode,
+	record := &storedRecord{
+		Kind: req.Kind, ServerID: im.ServerID, ServerCode: im.ServerCode,
 		IdentityManifest: append(json.RawMessage(nil), req.IdentityManifest...),
-		NodeManifest:     append(json.RawMessage(nil), req.NodeManifest...),
-		IssuedAt:         nm.IssuedAt,
-	}, nil
+	}
+	switch req.Kind {
+	case directoryproto.RecordKindHost:
+		hm, err := identity.VerifyHostManifest(req.HostManifest, serverKey)
+		if err != nil {
+			return nil, fmt.Errorf("host manifest is invalid: %w", err)
+		}
+		if hm.ServerID != im.ServerID || hm.ServerCode != im.ServerCode {
+			return nil, errors.New("host manifest does not match the server identity")
+		}
+		record.HostManifest = append(json.RawMessage(nil), req.HostManifest...)
+		record.IssuedAt = hm.IssuedAt
+		record.ExpiresAt = hm.ExpiresAt
+	case directoryproto.RecordKindNode:
+		var nm nodenet.Manifest
+		if err := json.Unmarshal(req.NodeManifest, &nm); err != nil {
+			return nil, errors.New("node manifest is invalid")
+		}
+		if err := nodenet.VerifyManifest(&nm, serverKey); err != nil {
+			return nil, fmt.Errorf("node manifest is invalid: %w", err)
+		}
+		if nm.ServerID != im.ServerID || nm.ServerCode != im.ServerCode {
+			return nil, errors.New("node manifest does not match the server identity")
+		}
+		parsed, err := url.Parse(nm.Endpoint)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+			return nil, errors.New("node endpoint must be an HTTPS URL")
+		}
+		record.NodeManifest = append(json.RawMessage(nil), req.NodeManifest...)
+		record.IssuedAt = nm.IssuedAt
+		record.ExpiresAt = nm.ExpiresAt
+	default:
+		return nil, errors.New("unsupported directory record kind")
+	}
+	return record, nil
 }
 
 type conflictError struct {
@@ -448,6 +514,21 @@ func (s *Service) storeRecord(record *storedRecord) error {
 	return nil
 }
 
+// PublishHost stores a host record produced by a directory operator. It runs
+// the same verification as the HTTP publish endpoint, so a locally registered
+// host cannot bypass manifest checks.
+func (s *Service) PublishHost(identityManifest, hostManifest json.RawMessage) error {
+	record, err := verifyPublish(directoryproto.PublishRequest{
+		Protocol: directoryproto.Protocol, Kind: directoryproto.RecordKindHost,
+		IdentityManifest: identityManifest, HostManifest: hostManifest,
+	})
+	if err != nil {
+		return err
+	}
+	record.UpdatedAt = time.Now().UTC()
+	return s.storeRecord(record)
+}
+
 func (s *Service) recordPath() string {
 	return filepath.Join(s.paths.Home, "directory-records.json")
 }
@@ -470,6 +551,18 @@ func (s *Service) load() error {
 	for id, record := range store.Records {
 		if record == nil || record.ServerID != id || record.ServerCode == "" {
 			return errors.New("directory: records file is inconsistent")
+		}
+		if record.Kind == "" {
+			record.Kind = directoryproto.RecordKindNode
+		}
+		if record.Kind != directoryproto.RecordKindNode && record.Kind != directoryproto.RecordKindHost {
+			return errors.New("directory: records file has an unknown record kind")
+		}
+		if record.ExpiresAt.IsZero() && record.Kind == directoryproto.RecordKindNode {
+			var nm nodenet.Manifest
+			if err := json.Unmarshal(record.NodeManifest, &nm); err == nil {
+				record.ExpiresAt = nm.ExpiresAt
+			}
 		}
 		if owner, exists := s.byCode[record.ServerCode]; exists && owner != id {
 			return errors.New("directory: records file has a duplicate server code")

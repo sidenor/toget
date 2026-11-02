@@ -77,7 +77,8 @@ func NewRouter(api http.Handler, assets fs.FS) (http.Handler, error) {
 
 func isHostedPath(requestPath string) bool {
 	return requestPath == "/host" || strings.HasPrefix(requestPath, "/host/") ||
-		requestPath == "/reset" || strings.HasPrefix(requestPath, "/reset/")
+		requestPath == "/reset" || strings.HasPrefix(requestPath, "/reset/") ||
+		requestPath == "/directory" || strings.HasPrefix(requestPath, "/directory/")
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

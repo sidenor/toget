@@ -6,12 +6,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,6 +21,8 @@ import (
 
 	"github.com/sidenor/toget/internal/config"
 	"github.com/sidenor/toget/internal/directory"
+	"github.com/sidenor/toget/internal/directoryclient"
+	"github.com/sidenor/toget/internal/hosted"
 	"github.com/sidenor/toget/internal/relay"
 	"github.com/sidenor/toget/internal/version"
 )
@@ -54,6 +58,7 @@ func newRootCommand() *cobra.Command {
 		updateInsecure  bool
 
 		noHost              bool
+		hostDirectoryURL    string
 		hostListen          string
 		hostPublicURL       string
 		hostDirectAddress   string
@@ -101,54 +106,6 @@ func newRootCommand() *cobra.Command {
 				return errors.New("the relay, directory, update service, and account host are all disabled")
 			}
 
-			if !noHost {
-				host, err := startAccountHost(ctx, paths, hostOptions{
-					Listen: hostListen, PublicURL: hostPublicURL, DirectAddress: hostDirectAddress, Name: hostName,
-					CertPath: hostTLSCert, KeyPath: hostTLSKey, DatabasePath: hostDB,
-					ResetDir: hostResetDir, SiteDir: hostSiteDir, DownloadDir: hostDownloadDir,
-					SMTPAddr: hostSMTPAddr, SMTPUser: hostSMTPUser,
-					SMTPPassword: hostSMTPPassword, SMTPFrom: hostSMTPFrom,
-					SMTPFromName: hostSMTPFromName, SMTPImplicitTLS: hostSMTPImplicitTLS,
-					RoomMemberLimit: hostRoomMembers, RoomDeviceLimit: hostRoomDevices,
-					TrustedProxies: hostTrustedProxies, TrustCloudflare: hostTrustCloudflare,
-				}, logger)
-				if err != nil {
-					return err
-				}
-				defer func() {
-					shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer cancel()
-					_ = host.Close(shutdownCtx)
-				}()
-				if host.pinnedURL != "" {
-					fmt.Printf("Accounts:  %s\n", host.pinnedURL)
-				} else {
-					fmt.Println("Accounts:  not advertised (set --host-direct-address host:port)")
-				}
-				if host.identityURL != "" {
-					fmt.Printf("Proxy:     %s\n", host.identityURL)
-				}
-				if host.publicURL != "" {
-					fmt.Printf("Public:    %s\n", host.publicURL)
-				} else {
-					fmt.Println("Public:    not configured (set --host-public-url)")
-				}
-			}
-
-			if updateDir != "" {
-				shutdown, address, err := startUpdateService(updateDir, updateListen, updateTLSCert, updateTLSKey, updateInsecure)
-				if err != nil {
-					return err
-				}
-				defer func() {
-					shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer cancel()
-					_ = shutdown(shutdownCtx)
-				}()
-				fmt.Printf("Updates:   %s\n", address)
-				fmt.Printf("Releases:  %s\n", updateDir)
-			}
-
 			var relayService *relay.Service
 			if !noRelay {
 				quic := "on"
@@ -174,6 +131,9 @@ func newRootCommand() *cobra.Command {
 				fmt.Printf("Relay:     %s\n", relayService.URL())
 				fmt.Printf("Relay ID:  %s\n", relayService.RelayID())
 			}
+
+			var directoryService *directory.Service
+			var directoryLookup func(context.Context, string) (*hosted.DirectoryRecord, error)
 			if noDirectory {
 				fmt.Println("Directory: disabled")
 			} else {
@@ -181,10 +141,7 @@ func newRootCommand() *cobra.Command {
 				if advertisedRelay == "" && relayService != nil {
 					advertisedRelay = relayService.URL()
 				}
-				if advertisedRelay == "" {
-					return errors.New("the directory requires --relay-url when the relay is disabled")
-				}
-				directoryService, err := directory.New(directory.Options{
+				directoryService, err = directory.New(directory.Options{
 					Listen:    directoryListen,
 					Advertise: directoryAdv,
 					Paths:     paths,
@@ -200,6 +157,81 @@ func newRootCommand() *cobra.Command {
 				}
 				defer directoryService.Close()
 				fmt.Printf("Directory: %s\n", directoryService.URL())
+				if hostPublicURL != "" && !noHost {
+					fmt.Printf("Directory (web): %s/directory/\n", strings.TrimSuffix(hostPublicURL, "/"))
+				}
+			}
+			if hostDirectoryURL != "" {
+				external := hostDirectoryURL
+				directoryLookup = func(ctx context.Context, code string) (*hosted.DirectoryRecord, error) {
+					return directoryclient.Fetch(ctx, external, code)
+				}
+			} else if directoryService != nil {
+				embedded := directoryService
+				directoryLookup = func(ctx context.Context, code string) (*hosted.DirectoryRecord, error) {
+					response, err := embedded.Lookup(code)
+					if err != nil {
+						return nil, err
+					}
+					data, err := json.Marshal(response)
+					if err != nil {
+						return nil, err
+					}
+					return directoryclient.ParseLookup(data)
+				}
+			}
+
+			if !noHost {
+				host, err := startAccountHost(ctx, paths, hostOptions{
+					Listen: hostListen, PublicURL: hostPublicURL, DirectAddress: hostDirectAddress, Name: hostName,
+					CertPath: hostTLSCert, KeyPath: hostTLSKey, DatabasePath: hostDB,
+					ResetDir: hostResetDir, SiteDir: hostSiteDir, DownloadDir: hostDownloadDir,
+					SMTPAddr: hostSMTPAddr, SMTPUser: hostSMTPUser,
+					SMTPPassword: hostSMTPPassword, SMTPFrom: hostSMTPFrom,
+					SMTPFromName: hostSMTPFromName, SMTPImplicitTLS: hostSMTPImplicitTLS,
+					RoomMemberLimit: hostRoomMembers, RoomDeviceLimit: hostRoomDevices,
+					TrustedProxies: hostTrustedProxies, TrustCloudflare: hostTrustCloudflare,
+					DirectoryLookup: directoryLookup,
+					DirectoryMount:  directoryHandler(directoryService),
+				}, logger)
+				if err != nil {
+					return err
+				}
+				defer func() {
+					shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					_ = host.Close(shutdownCtx)
+				}()
+				if host.pinnedURL != "" {
+					fmt.Printf("Accounts:  %s\n", host.pinnedURL)
+				} else {
+					fmt.Println("Accounts:  not advertised (set --host-direct-address host:port)")
+				}
+				if host.identityURL != "" {
+					fmt.Printf("Proxy:     %s\n", host.identityURL)
+				}
+				if host.publicURL != "" {
+					fmt.Printf("Public:    %s\n", host.publicURL)
+				} else {
+					fmt.Println("Public:    not configured (set --host-public-url)")
+				}
+				if directoryService != nil || hostDirectoryURL != "" {
+					startHostPublisher(ctx, host, directoryService, hostDirectoryURL, logger)
+				}
+			}
+
+			if updateDir != "" {
+				shutdown, address, err := startUpdateService(updateDir, updateListen, updateTLSCert, updateTLSKey, updateInsecure)
+				if err != nil {
+					return err
+				}
+				defer func() {
+					shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					_ = shutdown(shutdownCtx)
+				}()
+				fmt.Printf("Updates:   %s\n", address)
+				fmt.Printf("Releases:  %s\n", updateDir)
 			}
 			fmt.Printf("Data:      %s\n", paths.Home)
 			fmt.Println("Press Ctrl+C to stop.")
@@ -218,6 +250,7 @@ func newRootCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&noDirectory, "no-directory", false, "do not run the directory")
 	cmd.Flags().BoolVar(&noQUIC, "no-quic", false, "disable HTTP/3 on the relay")
 	cmd.Flags().BoolVar(&noHost, "no-host", false, "do not run the official account host")
+	cmd.Flags().StringVar(&hostDirectoryURL, "host-directory-url", "", "external directory URL used for cross-server lookup and host registration")
 	cmd.Flags().StringVar(&hostListen, "host-listen", "0.0.0.0:7722", "official account host listen address")
 	cmd.Flags().StringVar(&hostPublicURL, "host-public-url", "", "browser-facing HTTPS origin for account email links (required with --host-smtp-addr)")
 	cmd.Flags().StringVar(&hostDirectAddress, "host-direct-address", "", "public host:port advertised for direct pinned clients (required behind NAT)")

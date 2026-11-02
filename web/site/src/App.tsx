@@ -35,10 +35,13 @@ import type {
   AccountDevice,
   AuthResult,
   FriendInviteResult,
+  FriendRequestSent,
+  FriendRequestView,
   InviteResult,
   Profile,
   RecoveryFile,
   RefreshResult,
+  ResolvedAccount,
   RoomSummary,
   RoomView,
   StoredMember,
@@ -216,6 +219,10 @@ export default function App() {
   const [client, setClient] = useState<SiteClient | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
+  const [friendRequests, setFriendRequests] = useState<FriendRequestView[]>([]);
+  const [friendRequestBusyID, setFriendRequestBusyID] = useState<string | null>(
+    null,
+  );
   const [activeRoomID, setActiveRoomID] = useState<string | null>(null);
   const [roomView, setRoomView] = useState<RoomView | null>(null);
   const [tab, setTab] = useState<Tab>("chats");
@@ -424,6 +431,22 @@ export default function App() {
       const nextRooms = Array.isArray(result.rooms) ? result.rooms : [];
       setRooms(nextRooms);
       setRevision((value) => value + 1);
+      try {
+        const incoming = await target.call<FriendRequestView[]>(
+          "listFriendRequests",
+        );
+        setFriendRequests(Array.isArray(incoming) ? incoming : []);
+      } catch (cause) {
+        const error = toSiteError(cause);
+        if (
+          error.code === "session_expired" ||
+          error.code === "key_conflict" ||
+          error.code === "invalid_state"
+        ) {
+          handleBackgroundFailure(cause);
+          return;
+        }
+      }
       // Flags such as email verification can change in another tab or via
       // the verification link; keep the visible profile in step with the
       // client state refreshed above.
@@ -478,6 +501,7 @@ export default function App() {
     setLastAccountID(next.account_id);
     const summaries = Array.isArray(target.rooms()) ? target.rooms() : [];
     setRooms(summaries);
+    setFriendRequests([]);
     setRevision((value) => value + 1);
     const mobile = window.matchMedia(MOBILE_QUERY).matches;
     let pick: string | null = null;
@@ -870,6 +894,58 @@ export default function App() {
     ],
   );
 
+  const acceptFriendRequest = useCallback(
+    async (requestID: string) => {
+      const target = clientRef.current;
+      if (!target) {
+        return;
+      }
+      setFriendRequestBusyID(requestID);
+      try {
+        const view = await target.call<RoomView>("acceptFriendRequest", {
+          request_id: requestID,
+        });
+        setFriendRequests((current) =>
+          current.filter((request) => request.id !== requestID),
+        );
+        setRooms(target.rooms());
+        setRevision((value) => value + 1);
+        await persistState(target);
+        setToast("已添加好友，现在可以聊天了。");
+        await openRoom(view.summary.id, "friends");
+      } catch (cause) {
+        handleBackgroundFailure(cause);
+      } finally {
+        setFriendRequestBusyID(null);
+      }
+    },
+    [handleBackgroundFailure, openRoom, persistState],
+  );
+
+  const declineFriendRequest = useCallback(
+    async (requestID: string) => {
+      const target = clientRef.current;
+      if (!target) {
+        return;
+      }
+      setFriendRequestBusyID(requestID);
+      try {
+        await target.call("declineFriendRequest", {
+          request_id: requestID,
+        });
+        setFriendRequests((current) =>
+          current.filter((request) => request.id !== requestID),
+        );
+        setToast("已拒绝好友申请。");
+      } catch (cause) {
+        handleBackgroundFailure(cause);
+      } finally {
+        setFriendRequestBusyID(null);
+      }
+    },
+    [handleBackgroundFailure],
+  );
+
   const requestRecovery = async (user: string) => {
     const target = clientRef.current;
     if (!target) {
@@ -1110,6 +1186,46 @@ export default function App() {
       setOnline(true);
       setSyncError(null);
       return { room: view, invite };
+    } catch (cause) {
+      return failAction(cause);
+    }
+  };
+
+  const resolveAccount = async (
+    accountID: string,
+  ): Promise<ResolvedAccount> => {
+    const target = clientRef.current;
+    if (!target) {
+      throw new SiteError("internal", "安全模块还没有准备好。");
+    }
+    try {
+      return await target.call<ResolvedAccount>("resolveAccount", {
+        account_id: accountID,
+      });
+    } catch (cause) {
+      return failAction(cause);
+    }
+  };
+
+  const addFriend = async (
+    resolved: ResolvedAccount,
+  ): Promise<FriendRequestSent> => {
+    const target = clientRef.current;
+    if (!target) {
+      throw new SiteError("internal", "安全模块还没有准备好。");
+    }
+    try {
+      const sent = await target.call<FriendRequestSent>("addFriend", {
+        account_id: resolved.account_id,
+        name: resolved.name ?? "",
+        devices: resolved.devices ?? [],
+      });
+      setRooms(target.rooms());
+      setRevision((value) => value + 1);
+      await persistState(target);
+      setOnline(true);
+      setSyncError(null);
+      return sent;
     } catch (cause) {
       return failAction(cause);
     }
@@ -1381,6 +1497,10 @@ export default function App() {
     content = isMobile ? (
       <FriendsPage
         entries={friends}
+        requests={friendRequests}
+        requestBusyID={friendRequestBusyID}
+        onAcceptRequest={(requestID) => void acceptFriendRequest(requestID)}
+        onDeclineRequest={(requestID) => void declineFriendRequest(requestID)}
         onOpen={(roomID) => void openRoom(roomID, "friends")}
         onAdd={() => setModal("addFriend")}
         onJoin={() => {
@@ -1391,6 +1511,10 @@ export default function App() {
     ) : (
       <FriendsOverview
         entries={friends}
+        requests={friendRequests}
+        requestBusyID={friendRequestBusyID}
+        onAcceptRequest={(requestID) => void acceptFriendRequest(requestID)}
+        onDeclineRequest={(requestID) => void declineFriendRequest(requestID)}
         onOpen={(roomID) => void openRoom(roomID, "friends")}
         onAdd={() => setModal("addFriend")}
       />
@@ -1468,6 +1592,8 @@ export default function App() {
           rooms={rooms}
           members={members}
           friends={friends}
+          friendRequests={friendRequests}
+          friendRequestBusyID={friendRequestBusyID}
           tab={tab}
           activeRoomID={activeRoomID}
           selectedMemberID={selectedMemberID}
@@ -1476,6 +1602,8 @@ export default function App() {
           onSelectMember={selectMember}
           onCreate={() => setModal("create")}
           onAddFriend={() => setModal("addFriend")}
+          onAcceptRequest={(requestID) => void acceptFriendRequest(requestID)}
+          onDeclineRequest={(requestID) => void declineFriendRequest(requestID)}
           onJoin={() => {
             setInviteCode("");
             setModal("join");
@@ -1529,8 +1657,11 @@ export default function App() {
       {modal === "addFriend" && (
         <AddFriendDialog
           isMobile={isMobile}
+          myHostCode={profile?.host_code ?? ""}
           onClose={() => setModal(null)}
           onCreateInvite={createFriendInvite}
+          onResolveAccount={resolveAccount}
+          onAddFriend={addFriend}
           onJoinExisting={() => {
             setInviteCode("");
             setModal("join");
@@ -1662,6 +1793,8 @@ function Sidebar({
   rooms,
   members,
   friends,
+  friendRequests,
+  friendRequestBusyID,
   tab,
   activeRoomID,
   selectedMemberID,
@@ -1670,6 +1803,8 @@ function Sidebar({
   onSelectMember,
   onCreate,
   onAddFriend,
+  onAcceptRequest,
+  onDeclineRequest,
   onJoin,
   onMe,
 }: {
@@ -1677,6 +1812,8 @@ function Sidebar({
   rooms: RoomSummary[];
   members: StoredMember[];
   friends: FriendEntry[];
+  friendRequests: FriendRequestView[];
+  friendRequestBusyID: string | null;
   tab: Tab;
   activeRoomID: string | null;
   selectedMemberID: string | null;
@@ -1685,6 +1822,8 @@ function Sidebar({
   onSelectMember: (member: StoredMember) => void;
   onCreate: () => void;
   onAddFriend: () => void;
+  onAcceptRequest: (requestID: string) => void;
+  onDeclineRequest: (requestID: string) => void;
   onJoin: () => void;
   onMe: () => void;
 }) {
@@ -1743,6 +1882,10 @@ function Sidebar({
       {tab === "friends" ? (
         <FriendsSidebar
           entries={friends}
+          requests={friendRequests}
+          requestBusyID={friendRequestBusyID}
+          onAcceptRequest={onAcceptRequest}
+          onDeclineRequest={onDeclineRequest}
           onOpen={onOpenRoom}
           onAdd={onAddFriend}
           onJoin={onJoin}

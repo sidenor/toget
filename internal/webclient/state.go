@@ -279,6 +279,7 @@ type Profile struct {
 	AccountID     string    `json:"account_id"`
 	Name          string    `json:"name"`
 	HostID        string    `json:"host_id"`
+	HostCode      string    `json:"host_code"`
 	DeviceID      string    `json:"device_id"`
 	DeviceName    string    `json:"device_name"`
 	EmailVerified bool      `json:"email_verified"`
@@ -300,7 +301,7 @@ func (c *Client) profileLocked() *Profile {
 		return nil
 	}
 	return &Profile{
-		AccountID: a.ID, Name: a.Name, HostID: a.HostID,
+		AccountID: a.ID, Name: a.Name, HostID: a.HostID, HostCode: a.HostCode,
 		DeviceID: a.Device.ID, DeviceName: a.Device.Name,
 		EmailVerified: a.EmailVerified, CreatedAt: a.CreatedAt,
 		RoomCount: len(c.activeRoomsLocked()), VaultPending: a.VaultDirty,

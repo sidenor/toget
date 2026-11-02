@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sidenor/toget/internal/account"
+	"github.com/sidenor/toget/internal/identity"
 )
 
 const (
@@ -26,6 +27,18 @@ const (
 	HealthPath = "/host/v1/health"
 	// InfoPath returns the signed host manifest and OPAQUE configuration.
 	InfoPath = "/host/v1/info"
+	// ResolveAccountPath resolves an account ID to its host and display name.
+	// It requires a signed-in device on this host.
+	ResolveAccountPath = "/host/v1/resolve"
+	// AccountLookupPrefix is the public per-account lookup endpoint. The host
+	// signs the response, and only public profile fields are returned.
+	AccountLookupPrefix = "/host/v1/accounts/"
+	// FriendRequestPath creates one sealed friend request.
+	FriendRequestPath = "/host/v1/friends/requests"
+	// FriendRequestListPath lists requests addressed to the current device.
+	FriendRequestListPath = "/host/v1/friends/requests/list"
+	// FriendRequestDeletePath declines or dismisses one request.
+	FriendRequestDeletePath = "/host/v1/friends/requests/delete"
 	// RegisterBeginPath reserves an account ID and starts OPAQUE registration.
 	RegisterBeginPath = "/host/v1/account/register/begin"
 	// RegisterFinishPath completes registration with the client record and blobs.
@@ -83,6 +96,15 @@ const (
 	VerifyTokenTTL = 24 * time.Hour
 	// ResetTokenTTL is the lifetime of a password-reset link.
 	ResetTokenTTL = 30 * time.Minute
+	// FriendRequestTTL is how long a pending friend request stays visible.
+	FriendRequestTTL = 7 * 24 * time.Hour
+	// MaxFriendRequestsPerAccount bounds pending outgoing requests.
+	MaxFriendRequestsPerAccount = 100
+	// MaxFriendRequestSeals bounds the devices one request can address.
+	MaxFriendRequestSeals = 64
+	// MaxFriendRequestSealLength bounds one sealed invite. A 64 KiB invite
+	// grows to about 88 KiB when sealbox base64-encodes it.
+	MaxFriendRequestSealLength = 96 << 10
 )
 
 // Error is the host's structured error body.
@@ -108,6 +130,130 @@ type Info struct {
 	// ResetEnabled reports whether the browser reset page is configured.
 	ResetEnabled bool      `json:"reset_enabled"`
 	IssuedAt     time.Time `json:"issued_at"`
+}
+
+// AccountLookup is a host-signed public profile statement. It proves that the
+// account exists on this host without exposing email, devices, or key material.
+type AccountLookup struct {
+	Protocol  int       `json:"protocol"`
+	AccountID string    `json:"account_id"`
+	Name      string    `json:"name"`
+	HostID    string    `json:"host_id"`
+	HostCode  string    `json:"host_code"`
+	IssuedAt  time.Time `json:"issued_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Signature string    `json:"signature,omitempty"`
+}
+
+// ResolveAccountRequest resolves one 14-digit account ID. The caller must be a
+// signed-in device on this host, which keeps the endpoint from becoming an
+// anonymous account-enumeration proxy.
+type ResolveAccountRequest struct {
+	Protocol  int    `json:"protocol"`
+	AccountID string `json:"account_id"`
+}
+
+// ResolvedDevice is the minimum public material needed to seal a friend
+// request to one of the target account's devices. The key is encoded with
+// identity.EncodeEncryptionPublicKey.
+type ResolvedDevice struct {
+	ID                  string `json:"id"`
+	EncryptionPublicKey string `json:"encryption_public_key"`
+}
+
+// ResolvedAccount is the cross-host account discovery result.
+type ResolvedAccount struct {
+	Protocol   int    `json:"protocol"`
+	AccountID  string `json:"account_id"`
+	Name       string `json:"name,omitempty"`
+	HostID     string `json:"host_id"`
+	HostCode   string `json:"host_code"`
+	HostURL    string `json:"host_url"`
+	ServerName string `json:"server_name,omitempty"`
+	// Kind is "account" for an hosted account or "node" for the owner account
+	// published in a self-hosted node manifest.
+	Kind string `json:"kind"`
+	Self bool   `json:"self"`
+	// Devices is populated only when the target is local to this host. A
+	// friend request is sealed once per active target device.
+	Devices []ResolvedDevice `json:"devices,omitempty"`
+}
+
+// FriendRequestSeal is one invite code sealed to one target device. The
+// sealed value is a sealbox ciphertext whose context binds the request ID,
+// both account IDs, and the room ID.
+type FriendRequestSeal struct {
+	DeviceID string `json:"device_id"`
+	Sealed   string `json:"sealed"`
+}
+
+// FriendRequestCreate asks the host to deliver a sealed invite to another
+// account on the same host.
+type FriendRequestCreate struct {
+	Protocol    int                 `json:"protocol"`
+	ID          string              `json:"id"`
+	ToAccountID string              `json:"to_account_id"`
+	RoomID      string              `json:"room_id"`
+	Seals       []FriendRequestSeal `json:"seals"`
+}
+
+// FriendRequestCreated confirms one stored friend request.
+type FriendRequestCreated struct {
+	Protocol  int       `json:"protocol"`
+	ID        string    `json:"id"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// FriendRequestSummary is one incoming request, with only the ciphertext for
+// the requesting device.
+type FriendRequestSummary struct {
+	ID            string    `json:"id"`
+	FromAccountID string    `json:"from_account_id"`
+	FromName      string    `json:"from_name,omitempty"`
+	RoomID        string    `json:"room_id"`
+	Sealed        string    `json:"sealed"`
+	CreatedAt     time.Time `json:"created_at"`
+	ExpiresAt     time.Time `json:"expires_at"`
+}
+
+// FriendRequestList is the current device's inbox.
+type FriendRequestList struct {
+	Protocol int                    `json:"protocol"`
+	Requests []FriendRequestSummary `json:"requests"`
+}
+
+// FriendRequestDelete declines or dismisses one request. The recipient
+// account must own the request; the device does not need to be able to open
+// the seal.
+type FriendRequestDelete struct {
+	Protocol int    `json:"protocol"`
+	ID       string `json:"id"`
+}
+
+// FriendRequestDeleteResponse reports whether a request was removed.
+type FriendRequestDeleteResponse struct {
+	Protocol int  `json:"protocol"`
+	Deleted  bool `json:"deleted"`
+}
+
+// FriendRequestSealContext binds a seal to its request, both accounts, and
+// the room. The recipient can reproduce it from public metadata, so the host
+// can move a seal but cannot redirect it to another request or room.
+func FriendRequestSealContext(requestID, fromAccountID, toAccountID, roomID string) string {
+	return "toget:friend-request:v1:" + requestID + ":" + fromAccountID + ":" +
+		toAccountID + ":" + roomID
+}
+
+// DirectoryRecord is the neutral, already-verified record shape a directory
+// lookup returns to the account host.
+type DirectoryRecord struct {
+	Kind           string
+	ServerID       string
+	ServerCode     string
+	AccountID      string
+	Endpoint       string
+	TLSFingerprint string
+	HostManifest   *identity.HostManifest
 }
 
 // SealedBlob is one versioned AEAD ciphertext. The algorithm is named so a

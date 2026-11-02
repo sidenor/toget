@@ -505,3 +505,39 @@ func TestConcurrentSendRetries(t *testing.T) {
 		t.Fatalf("concurrent messages = %+v", texts)
 	}
 }
+
+func TestBrowserResolveAccount(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	alice := register(t, f, "Alice", "alice@example.com")
+	profile := alice.Profile()
+	if profile == nil || profile.HostCode == "" {
+		t.Fatalf("profile = %+v", profile)
+	}
+
+	resolved, err := alice.ResolveAccount(ctx, profile.AccountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.AccountID != profile.AccountID || resolved.Name != "Alice" ||
+		resolved.HostCode != profile.HostCode || resolved.Kind != "account" || !resolved.Self {
+		t.Fatalf("resolved = %+v", resolved)
+	}
+
+	if _, err := alice.ResolveAccount(ctx, "123"); err == nil ||
+		webclient.AsError(err).Code != "invalid_account" {
+		t.Fatalf("short id error = %v", err)
+	}
+	if _, err := alice.ResolveAccount(ctx, profile.HostCode+"999999"); err == nil ||
+		webclient.AsError(err).Code != "account_not_found" {
+		t.Fatalf("unknown account error = %v", err)
+	}
+	remoteCode := "00000000"
+	if profile.HostCode == remoteCode {
+		remoteCode = "00000001"
+	}
+	if _, err := alice.ResolveAccount(ctx, remoteCode+profile.AccountID[8:]); err == nil ||
+		webclient.AsError(err).Code != "directory_disabled" {
+		t.Fatalf("remote account error = %v", err)
+	}
+}

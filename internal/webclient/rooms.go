@@ -484,6 +484,10 @@ func (c *Client) CreateInvite(ctx context.Context, roomID string, input InviteIn
 func (c *Client) JoinInvite(ctx context.Context, rawCode string) (*RoomView, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.joinInviteLocked(ctx, rawCode)
+}
+
+func (c *Client) joinInviteLocked(ctx context.Context, rawCode string) (*RoomView, error) {
 	if c.state.Account == nil {
 		return nil, Errorf("signed_out", "还没有登录。")
 	}

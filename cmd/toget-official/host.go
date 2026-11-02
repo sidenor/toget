@@ -45,6 +45,8 @@ type hostOptions struct {
 	RoomDeviceLimit int
 	TrustedProxies  []string
 	TrustCloudflare bool
+	DirectoryLookup func(context.Context, string) (*hosted.DirectoryRecord, error)
+	DirectoryMount  http.Handler
 }
 
 type accountHost struct {
@@ -149,6 +151,7 @@ func startAccountHost(parent context.Context, paths config.Paths, options hostOp
 		RoomMemberLimit: options.RoomMemberLimit,
 		RoomDeviceLimit: options.RoomDeviceLimit,
 		TrustedProxies:  trustedProxies,
+		DirectoryLookup: options.DirectoryLookup,
 	})
 	if err != nil {
 		cleanup()
@@ -167,7 +170,14 @@ func startAccountHost(parent context.Context, paths config.Paths, options hostOp
 		}
 		siteFS = os.DirFS(dir)
 	}
-	handler, err := siteserve.NewRouter(service.Handler(), siteFS)
+	api := service.Handler()
+	if options.DirectoryMount != nil {
+		mux := http.NewServeMux()
+		mux.Handle("/directory/", options.DirectoryMount)
+		mux.Handle("/", api)
+		api = mux
+	}
+	handler, err := siteserve.NewRouter(api, siteFS)
 	if err != nil {
 		cleanup()
 		return nil, err

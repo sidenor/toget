@@ -72,6 +72,9 @@ type Options struct {
 	// applies the default caps; values below one are rejected by New.
 	RoomMemberLimit int
 	RoomDeviceLimit int
+	// DirectoryLookup resolves a server code to an already-verified directory
+	// record. Nil disables cross-host account discovery.
+	DirectoryLookup func(ctx context.Context, serverCode string) (*DirectoryRecord, error)
 	// Now is overridden in tests.
 	Now func() time.Time
 }
@@ -100,6 +103,8 @@ type Service struct {
 
 	limiter  *rateLimiter
 	failures *loginFailures
+
+	directoryLookup func(ctx context.Context, serverCode string) (*DirectoryRecord, error)
 }
 
 type pendingLogin struct {
@@ -157,10 +162,11 @@ func New(options Options) (*Service, error) {
 		now: now, rateLimited: !options.DisableRateLimit,
 		trustedProxies:  append([]netip.Prefix(nil), options.TrustedProxies...),
 		roomMemberLimit: memberLimit, roomDeviceLimit: deviceLimit,
-		logins:       make(map[string]*pendingLogin),
-		deviceNonces: requestauth.NewNonceCache(),
-		limiter:      newRateLimiter(),
-		failures:     newLoginFailures(),
+		logins:          make(map[string]*pendingLogin),
+		deviceNonces:    requestauth.NewNonceCache(),
+		limiter:         newRateLimiter(),
+		failures:        newLoginFailures(),
+		directoryLookup: options.DirectoryLookup,
 	}, nil
 }
 
@@ -183,6 +189,8 @@ func (s *Service) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+HealthPath, s.handleHealth)
 	mux.HandleFunc("GET "+InfoPath, s.handleInfo)
+	mux.HandleFunc("GET "+AccountLookupPrefix+"{accountID}", s.handleAccountLookup)
+	mux.HandleFunc("POST "+ResolveAccountPath, s.handleResolveAccount)
 	mux.HandleFunc("POST "+RegisterBeginPath, s.handleRegisterBegin)
 	mux.HandleFunc("POST "+RegisterFinishPath, s.handleRegisterFinish)
 	mux.HandleFunc("POST "+LoginBeginPath, s.handleLoginBegin)
@@ -201,6 +209,9 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("POST "+RoomLeavePath, s.handleRoomLeave)
 	mux.HandleFunc("POST "+RoomRotatePath, s.handleRoomRotate)
 	mux.HandleFunc("POST "+RoomDevicesPath, s.handleRoomDevices)
+	mux.HandleFunc("POST "+FriendRequestPath, s.handleFriendRequestCreate)
+	mux.HandleFunc("POST "+FriendRequestListPath, s.handleFriendRequestList)
+	mux.HandleFunc("POST "+FriendRequestDeletePath, s.handleFriendRequestDelete)
 	mux.HandleFunc("POST "+PasswordBeginPath, s.handlePasswordBegin)
 	mux.HandleFunc("POST "+PasswordFinishPath, s.handlePasswordFinish)
 	mux.HandleFunc("POST "+RecoveryRotatePath, s.handleRecoveryRotate)

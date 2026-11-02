@@ -16,6 +16,7 @@ export interface Profile {
   account_id: string;
   name: string;
   host_id: string;
+  host_code: string;
   device_id: string;
   device_name: string;
   email_verified: boolean;
@@ -125,6 +126,41 @@ export interface InviteResult {
 export interface FriendInviteResult {
   room: RoomView;
   invite: InviteResult;
+}
+
+export interface ResolvedDevice {
+  id: string;
+  encryption_public_key: string;
+}
+
+export interface ResolvedAccount {
+  protocol: number;
+  account_id: string;
+  name?: string;
+  host_id: string;
+  host_code: string;
+  host_url: string;
+  server_name?: string;
+  kind: "account" | "node";
+  self: boolean;
+  devices?: ResolvedDevice[];
+}
+
+export interface FriendRequestSent {
+  id: string;
+  expires_at: string;
+}
+
+export interface FriendRequestView {
+  id: string;
+  from_account_id: string;
+  from_name?: string;
+  room_id: string;
+  room_name?: string;
+  room_topic?: string;
+  code: string;
+  created_at: string;
+  expires_at: string;
 }
 
 export interface ApiError {

@@ -194,6 +194,42 @@ func dispatch(ctx context.Context, client *webclient.Client, op, payload string)
 			return nil, webclient.Errorf("invalid_request", "邀请码格式不正确。")
 		}
 		return client.JoinInvite(ctx, input.Code)
+	case "resolveAccount":
+		var input struct {
+			AccountID string `json:"account_id"`
+		}
+		if err := decode(payload, &input); err != nil || input.AccountID == "" {
+			return nil, webclient.Errorf("invalid_request", "账号 ID 格式不正确。")
+		}
+		return client.ResolveAccount(ctx, input.AccountID)
+	case "addFriend":
+		var input struct {
+			AccountID string                          `json:"account_id"`
+			Name      string                          `json:"name"`
+			Devices   []webclient.FriendRequestDevice `json:"devices"`
+		}
+		if err := decode(payload, &input); err != nil || input.AccountID == "" {
+			return nil, webclient.Errorf("invalid_request", "好友信息格式不正确。")
+		}
+		return client.AddFriend(ctx, input.AccountID, input.Name, input.Devices)
+	case "listFriendRequests":
+		return client.ListFriendRequests(ctx)
+	case "acceptFriendRequest":
+		var input struct {
+			RequestID string `json:"request_id"`
+		}
+		if err := decode(payload, &input); err != nil || input.RequestID == "" {
+			return nil, webclient.Errorf("invalid_request", "好友申请格式不正确。")
+		}
+		return client.AcceptFriendRequest(ctx, input.RequestID)
+	case "declineFriendRequest":
+		var input struct {
+			RequestID string `json:"request_id"`
+		}
+		if err := decode(payload, &input); err != nil || input.RequestID == "" {
+			return nil, webclient.Errorf("invalid_request", "好友申请格式不正确。")
+		}
+		return map[string]bool{"ok": true}, client.DeclineFriendRequest(ctx, input.RequestID)
 	case "renameRoom":
 		var input struct {
 			RoomID string `json:"room_id"`
