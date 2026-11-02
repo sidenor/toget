@@ -105,6 +105,66 @@ func TestBrowserFriendRequestByID(t *testing.T) {
 	}
 }
 
+func friendDevices(t *testing.T, client *webclient.Client, accountID string) []webclient.FriendRequestDevice {
+	t.Helper()
+	resolved, err := client.ResolveAccount(context.Background(), accountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	devices := make([]webclient.FriendRequestDevice, 0, len(resolved.Devices))
+	for _, device := range resolved.Devices {
+		devices = append(devices, webclient.FriendRequestDevice{
+			ID: device.ID, EncryptionPublicKey: device.EncryptionPublicKey,
+		})
+	}
+	return devices
+}
+
+func TestBrowserCannotAddSelfAsFriend(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	alice := register(t, f, "Alice", "alice@example.com")
+	if _, err := alice.AddFriend(ctx, alice.Profile().AccountID, "Alice", nil); err == nil {
+		t.Fatal("adding yourself as a friend succeeded")
+	} else if coded := webclient.AsError(err); coded == nil || coded.Code != "friend_request_self" {
+		t.Fatalf("self friend request error = %v", err)
+	}
+}
+
+func TestBrowserFriendRequestCancelIsSenderScoped(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	alice := register(t, f, "Alice", "alice@example.com")
+	bob := register(t, f, "Bob", "bob@example.com")
+	charlie := register(t, f, "Charlie", "charlie@example.com")
+	bobID := bob.Profile().AccountID
+
+	sent, err := charlie.AddFriend(ctx, bobID, "Bob", friendDevices(t, charlie, bobID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Alice does not own Charlie's request and must not be able to cancel it.
+	if err := alice.CancelFriendRequest(ctx, sent.ID); err == nil {
+		t.Fatal("alice cancelled charlie's friend request")
+	} else if coded := webclient.AsError(err); coded == nil || coded.Code != "friend_request_not_found" {
+		t.Fatalf("foreign cancel error = %v", err)
+	}
+	outgoing, err := charlie.ListSentFriendRequests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outgoing) != 1 || outgoing[0].ID != sent.ID {
+		t.Fatalf("charlie sent requests after foreign cancel = %+v", outgoing)
+	}
+	inbox, err := bob.ListFriendRequests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inbox) != 1 || inbox[0].FromName != "Charlie" {
+		t.Fatalf("bob inbox after foreign cancel = %+v", inbox)
+	}
+}
+
 func TestBrowserSentFriendRequestsAndCancel(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
