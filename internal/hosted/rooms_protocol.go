@@ -194,16 +194,12 @@ type RoomInviteResponse struct {
 // RoomJoinRequest redeems an invitation. The caller is not yet a room device,
 // so the host authenticates its hosted-account device certificate directly.
 //
-// SecretHash is the SHA-256 of the invite secret. Clients must send only the
-// hash: the host stores the epoch keys wrapped under the secret, so handing it
-// the secret itself would let the host unwrap them. Secret is accepted from
-// older clients during the protocol transition and must not be sent by new
-// clients.
+// SecretHash is the SHA-256 of the invite secret. The host stores the epoch
+// keys wrapped under the secret, so it must never receive the secret itself.
 type RoomJoinRequest struct {
 	Protocol   int           `json:"protocol"`
 	RoomID     string        `json:"room_id"`
-	SecretHash []byte        `json:"secret_hash,omitempty"`
-	Secret     string        `json:"secret,omitempty"`
+	SecretHash []byte        `json:"secret_hash"`
 	Device     RoomDeviceRef `json:"device"`
 }
 

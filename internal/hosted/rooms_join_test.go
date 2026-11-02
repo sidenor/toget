@@ -1,35 +1,29 @@
 package hosted
 
 import (
-	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"testing"
 )
 
-func TestJoinSecretHash(t *testing.T) {
-	secret := "0123456789abcdef0123456789abcdef"
-	sum := sha256.Sum256([]byte(secret))
-	tests := []struct {
-		name string
-		req  RoomJoinRequest
-		want []byte
-		ok   bool
-	}{
-		{name: "hash", req: RoomJoinRequest{SecretHash: sum[:]}, want: sum[:], ok: true},
-		{name: "legacy secret", req: RoomJoinRequest{Secret: secret}, want: sum[:], ok: true},
-		{name: "missing", req: RoomJoinRequest{}, ok: false},
-		{name: "short legacy secret", req: RoomJoinRequest{Secret: "short"}, ok: false},
-		{name: "bad hash length", req: RoomJoinRequest{SecretHash: sum[:16]}, ok: false},
+func TestRoomJoinDecodeRequiresSecretHash(t *testing.T) {
+	sum := sha256.Sum256([]byte("0123456789abcdef0123456789abcdef"))
+	valid, err := json.Marshal(RoomJoinRequest{
+		Protocol: Protocol, RoomID: "room", SecretHash: sum[:],
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got, ok := joinSecretHash(tc.req)
-			if ok != tc.ok {
-				t.Fatalf("ok = %v, want %v", ok, tc.ok)
-			}
-			if !bytes.Equal(got, tc.want) {
-				t.Fatalf("hash = %x, want %x", got, tc.want)
-			}
-		})
+	var request RoomJoinRequest
+	if err := decodeRoomBody(valid, &request); err != nil {
+		t.Fatalf("decode secret_hash request: %v", err)
+	}
+	if len(request.SecretHash) != sha256.Size {
+		t.Fatalf("secret_hash length = %d", len(request.SecretHash))
+	}
+
+	legacy := []byte(`{"protocol":1,"room_id":"room","secret":"0123456789abcdef0123456789abcdef","device":{}}`)
+	if err := decodeRoomBody(legacy, &request); err == nil {
+		t.Fatal("legacy raw-secret join request was accepted")
 	}
 }
