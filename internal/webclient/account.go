@@ -404,11 +404,18 @@ func (c *Client) refreshSessionLocked(ctx context.Context, client *hosted.Client
 	return nil
 }
 
+// hostedClient returns the pinned-by-identity browser client for the account
+// host. Browser clients learn the host identity from the signed manifest, so
+// the transport is cached but still verified on first use.
 func (c *Client) hostedClient() (*hosted.Client, error) {
+	if c.accountClient != nil {
+		return c.accountClient, nil
+	}
 	client, err := hosted.NewBrowserClient(c.origin)
 	if err != nil {
 		return nil, Errorf("internal", "无法连接服务器。")
 	}
+	c.accountClient = client
 	return client, nil
 }
 

@@ -43,6 +43,11 @@ const (
 	FriendRequestSentPath = "/host/v1/friends/requests/sent"
 	// FriendRequestCancelPath withdraws one request before it is answered.
 	FriendRequestCancelPath = "/host/v1/friends/requests/cancel"
+	// HeaderDeviceCertificate carries a base64url account-signed device
+	// certificate when a device talks to a host that is not its account host.
+	// The host uses it to bind a remote device to its account after checking
+	// the account's federated device list.
+	HeaderDeviceCertificate = "X-Toget-Device-Certificate"
 	// RegisterBeginPath reserves an account ID and starts OPAQUE registration.
 	RegisterBeginPath = "/host/v1/account/register/begin"
 	// RegisterFinishPath completes registration with the client record and blobs.

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sidenor/toget/internal/hosted"
 	roompkg "github.com/sidenor/toget/internal/room"
 )
 
@@ -185,6 +186,11 @@ type Client struct {
 	origin string
 	now    func() time.Time
 	state  State
+	// accountClient talks to the host that owns the account and vault.
+	accountClient *hosted.Client
+	// roomClients are additional hosts that own rooms this account joined.
+	// They are ephemeral and never part of the exported state.
+	roomClients map[string]*hosted.Client
 	// recovery is only populated by Register and must be shown and discarded
 	// before the page leaves the onboarding flow.
 	recovery *RecoveryFile
@@ -212,6 +218,8 @@ func (c *Client) Restore(encoded string) error {
 	defer c.mu.Unlock()
 	if strings.TrimSpace(encoded) == "" {
 		c.state = State{Version: StateVersion}
+		c.accountClient = nil
+		c.roomClients = nil
 		return nil
 	}
 	var state State
@@ -232,6 +240,8 @@ func (c *Client) Restore(encoded string) error {
 		}
 	}
 	c.state = state
+	c.accountClient = nil
+	c.roomClients = nil
 	return nil
 }
 
@@ -314,6 +324,8 @@ func (c *Client) Logout() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.state = State{Version: StateVersion}
+	c.accountClient = nil
+	c.roomClients = nil
 	c.recovery = nil
 	return nil
 }

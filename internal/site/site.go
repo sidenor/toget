@@ -20,7 +20,7 @@ import (
 
 const (
 	contentSecurityPolicy = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; " +
-		"img-src 'self' data:; font-src 'self'; connect-src 'self'; " +
+		"img-src 'self' data:; font-src 'self'; connect-src 'self' https:; " +
 		"manifest-src 'self'; base-uri 'none'; form-action 'none'; " +
 		"frame-ancestors 'none'"
 	assetCache  = "public, max-age=31536000, immutable"

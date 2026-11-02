@@ -14,6 +14,10 @@ type RoomSigner struct {
 	AccountID  string
 	DeviceID   string
 	PrivateKey ed25519.PrivateKey
+	// Certificate is the account-signed device certificate. It is sent when
+	// the room host is not the device's account host, so that host can bind
+	// the remote device to its account.
+	Certificate string
 }
 
 func (s RoomSigner) valid() bool {
@@ -24,7 +28,8 @@ func (c *Client) doRoom(ctx context.Context, path string, signer RoomSigner, req
 	if !signer.valid() {
 		return errors.New("room signer is incomplete")
 	}
-	return c.doDeviceSigned(ctx, path, signer.AccountID, signer.DeviceID, signer.PrivateKey, request, response)
+	return c.doDeviceSigned(ctx, path, signer.AccountID, signer.DeviceID,
+		signer.PrivateKey, signer.Certificate, request, response)
 }
 
 // CreateRoom creates a blind hosted room.

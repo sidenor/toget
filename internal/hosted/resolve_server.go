@@ -5,7 +5,6 @@ package hosted
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -122,6 +121,12 @@ func (s *Service) resolveAccount(ctx context.Context, accountID string) (*Resolv
 			Kind: "account", Devices: resolvedDevices,
 		}, nil
 	}
+	// A cached federated record is enough to resolve even while the directory
+	// is briefly unavailable.
+	now := s.now().UTC()
+	if cached, err := s.cachedRemoteAccount(ctx, accountID, now); err == nil {
+		return resolvedRemoteAccount(cached, now)
+	}
 	if s.directoryLookup == nil {
 		return nil, errDirectoryDisabled
 	}
@@ -137,37 +142,11 @@ func (s *Service) resolveAccount(ctx context.Context, accountID string) (*Resolv
 	}
 	switch record.Kind {
 	case "host":
-		manifest := record.HostManifest
-		if manifest == nil || manifest.ServerID != record.ServerID ||
-			manifest.ServerCode != serverCode {
-			return nil, errAccountNotFound
-		}
-		hostURL := manifest.URL
-		if manifest.TLSFingerprint != "" {
-			hostURL += "#fp=" + manifest.TLSFingerprint
-		} else {
-			hostURL += "#id=" + manifest.ServerID
-		}
-		client, err := NewClient(hostURL)
+		remote, err := s.fetchRemoteAccount(ctx, record, accountID)
 		if err != nil {
 			return nil, err
 		}
-		lookup, err := client.LookupAccount(ctx, accountID)
-		if err != nil {
-			if errors.Is(err, ErrHostUnavailable) {
-				return nil, fmt.Errorf("account host is unreachable: %w", err)
-			}
-			var apiError *APIError
-			if errors.As(err, &apiError) && apiError.Status == http.StatusNotFound {
-				return nil, errAccountNotFound
-			}
-			return nil, err
-		}
-		return &ResolvedAccount{
-			Protocol: Protocol, AccountID: lookup.AccountID, Name: lookup.Name,
-			HostID: lookup.HostID, HostCode: lookup.HostCode,
-			HostURL: manifest.URL, ServerName: manifest.Name, Kind: "account",
-		}, nil
+		return resolvedRemoteAccount(remote, now)
 	case "node":
 		if record.AccountID != accountID {
 			return nil, errAccountNotFound

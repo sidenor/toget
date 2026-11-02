@@ -110,9 +110,9 @@ func (c *Client) Room(roomID string) (*RoomView, error) {
 	return c.viewLocked(roomState), nil
 }
 
-// RefreshRooms reconciles the account's room memberships with the host. A
-// browser that signed in on a new device adds itself to each active room and
-// then syncs with the keys restored from the encrypted vault.
+// RefreshRooms reconciles the account's room memberships with the hosts that
+// own them. The account host lists local rooms; remote rooms survive from the
+// encrypted vault and are synced against the host named in their state.
 func (c *Client) RefreshRooms(ctx context.Context) (*RefreshResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -142,13 +142,15 @@ func (c *Client) RefreshRooms(ctx context.Context) (*RefreshResult, error) {
 			active[entry.Room.ID] = entry
 		}
 	}
-	// Drop rooms the account is no longer an active member of.
+	// Drop local rooms the account no longer belongs to. A remote room is not
+	// listed by the account host, so keep it and sync it below.
 	kept := c.state.Rooms[:0]
 	for _, roomState := range c.state.Rooms {
 		if roomState == nil {
 			continue
 		}
-		if _, ok := active[roomState.ID]; ok || roomState.Left {
+		if _, ok := active[roomState.ID]; ok || roomState.Left ||
+			roomState.HostID != c.state.Account.HostID {
 			kept = append(kept, roomState)
 		}
 	}
@@ -171,6 +173,10 @@ func (c *Client) RefreshRooms(ctx context.Context) (*RefreshResult, error) {
 			}
 			c.upsertRoomLocked(roomState)
 		}
+		// A membership listed by the account host always belongs to it, even
+		// if an older vault entry recorded something else.
+		roomState.HomeURL = c.origin
+		roomState.HostID = c.state.Account.HostID
 		roomState.Head = entry.Room.Head
 		if entry.Room.Epoch > roomState.Epoch {
 			roomState.Epoch = entry.Room.Epoch
@@ -180,6 +186,25 @@ func (c *Client) RefreshRooms(ctx context.Context) (*RefreshResult, error) {
 			continue
 		}
 		if _, err := c.syncRoomLocked(ctx, client, roomState); err != nil {
+			result.Warnings = append(result.Warnings, c.roomWarningLocked(roomState, err))
+		}
+	}
+	// Sync rooms joined on other servers without letting one unreachable host
+	// hide every other room.
+	for _, roomState := range c.activeRoomsLocked() {
+		if roomState.HostID == c.state.Account.HostID {
+			continue
+		}
+		roomClient, err := c.roomClientLocked(ctx, roomState)
+		if err != nil {
+			result.Warnings = append(result.Warnings, c.roomWarningLocked(roomState, err))
+			continue
+		}
+		if err := c.ensureRoomDeviceLocked(ctx, roomClient, roomState); err != nil {
+			result.Warnings = append(result.Warnings, c.roomWarningLocked(roomState, err))
+			continue
+		}
+		if _, err := c.syncRoomLocked(ctx, roomClient, roomState); err != nil {
 			result.Warnings = append(result.Warnings, c.roomWarningLocked(roomState, err))
 		}
 	}
@@ -195,7 +220,7 @@ func (c *Client) SyncRoom(ctx context.Context, roomID string) (*RoomView, error)
 	if roomState == nil {
 		return nil, Errorf("room_not_found", "找不到这个房间。")
 	}
-	client, err := c.hostedClient()
+	client, err := c.roomClientLocked(ctx, roomState)
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +313,7 @@ func (c *Client) CreateRoom(ctx context.Context, input CreateRoomInput) (*RoomVi
 	}
 	c.upsertRoomLocked(roomState)
 	c.applyOpenedEventLocked(roomState, event, actor.DisplayName)
-	if err := c.saveVaultLocked(ctx, client); err != nil {
+	if err := c.saveVaultLocked(ctx); err != nil {
 		c.state.Account.VaultDirty = true
 	}
 	return c.viewLocked(roomState), nil
@@ -312,7 +337,7 @@ func (c *Client) SendMessage(ctx context.Context, roomID, text string) (*Message
 	if roomState == nil {
 		return nil, Errorf("room_not_found", "找不到这个房间。")
 	}
-	client, err := c.hostedClient()
+	client, err := c.roomClientLocked(ctx, roomState)
 	if err != nil {
 		return nil, err
 	}
@@ -345,7 +370,7 @@ func (c *Client) SendMessage(ctx context.Context, roomID, text string) (*Message
 			c.advanceAnchorLocked(roomState, *event)
 			roomState.Head = response.Head
 			roomState.UpdatedAt = now
-			if err := c.saveVaultLocked(ctx, client); err != nil {
+			if err := c.saveVaultLocked(ctx); err != nil {
 				c.state.Account.VaultDirty = true
 			}
 			return c.findMessageLocked(roomState, event.ID), nil
@@ -367,7 +392,7 @@ func (c *Client) SendMessage(ctx context.Context, roomID, text string) (*Message
 			}
 		}
 		if vaultWanted {
-			_ = c.saveVaultLocked(ctx, client)
+			_ = c.saveVaultLocked(ctx)
 		}
 	}
 	return nil, mapRoomError(lastErr)
@@ -403,7 +428,7 @@ func (c *Client) CreateInvite(ctx context.Context, roomID string, input InviteIn
 	if ttl > hosted.RoomInviteTTL {
 		ttl = hosted.RoomInviteTTL
 	}
-	client, err := c.hostedClient()
+	client, err := c.roomClientLocked(ctx, roomState)
 	if err != nil {
 		return nil, err
 	}
@@ -458,11 +483,15 @@ func (c *Client) CreateInvite(ctx context.Context, roomID string, input InviteIn
 			c.advanceAnchorLocked(roomState, *event)
 			roomState.Head = event.Seq
 			roomState.UpdatedAt = now
-			if err := c.saveVaultLocked(ctx, client); err != nil {
+			if err := c.saveVaultLocked(ctx); err != nil {
 				c.state.Account.VaultDirty = true
 			}
+			inviteHostURL, inviteHostID, err := c.roomInviteHostLocked(roomState)
+			if err != nil {
+				return nil, err
+			}
 			code, err := encodeOfficialInvite(inviteCode{
-				Secret: secret, URL: c.hostURLWithIDLocked(), ServerID: c.state.Account.HostID,
+				Secret: secret, URL: inviteHostURL, ServerID: inviteHostID,
 				RoomID: roomState.ID, RoomName: roomState.Name, RoomTopic: roomState.Topic,
 				RoomKind: roomState.Kind,
 			})
@@ -491,19 +520,20 @@ func (c *Client) joinInviteLocked(ctx context.Context, rawCode string) (*RoomVie
 	if c.state.Account == nil {
 		return nil, Errorf("signed_out", "还没有登录。")
 	}
-	code, err := decodeOfficialInvite(rawCode, c.origin, c.state.Account.HostID)
+	code, err := decodeOfficialInvite(rawCode)
 	if err != nil {
 		return nil, err
 	}
 	if existing := c.roomLocked(code.RoomID); existing != nil {
-		client, clientErr := c.hostedClient()
-		if clientErr == nil {
+		if existing.HostID != code.ServerID {
+			return nil, Errorf("wrong_host", "这个邀请来自另一个服务器。")
+		}
+		if client, clientErr := c.roomClientLocked(ctx, existing); clientErr == nil {
 			_, _ = c.syncRoomLocked(ctx, client, existing)
-			return c.viewLocked(existing), nil
 		}
 		return c.viewLocked(existing), nil
 	}
-	client, err := c.hostedClient()
+	client, err := c.inviteClientLocked(ctx, code)
 	if err != nil {
 		return nil, err
 	}
@@ -519,7 +549,7 @@ func (c *Client) joinInviteLocked(ctx context.Context, rawCode string) (*RoomVie
 	}
 	roomState := &RoomState{
 		ID: code.RoomID, Name: code.RoomName, Topic: code.RoomTopic, Kind: code.RoomKind,
-		HomeURL: c.origin, HostID: c.state.Account.HostID,
+		HomeURL: client.Origin(), HostID: code.ServerID,
 		OwnerAccountID: response.Room.OwnerAccountID, Epoch: maxInt(response.Room.Epoch, 1),
 		Head: response.Room.Head, History: response.History, JoinedAt: response.JoinedAt,
 		Keys: map[int][]byte{}, DeviceRegistered: true,
@@ -550,7 +580,7 @@ func (c *Client) joinInviteLocked(ctx context.Context, rawCode string) (*RoomVie
 		c.anchorAtHeadLocked(roomState, response.Room)
 	}
 	roomState.ReadSeq = roomState.LastSeq
-	if err := c.saveVaultLocked(ctx, client); err != nil {
+	if err := c.saveVaultLocked(ctx); err != nil {
 		c.state.Account.VaultDirty = true
 	}
 	return c.viewLocked(roomState), nil
@@ -569,7 +599,7 @@ func (c *Client) RenameRoom(ctx context.Context, roomID, name, topic string) (*R
 	if name == "" || len([]rune(name)) > maxRoomNameRunes || len([]rune(topic)) > maxRoomTopicRunes {
 		return nil, Errorf("invalid_name", "房间名称或说明格式不正确。")
 	}
-	client, err := c.hostedClient()
+	client, err := c.roomClientLocked(ctx, roomState)
 	if err != nil {
 		return nil, err
 	}
@@ -599,7 +629,7 @@ func (c *Client) RenameRoom(ctx context.Context, roomID, name, topic string) (*R
 	c.advanceAnchorLocked(roomState, *event)
 	roomState.Head = response.Head
 	roomState.UpdatedAt = now
-	if err := c.saveVaultLocked(ctx, client); err != nil {
+	if err := c.saveVaultLocked(ctx); err != nil {
 		c.state.Account.VaultDirty = true
 	}
 	return c.viewLocked(roomState), nil
@@ -613,16 +643,15 @@ func (c *Client) LeaveRoom(ctx context.Context, roomID string) error {
 	if roomState == nil {
 		return Errorf("room_not_found", "找不到这个房间。")
 	}
-	client, err := c.hostedClient()
+	return c.leaveRoomLocked(ctx, roomState)
+}
+
+// leaveRoomLocked is LeaveRoom for callers that already hold the client lock.
+func (c *Client) leaveRoomLocked(ctx context.Context, roomState *RoomState) error {
+	client, err := c.roomClientLocked(ctx, roomState)
 	if err != nil {
 		return err
 	}
-	return c.leaveRoomLocked(ctx, client, roomState)
-}
-
-// leaveRoomLocked is LeaveRoom for callers that already hold the client lock
-// and the hosted client.
-func (c *Client) leaveRoomLocked(ctx context.Context, client *hosted.Client, roomState *RoomState) error {
 	if err := c.ensureRoomDeviceLocked(ctx, client, roomState); err != nil {
 		return err
 	}
@@ -647,7 +676,7 @@ func (c *Client) leaveRoomLocked(ctx context.Context, client *hosted.Client, roo
 		}
 	}
 	c.state.Rooms = removeRoom(c.state.Rooms, roomState.ID)
-	if err := c.saveVaultLocked(ctx, client); err != nil {
+	if err := c.saveVaultLocked(ctx); err != nil {
 		c.state.Account.VaultDirty = true
 	}
 	return nil
@@ -669,11 +698,7 @@ func (c *Client) MarkRead(ctx context.Context, roomID string, seq int64) error {
 	}
 	roomState.ReadSeq = seq
 	roomState.UpdatedAt = c.now().UTC()
-	client, err := c.hostedClient()
-	if err != nil {
-		return nil
-	}
-	if err := c.saveVaultLocked(ctx, client); err != nil {
+	if err := c.saveVaultLocked(ctx); err != nil {
 		c.state.Account.VaultDirty = true
 	}
 	return nil
@@ -681,10 +706,13 @@ func (c *Client) MarkRead(ctx context.Context, roomID string, seq int64) error {
 
 func (c *Client) attachExistingRoomLocked(ctx context.Context, client *hosted.Client, code *inviteCode) (*RoomView, error) {
 	roomState := c.roomLocked(code.RoomID)
+	if roomState != nil && roomState.HostID != code.ServerID {
+		return nil, Errorf("wrong_host", "这个邀请来自另一个服务器。")
+	}
 	if roomState == nil {
 		roomState = &RoomState{
-			ID: code.RoomID, Name: code.RoomName, Topic: code.RoomTopic,
-			HomeURL: c.origin, HostID: c.state.Account.HostID,
+			ID: code.RoomID, Name: code.RoomName, Topic: code.RoomTopic, Kind: code.RoomKind,
+			HomeURL: client.Origin(), HostID: code.ServerID,
 			History: room.HistoryNone, Keys: map[int][]byte{}, JoinedAt: c.now().UTC(),
 		}
 		c.upsertRoomLocked(roomState)
@@ -798,7 +826,7 @@ func (c *Client) syncRoomLocked(ctx context.Context, client *hosted.Client, room
 	}
 	roomState.UpdatedAt = c.now().UTC()
 	if vaultWanted {
-		if err := c.saveVaultLocked(ctx, client); err != nil {
+		if err := c.saveVaultLocked(ctx); err != nil {
 			c.state.Account.VaultDirty = true
 		}
 	}
@@ -862,7 +890,7 @@ func (c *Client) rotateRoomLocked(ctx context.Context, client *hosted.Client, ro
 	roomState.Head = response.Room.Head
 	roomState.RotationRequired = false
 	roomState.UpdatedAt = now
-	if err := c.saveVaultLocked(ctx, client); err != nil {
+	if err := c.saveVaultLocked(ctx); err != nil {
 		c.state.Account.VaultDirty = true
 	}
 	return event, nil
@@ -1269,10 +1297,75 @@ func (c *Client) summariesLocked() []RoomSummary {
 	return summaries
 }
 
+// roomClientLocked returns the client for the host that owns the room.
+func (c *Client) roomClientLocked(ctx context.Context, roomState *RoomState) (*hosted.Client, error) {
+	return c.clientForHostLocked(ctx, roomState.HostID, roomState.HomeURL)
+}
+
+// roomInviteHostLocked returns the self-pinned URL and host ID to embed in an
+// invite for this room.
+func (c *Client) roomInviteHostLocked(roomState *RoomState) (string, string, error) {
+	if roomState.HostID == "" {
+		return "", "", Errorf("invalid_host", "房间服务器身份缺失。")
+	}
+	if c.state.Account != nil && roomState.HostID == c.state.Account.HostID {
+		return c.hostURLWithIDLocked(), roomState.HostID, nil
+	}
+	home := strings.TrimSuffix(strings.TrimSpace(roomState.HomeURL), "/")
+	if home == "" {
+		return "", "", Errorf("invalid_host", "房间服务器地址缺失，请重新加入房间。")
+	}
+	return home + "#id=" + roomState.HostID, roomState.HostID, nil
+}
+
+func (c *Client) inviteClientLocked(ctx context.Context, code *inviteCode) (*hosted.Client, error) {
+	parsed, err := account.ParseHostURL(code.URL)
+	if err != nil || parsed.HostID != code.ServerID {
+		return nil, Errorf("invalid_invite", "邀请地址无效。")
+	}
+	return c.clientForHostLocked(ctx, code.ServerID, parsed.Origin)
+}
+
+// clientForHostLocked returns a cached browser client whose signed host
+// identity matches hostID. The first request to a new host verifies that
+// identity before anything is sent to it.
+func (c *Client) clientForHostLocked(ctx context.Context, hostID, homeURL string) (*hosted.Client, error) {
+	if hostID == "" {
+		return nil, Errorf("invalid_host", "房间服务器身份缺失。")
+	}
+	if c.state.Account != nil && hostID == c.state.Account.HostID {
+		return c.hostedClient()
+	}
+	if client := c.roomClients[hostID]; client != nil {
+		return client, nil
+	}
+	homeURL = strings.TrimSuffix(strings.TrimSpace(homeURL), "/")
+	if homeURL == "" {
+		return nil, Errorf("invalid_host", "房间服务器地址缺失，请重新加入房间。")
+	}
+	client, err := hosted.NewBrowserClient(homeURL)
+	if err != nil {
+		return nil, Errorf("invalid_host", "房间服务器地址无效。")
+	}
+	info, err := client.Info(ctx)
+	if err != nil {
+		return nil, mapHostError(err)
+	}
+	if info.HostID != hostID {
+		return nil, Errorf("invalid_host", "房间服务器身份校验失败。")
+	}
+	if c.roomClients == nil {
+		c.roomClients = make(map[string]*hosted.Client)
+	}
+	c.roomClients[hostID] = client
+	return client, nil
+}
+
 func (c *Client) signerLocked() hosted.RoomSigner {
 	return hosted.RoomSigner{
 		AccountID: c.state.Account.ID, DeviceID: c.state.Account.Device.ID,
-		PrivateKey: c.state.Account.Device.PrivateKey,
+		PrivateKey:  c.state.Account.Device.PrivateKey,
+		Certificate: c.state.Account.Device.Certificate,
 	}
 }
 
@@ -1506,7 +1599,11 @@ func encodeOfficialInvite(code inviteCode) (string, error) {
 	return invitePrefix + base64.RawURLEncoding.EncodeToString(data), nil
 }
 
-func decodeOfficialInvite(raw, origin, hostID string) (*inviteCode, error) {
+// decodeOfficialInvite validates an invite on its own terms: the embedded URL
+// must be pinned to the same host identity as the invite's room host. It does
+// not require the invite to belong to the signed-in account's host, because a
+// room may live on any server.
+func decodeOfficialInvite(raw string) (*inviteCode, error) {
 	raw = strings.TrimSpace(raw)
 	if !strings.HasPrefix(raw, invitePrefix) {
 		return nil, Errorf("invalid_invite", "这不是有效的 Toget 邀请码。")
@@ -1526,15 +1623,9 @@ func decodeOfficialInvite(raw, origin, hostID string) (*inviteCode, error) {
 		len(code.Secret) < 16 || code.RoomID == "" || code.ServerID == "" {
 		return nil, Errorf("invalid_invite", "邀请码版本不受支持。")
 	}
-	if code.ServerID != hostID {
-		return nil, Errorf("wrong_host", "这个邀请来自另一个服务器。")
-	}
 	parsed, err := account.ParseHostURL(code.URL)
-	if err != nil || parsed.HostID != code.ServerID {
+	if err != nil || parsed.HostID == "" || parsed.HostID != code.ServerID {
 		return nil, Errorf("invalid_invite", "邀请地址无效。")
-	}
-	if parsed.Origin != origin {
-		return nil, Errorf("wrong_host", "这个邀请来自另一个服务器。")
 	}
 	if len([]rune(code.RoomName)) > maxRoomNameRunes || len([]rune(code.RoomTopic)) > maxRoomTopicRunes {
 		return nil, Errorf("invalid_invite", "邀请中的房间信息无效。")

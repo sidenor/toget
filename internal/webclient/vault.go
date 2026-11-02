@@ -14,12 +14,21 @@ import (
 // The browser vault is an encrypted document stored by the blind account
 // host. It carries only room metadata and epoch keys, never messages: with
 // the keys, a new browser can decrypt room history from the room home.
-const vaultDocumentVersion = 1
+//
+// Version 2 records each room's home host so rooms can live on a server other
+// than the account host. Version 1 documents are still readable.
+const (
+	vaultDocumentVersion       = 2
+	vaultDocumentVersionLegacy = 1
+)
 
 type vaultRoom struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name"`
 	Topic     string         `json:"topic,omitempty"`
+	Kind      string         `json:"kind,omitempty"`
+	HomeURL   string         `json:"home_url,omitempty"`
+	HostID    string         `json:"home_host_id,omitempty"`
 	OwnerID   string         `json:"owner_account_id,omitempty"`
 	Epoch     int            `json:"epoch,omitempty"`
 	Keys      map[int][]byte `json:"keys,omitempty"`
@@ -59,7 +68,7 @@ func (c *Client) FlushVault(ctx context.Context) (*VaultResult, error) {
 	if err := c.refreshSessionLocked(ctx, client); err != nil {
 		return nil, err
 	}
-	if err := c.saveVaultLocked(ctx, client); err != nil {
+	if err := c.saveVaultLocked(ctx); err != nil {
 		return nil, err
 	}
 	return &VaultResult{Version: c.state.Account.VaultVersion}, nil
@@ -89,7 +98,8 @@ func (c *Client) loadVaultLocked(ctx context.Context, client *hosted.Client) (bo
 	}
 	var document vaultDocument
 	if err := json.Unmarshal(plain, &document); err != nil ||
-		document.Version != vaultDocumentVersion || document.AccountID != acct.ID {
+		document.Version < vaultDocumentVersionLegacy ||
+		document.Version > vaultDocumentVersion || document.AccountID != acct.ID {
 		return false, Errorf("vault_corrupt", "房间同步数据已损坏。")
 	}
 	c.mergeVaultLocked(document)
@@ -114,9 +124,14 @@ func (c *Client) mergeVaultLocked(document vaultDocument) {
 			if epoch < 1 {
 				epoch = 1
 			}
+			homeURL, hostID := acct.HostURL, acct.HostID
+			if incoming.HostID != "" {
+				homeURL, hostID = incoming.HomeURL, incoming.HostID
+			}
+			kind, _ := normalizeRoomKind(incoming.Kind)
 			room := &RoomState{
-				ID: incoming.ID, Name: incoming.Name, Topic: incoming.Topic,
-				HomeURL: acct.HostURL, HostID: acct.HostID,
+				ID: incoming.ID, Name: incoming.Name, Topic: incoming.Topic, Kind: kind,
+				HomeURL: homeURL, HostID: hostID,
 				OwnerAccountID: incoming.OwnerID, Epoch: epoch,
 				Keys: cloneKeys(incoming.Keys), History: incoming.History,
 				JoinedAt: incoming.JoinedAt, ReadSeq: incoming.ReadSeq,
@@ -124,6 +139,15 @@ func (c *Client) mergeVaultLocked(document vaultDocument) {
 			}
 			c.upsertRoomLocked(room)
 			continue
+		}
+		if existing.HostID == "" && incoming.HostID != "" {
+			existing.HostID = incoming.HostID
+			existing.HomeURL = incoming.HomeURL
+		}
+		if existing.Kind == "" {
+			if kind, err := normalizeRoomKind(incoming.Kind); err == nil {
+				existing.Kind = kind
+			}
 		}
 		for epoch, key := range incoming.Keys {
 			if epoch >= 1 && len(key) == 32 && len(existing.Keys[epoch]) != 32 {
@@ -155,10 +179,19 @@ func (c *Client) mergeVaultLocked(document vaultDocument) {
 	}
 }
 
-func (c *Client) saveVaultLocked(ctx context.Context, client *hosted.Client) error {
+// saveVaultLocked always writes to the account host, even when the change
+// that triggered it belongs to a room on another server.
+func (c *Client) saveVaultLocked(ctx context.Context) error {
 	acct := c.state.Account
 	if acct == nil {
 		return Errorf("signed_out", "还没有登录。")
+	}
+	client, err := c.hostedClient()
+	if err != nil {
+		return err
+	}
+	if err := c.refreshSessionLocked(ctx, client); err != nil {
+		return err
 	}
 	acct.VaultDirty = true
 	for attempt := 0; attempt < 4; attempt++ {
@@ -199,7 +232,8 @@ func (c *Client) vaultFromStateLocked() vaultDocument {
 			continue
 		}
 		document.Rooms = append(document.Rooms, vaultRoom{
-			ID: room.ID, Name: room.Name, Topic: room.Topic,
+			ID: room.ID, Name: room.Name, Topic: room.Topic, Kind: room.Kind,
+			HomeURL: room.HomeURL, HostID: room.HostID,
 			OwnerID: room.OwnerAccountID, Epoch: room.Epoch,
 			Keys: cloneKeys(room.Keys), History: room.History,
 			JoinedAt: room.JoinedAt, ReadSeq: room.ReadSeq,

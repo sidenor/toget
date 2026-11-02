@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -58,6 +59,9 @@ func (s *Service) authenticateRoomDevice(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusUnauthorized, "unauthorized", "device is not authorized")
 		return nil, false
 	}
+	if accountID[:8] != s.host.Server.Code {
+		return s.authenticateRemoteRoomDevice(w, r, body, accountID, deviceID)
+	}
 	acct, err := s.store.GetAccount(r.Context(), accountID)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "device is not authorized")
@@ -102,6 +106,114 @@ func (s *Service) authenticateRoomDevice(w http.ResponseWriter, r *http.Request,
 	return &roomAuth{account: acct, record: record, cert: cert, publicKey: publicKey, encryption: encryptionKey}, true
 }
 
+// authenticateRemoteRoomDevice accepts a device whose account belongs to
+// another host. The account-signed certificate in the request header binds the
+// device to the account; a previously joined room device row is trusted for
+// key continuity so routine room traffic keeps working if the device's home
+// host is briefly unreachable.
+func (s *Service) authenticateRemoteRoomDevice(w http.ResponseWriter, r *http.Request, body []byte, accountID, deviceID string) (*roomAuth, bool) {
+	unauthorized := func() (*roomAuth, bool) {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "device is not authorized")
+		return nil, false
+	}
+	certificate, err := decodeDeviceCertificateHeader(r.Header.Get(HeaderDeviceCertificate))
+	if err != nil {
+		return unauthorized()
+	}
+	cert, err := identity.ParseDeviceCertificate(certificate)
+	if err != nil || cert.AccountID != accountID || cert.DeviceID != deviceID {
+		return unauthorized()
+	}
+	publicKey, err := identity.DecodePublicKey(cert.DevicePubKey)
+	if err != nil || len(publicKey) != ed25519.PublicKeySize {
+		return unauthorized()
+	}
+	encryptionKey, err := identity.DecodeEncryptionPublicKey(cert.EncryptionPublicKey)
+	if err != nil || len(encryptionKey) != 32 {
+		return unauthorized()
+	}
+	now := s.now().UTC()
+
+	// The cached statement and an already-joined room device are both local
+	// checks. A fresh network lookup is the last resort, so routine traffic
+	// does not depend on the device's home host being online.
+	var acct *AccountRecord
+	var record *account.DeviceRecord
+	matchDevice := func(candidate *remoteAccountResult) bool {
+		if candidate == nil || candidate.record == nil {
+			return false
+		}
+		devices, err := federatedAccountDevices(candidate.record, now)
+		if err != nil {
+			return false
+		}
+		for _, device := range devices {
+			if device.ID != deviceID || !bytes.Equal(device.SigningPublicKey, publicKey) ||
+				!bytes.Equal(device.EncryptionPublicKey, encryptionKey) ||
+				!bytes.Equal(device.Certificate, certificate) {
+				continue
+			}
+			acct = remoteAccountRecord(candidate.record)
+			record = &account.DeviceRecord{
+				ID: deviceID, AccountID: accountID,
+				PublicKey: publicKey, EncryptionPublicKey: encryptionKey,
+				Certificate: string(certificate),
+			}
+			return true
+		}
+		return false
+	}
+	if cached, err := s.cachedRemoteAccount(r.Context(), accountID, now); err == nil {
+		matchDevice(cached)
+	}
+	if record == nil {
+		// Membership is a durable grant, so a device that already joined a
+		// room here stays trusted even without its account host.
+		known, err := s.store.GetHostedRoomDeviceByAccountDevice(r.Context(), accountID, deviceID)
+		if err == nil && known.RevokedAt == nil &&
+			bytes.Equal(known.SigningPublicKey, publicKey) &&
+			bytes.Equal(known.EncryptionPublicKey, encryptionKey) {
+			acct = &AccountRecord{ID: accountID}
+			record = &account.DeviceRecord{
+				ID: deviceID, AccountID: accountID,
+				PublicKey: publicKey, EncryptionPublicKey: encryptionKey,
+				Certificate: string(certificate),
+			}
+		}
+	}
+	if record == nil {
+		// The cache may predate this device, so force one fresh statement.
+		if fresh, err := s.lookupRemoteAccount(r.Context(), accountID, false); err == nil {
+			matchDevice(fresh)
+		}
+	}
+	if record == nil {
+		return unauthorized()
+	}
+	if err := requestauth.Verify(r, body, publicKey, s.deviceNonces, s.now()); err != nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "device signature is invalid")
+		return nil, false
+	}
+	return &roomAuth{
+		account: acct, record: record, cert: cert,
+		publicKey: publicKey, encryption: encryptionKey,
+	}, true
+}
+
+// decodeDeviceCertificateHeader reads the base64url certificate header with a
+// strict size cap.
+func decodeDeviceCertificateHeader(raw string) ([]byte, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || len(raw) > 64<<10 {
+		return nil, errors.New("device certificate header is missing or too large")
+	}
+	certificate, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil || len(certificate) == 0 || len(certificate) > 48<<10 {
+		return nil, errors.New("device certificate header is invalid")
+	}
+	return certificate, nil
+}
+
 func roomRefMatches(ref RoomDeviceRef, auth *roomAuth) bool {
 	return ref.AccountID == auth.account.ID && ref.DeviceID == auth.record.ID &&
 		bytes.Equal(ref.SigningPublicKey, []byte(auth.publicKey)) &&
@@ -125,6 +237,10 @@ func (s *Service) handleRoomCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.Protocol != Protocol {
 		writeError(w, http.StatusBadRequest, "unsupported_protocol", "unsupported protocol")
+		return
+	}
+	if auth.account.ID[:8] != s.host.Server.Code {
+		writeError(w, http.StatusForbidden, "forbidden", "a room is created on its owner's account host")
 		return
 	}
 	if !roomRefMatches(request.Device, auth) {
@@ -467,6 +583,12 @@ func (s *Service) handleRoomJoin(w http.ResponseWriter, r *http.Request) {
 		s.roomStoreError(w, r, err)
 		return
 	}
+	// Joining the room answers any pending friend request addressed to this
+	// account, whether it came from a local account or a federated host.
+	if _, err := s.store.DeleteFriendRequestForMember(r.Context(), member.AccountID, request.RoomID); err != nil {
+		s.logger.Warn("clear answered friend request failed",
+			"room_id", request.RoomID, "account_id", member.AccountID, "error", err)
+	}
 	members, err := s.store.ListHostedRoomMembers(r.Context(), request.RoomID)
 	if err != nil {
 		s.internal(w, r, err)
@@ -707,6 +829,11 @@ func (s *Service) handleRoomDevices(w http.ResponseWriter, r *http.Request) {
 	} else {
 		if _, _, _, err := s.store.HostedRoomAccess(r.Context(), request.RoomID, auth.account.ID, auth.record.ID); err != nil {
 			s.roomStoreError(w, r, err)
+			return
+		}
+		if len(auth.account.PublicKey) != ed25519.PublicKeySize {
+			writeError(w, http.StatusConflict, "account_unavailable",
+				"the account key is not cached; try again later")
 			return
 		}
 		keys, err := accountKeys(auth.account)

@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -528,7 +529,7 @@ func (c *Client) DeviceSession(ctx context.Context, accountID, deviceID string, 
 		return "", time.Time{}, ErrInvalidCredentials
 	}
 	var response DeviceSessionResponse
-	if err := c.doDeviceSigned(ctx, DeviceSessionPath, accountID, deviceID, deviceKey, DeviceSessionRequest{
+	if err := c.doDeviceSigned(ctx, DeviceSessionPath, accountID, deviceID, deviceKey, "", DeviceSessionRequest{
 		Protocol: Protocol, AccountID: accountID, DeviceID: deviceID,
 	}, &response); err != nil {
 		return "", time.Time{}, err
@@ -943,7 +944,7 @@ func (c *Client) doRaw(ctx context.Context, method, path, sessionToken string, r
 
 // doDeviceSigned signs a request with the device key and sends the account and
 // device identity headers. The body is hashed exactly as sent.
-func (c *Client) doDeviceSigned(ctx context.Context, path, accountID, deviceID string, key ed25519.PrivateKey, request, response any) error {
+func (c *Client) doDeviceSigned(ctx context.Context, path, accountID, deviceID string, key ed25519.PrivateKey, certificate string, request, response any) error {
 	if err := c.ensureVerified(ctx); err != nil {
 		return err
 	}
@@ -959,6 +960,10 @@ func (c *Client) doDeviceSigned(ctx context.Context, path, accountID, deviceID s
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(requestauth.HeaderAccount, accountID)
 	req.Header.Set(requestauth.HeaderDevice, deviceID)
+	if strings.TrimSpace(certificate) != "" {
+		req.Header.Set(HeaderDeviceCertificate,
+			base64.RawURLEncoding.EncodeToString([]byte(certificate)))
+	}
 	if err := requestauth.Sign(req, data, key, c.now().UTC()); err != nil {
 		return err
 	}

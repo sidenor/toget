@@ -543,7 +543,12 @@ export function AddFriendDialog({
     resolved?.kind === "account" &&
     Boolean(myHostCode) &&
     resolved.host_code === myHostCode;
-  const canCreateRoom = Boolean(resolved && sameHost && !resolved.self);
+  const canAddFriend = Boolean(
+    resolved &&
+      resolved.kind === "account" &&
+      !resolved.self &&
+      (resolved.devices?.length ?? 0) > 0,
+  );
 
   const lookup = async () => {
     setLookingUp(true);
@@ -650,7 +655,7 @@ export function AddFriendDialog({
               >
                 重新查找
               </button>
-              {canCreateRoom && (
+              {canAddFriend && (
                 <button
                   type="button"
                   className="primary-button"
@@ -797,13 +802,18 @@ export function AddFriendDialog({
                 <p className="friend-invite-note">
                   这是自建节点的主人账号。这个节点还没有开通账号主页，暂时不能直接添加。
                 </p>
+              ) : (resolved.devices?.length ?? 0) === 0 ? (
+                <p className="friend-invite-note">
+                  TA 现在没有可用的设备，暂时收不到好友申请。
+                </p>
               ) : sameHost ? (
                 <p className="friend-invite-note">
                   找到啦。发送好友申请，等 TA 同意后就会进入你们的 1:1 加密房间。
                 </p>
               ) : (
                 <p className="friend-invite-note">
-                  已经通过查号台找到 TA 所在的服务器。跨服务器好友申请还在开发中，暂时还不能直接添加。
+                  找到啦。TA 在另一台 Toget
+                  服务器上，直接发送好友申请就可以，验签和加密都在你们两端完成。
                 </p>
               )}
             </>

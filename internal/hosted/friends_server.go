@@ -23,7 +23,9 @@ const (
 
 type activeAccountDevice struct {
 	ID                  string
+	SigningPublicKey    []byte
 	EncryptionPublicKey []byte
+	Certificate         []byte
 }
 
 // activeAccountDevices returns the target account's unexpired, unrevoked
@@ -73,7 +75,9 @@ func (s *Service) activeAccountDevices(ctx context.Context, accountID string) ([
 		}
 		seen[record.ID] = true
 		devices = append(devices, activeAccountDevice{
-			ID: record.ID, EncryptionPublicKey: append([]byte(nil), encryption...),
+			ID: record.ID, SigningPublicKey: append([]byte(nil), signing...),
+			EncryptionPublicKey: append([]byte(nil), encryption...),
+			Certificate:         []byte(record.Certificate),
 		})
 	}
 	return devices, nil
@@ -113,6 +117,11 @@ func (s *Service) handleFriendRequestCreate(w http.ResponseWriter, r *http.Reque
 	}
 	auth, ok := s.authenticateRoomDevice(w, r, body)
 	if !ok {
+		return
+	}
+	if auth.account.ID[:8] != s.host.Server.Code {
+		writeError(w, http.StatusForbidden, "forbidden",
+			"friend requests are sent from the account's own host")
 		return
 	}
 	var request FriendRequestCreate
@@ -158,25 +167,51 @@ func (s *Service) handleFriendRequestCreate(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusForbidden, "forbidden", "room access is not allowed")
 		return
 	}
-	target, err := s.store.GetAccountRef(r.Context(), request.ToAccountID)
-	if errors.Is(err, ErrAccountNotFound) {
-		writeError(w, http.StatusNotFound, "account_not_found", "account not found")
-		return
+	targetID := request.ToAccountID
+	remoteTarget := targetID[:8] != s.host.Server.Code
+	var targetName, targetHostID, targetHostURL string
+	var devices []activeAccountDevice
+	if remoteTarget {
+		remote, err := s.lookupRemoteAccount(r.Context(), targetID, true)
+		if err != nil {
+			s.writeFriendTargetError(w, r, err)
+			return
+		}
+		targetName = remote.record.Name
+		targetHostID = remote.record.HostID
+		targetHostURL = remote.hostURL
+		if targetHostURL == "" {
+			targetHostURL = remote.record.HostURL
+		}
+		devices, err = federatedAccountDevices(remote.record, now)
+		if err != nil {
+			s.internal(w, r, err)
+			return
+		}
+	} else {
+		target, err := s.store.GetAccountRef(r.Context(), targetID)
+		if errors.Is(err, ErrAccountNotFound) {
+			writeError(w, http.StatusNotFound, "account_not_found", "account not found")
+			return
+		}
+		if err != nil {
+			s.internal(w, r, err)
+			return
+		}
+		targetName = target.Name
+		targetHostID = s.host.Server.ID
+		targetHostURL = s.publicHostURL()
+		devices, err = s.activeAccountDevices(r.Context(), targetID)
+		if err != nil {
+			s.internal(w, r, err)
+			return
+		}
 	}
-	if err != nil {
-		s.internal(w, r, err)
-		return
-	}
-	if existing, err := s.store.GetHostedRoomMember(r.Context(), request.RoomID, target.ID); err == nil &&
+	if existing, err := s.store.GetHostedRoomMember(r.Context(), request.RoomID, targetID); err == nil &&
 		existing.Status == "active" {
 		writeError(w, http.StatusConflict, "already_member", "this account is already in the room")
 		return
 	} else if err != nil && !errors.Is(err, ErrHostedRoomForbidden) {
-		s.internal(w, r, err)
-		return
-	}
-	devices, err := s.activeAccountDevices(r.Context(), target.ID)
-	if err != nil {
 		s.internal(w, r, err)
 		return
 	}
@@ -202,15 +237,59 @@ func (s *Service) handleFriendRequestCreate(w http.ResponseWriter, r *http.Reque
 	}
 	expires := now.Add(FriendRequestTTL)
 	if err := s.store.SaveFriendRequest(r.Context(), FriendRequestRecord{
-		ID: request.ID, FromAccountID: auth.account.ID, ToAccountID: target.ID,
+		ID: request.ID, FromAccountID: auth.account.ID, FromName: auth.account.Name,
+		FromHostID: s.host.Server.ID, FromHostURL: s.publicHostURL(),
+		ToAccountID: targetID, ToName: targetName,
+		ToHostID: targetHostID, ToHostURL: targetHostURL,
 		RoomID: request.RoomID, Sealed: sealed, CreatedAt: now, ExpiresAt: expires,
 	}); err != nil {
 		s.internal(w, r, err)
 		return
 	}
+	if remoteTarget {
+		client, err := s.remoteHostClient(r.Context(), targetID[:8])
+		if err == nil {
+			_, err = client.PushFederatedFriendRequest(r.Context(), s.federationCaller(),
+				FederatedFriendRequest{
+					Protocol: Protocol, ID: request.ID,
+					FromAccountID: auth.account.ID, FromName: auth.account.Name,
+					FromHostID: s.host.Server.ID, FromHostURL: s.publicHostURL(),
+					ToAccountID: targetID, RoomID: request.RoomID,
+					RoomHostID: s.host.Server.ID, RoomHostURL: s.publicHostURL(),
+					Seals: request.Seals, CreatedAt: now, ExpiresAt: expires,
+				})
+		}
+		if err != nil {
+			if _, cancelErr := s.store.CancelFriendRequest(r.Context(), auth.account.ID, request.ID); cancelErr != nil {
+				s.logger.Warn("rollback federated friend request failed",
+					"request_id", request.ID, "error", cancelErr)
+			}
+			s.logger.Warn("deliver federated friend request failed",
+				"account_id", targetID, "request_id", request.ID, "error", err)
+			writeError(w, http.StatusBadGateway, "federation_failed",
+				"could not reach the recipient's server; try again later")
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, FriendRequestCreated{
 		Protocol: Protocol, ID: request.ID, ExpiresAt: expires,
 	})
+}
+
+// writeFriendTargetError maps federation lookup failures onto stable codes.
+func (s *Service) writeFriendTargetError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, errAccountNotFound):
+		writeError(w, http.StatusNotFound, "account_not_found", "account not found")
+	case errors.Is(err, errDirectoryDisabled):
+		writeError(w, http.StatusServiceUnavailable, "directory_disabled",
+			"this host cannot resolve other servers")
+	default:
+		s.logger.Warn("federated account lookup failed",
+			"path", r.URL.Path, "error", err)
+		writeError(w, http.StatusBadGateway, "resolve_failed",
+			"could not resolve the account")
+	}
 }
 
 // handleFriendRequestList returns only seals addressed to the current device.
@@ -310,14 +389,40 @@ func (s *Service) handleFriendRequestCancel(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid friend request")
 		return
 	}
+	row, _ := s.store.GetFriendRequest(r.Context(), request.ID)
 	deleted, err := s.store.CancelFriendRequest(r.Context(), auth.account.ID, request.ID)
 	if err != nil {
 		s.internal(w, r, err)
 		return
 	}
+	if deleted && row != nil && row.FromAccountID == auth.account.ID &&
+		row.ToAccountID[:8] != s.host.Server.Code {
+		s.notifyRemoteFriendCancel(r.Context(), row)
+	}
 	writeJSON(w, http.StatusOK, FriendRequestDeleteResponse{
 		Protocol: Protocol, Deleted: deleted,
 	})
+}
+
+// notifyRemoteFriendCancel is best effort: if the recipient host is
+// unreachable, the inbox row expires on its own.
+func (s *Service) notifyRemoteFriendCancel(ctx context.Context, row *StoredFriendRequest) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	client, err := s.remoteHostClient(ctx, row.ToAccountID[:8])
+	if err != nil {
+		s.logger.Warn("resolve recipient host for cancel failed",
+			"request_id", row.ID, "error", err)
+		return
+	}
+	if _, err := client.CancelFederatedFriendRequest(ctx, s.federationCaller(),
+		FederatedFriendRequestCancel{
+			Protocol: Protocol, ID: row.ID,
+			FromAccountID: row.FromAccountID, ToAccountID: row.ToAccountID,
+		}); err != nil {
+		s.logger.Warn("notify recipient host of cancel failed",
+			"request_id", row.ID, "error", err)
+	}
 }
 
 // handleFriendRequestDelete lets the recipient decline a request from any of
@@ -340,12 +445,38 @@ func (s *Service) handleFriendRequestDelete(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid friend request")
 		return
 	}
+	row, _ := s.store.GetFriendRequest(r.Context(), request.ID)
 	deleted, err := s.store.DeleteFriendRequest(r.Context(), auth.account.ID, request.ID)
 	if err != nil {
 		s.internal(w, r, err)
 		return
 	}
+	if deleted && row != nil && row.ToAccountID == auth.account.ID &&
+		row.FromAccountID[:8] != s.host.Server.Code {
+		s.notifyRemoteFriendDecline(r.Context(), row)
+	}
 	writeJSON(w, http.StatusOK, FriendRequestDeleteResponse{
 		Protocol: Protocol, Deleted: deleted,
 	})
+}
+
+// notifyRemoteFriendDecline tells the sender's host to drop its outgoing
+// entry. Like cancel, it is best effort and falls back to expiry.
+func (s *Service) notifyRemoteFriendDecline(ctx context.Context, row *StoredFriendRequest) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	client, err := s.remoteHostClient(ctx, row.FromAccountID[:8])
+	if err != nil {
+		s.logger.Warn("resolve sender host for decline failed",
+			"request_id", row.ID, "error", err)
+		return
+	}
+	if _, err := client.DeclineFederatedFriendRequest(ctx, s.federationCaller(),
+		FederatedFriendRequestDecline{
+			Protocol: Protocol, ID: row.ID,
+			FromAccountID: row.FromAccountID, ToAccountID: row.ToAccountID,
+		}); err != nil {
+		s.logger.Warn("notify sender host of decline failed",
+			"request_id", row.ID, "error", err)
+	}
 }

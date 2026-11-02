@@ -99,7 +99,8 @@ type Service struct {
 	loginMu sync.Mutex
 	logins  map[string]*pendingLogin
 
-	deviceNonces *requestauth.NonceCache
+	deviceNonces     *requestauth.NonceCache
+	federationNonces *requestauth.NonceCache
 
 	limiter  *rateLimiter
 	failures *loginFailures
@@ -162,11 +163,12 @@ func New(options Options) (*Service, error) {
 		now: now, rateLimited: !options.DisableRateLimit,
 		trustedProxies:  append([]netip.Prefix(nil), options.TrustedProxies...),
 		roomMemberLimit: memberLimit, roomDeviceLimit: deviceLimit,
-		logins:          make(map[string]*pendingLogin),
-		deviceNonces:    requestauth.NewNonceCache(),
-		limiter:         newRateLimiter(),
-		failures:        newLoginFailures(),
-		directoryLookup: options.DirectoryLookup,
+		logins:           make(map[string]*pendingLogin),
+		deviceNonces:     requestauth.NewNonceCache(),
+		federationNonces: requestauth.NewNonceCache(),
+		limiter:          newRateLimiter(),
+		failures:         newLoginFailures(),
+		directoryLookup:  options.DirectoryLookup,
 	}, nil
 }
 
@@ -214,6 +216,10 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("POST "+FriendRequestDeletePath, s.handleFriendRequestDelete)
 	mux.HandleFunc("POST "+FriendRequestSentPath, s.handleFriendRequestSent)
 	mux.HandleFunc("POST "+FriendRequestCancelPath, s.handleFriendRequestCancel)
+	mux.HandleFunc("POST "+FederationAccountPath, s.handleFederationAccountLookup)
+	mux.HandleFunc("POST "+FederationFriendRequestPath, s.handleFederationFriendRequest)
+	mux.HandleFunc("POST "+FederationFriendRequestCancelPath, s.handleFederationFriendRequestCancel)
+	mux.HandleFunc("POST "+FederationFriendRequestDeclinePath, s.handleFederationFriendRequestDecline)
 	mux.HandleFunc("POST "+PasswordBeginPath, s.handlePasswordBegin)
 	mux.HandleFunc("POST "+PasswordFinishPath, s.handlePasswordFinish)
 	mux.HandleFunc("POST "+RecoveryRotatePath, s.handleRecoveryRotate)
@@ -231,7 +237,33 @@ func (s *Service) Handler() http.Handler {
 		})
 		mux.Handle("GET /reset/", http.StripPrefix("/reset/", newResetAssets(s.resetFS)))
 	}
-	return s.recoverPanic(s.securityHeaders(s.generalLimit(mux)))
+	return s.recoverPanic(s.securityHeaders(s.cors(s.generalLimit(mux))))
+}
+
+// cors lets the browser client call a room host that is not the page origin.
+// Requests carry no cookies; every mutation is authorized by a device
+// signature or bearer session, so a wildcard origin cannot enable CSRF.
+func (s *Service) cors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/host/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		header := w.Header()
+		header.Set("Access-Control-Allow-Origin", "*")
+		header.Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+		header.Set("Access-Control-Allow-Headers",
+			"Accept, Authorization, Content-Type, "+
+				requestauth.HeaderTimestamp+", "+requestauth.HeaderNonce+", "+
+				requestauth.HeaderSignature+", "+requestauth.HeaderAccount+", "+
+				requestauth.HeaderDevice+", "+HeaderDeviceCertificate)
+		header.Set("Access-Control-Max-Age", "600")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Service) generalLimit(next http.Handler) http.Handler {
@@ -252,7 +284,11 @@ func (s *Service) securityHeaders(next http.Handler) http.Handler {
 		header.Set("X-Frame-Options", "DENY")
 		header.Set("Referrer-Policy", "no-referrer")
 		header.Set("Cross-Origin-Opener-Policy", "same-origin")
-		header.Set("Cross-Origin-Resource-Policy", "same-origin")
+		if strings.HasPrefix(r.URL.Path, "/host/") {
+			header.Set("Cross-Origin-Resource-Policy", "cross-origin")
+		} else {
+			header.Set("Cross-Origin-Resource-Policy", "same-origin")
+		}
 		if strings.HasPrefix(r.URL.Path, "/reset") {
 			header.Set("Content-Security-Policy",
 				"default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; "+

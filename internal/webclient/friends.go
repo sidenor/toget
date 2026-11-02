@@ -48,8 +48,9 @@ type FriendRequestView struct {
 	ExpiresAt     time.Time `json:"expires_at"`
 }
 
-// AddFriend creates a direct room, invites the target, and delivers the
-// invite as a sealed friend request. The target must be on this host.
+// AddFriend creates a direct room on this account's host, invites the target,
+// and delivers the invite as a sealed friend request. The target may belong to
+// any host reachable by the account host's directory.
 func (c *Client) AddFriend(ctx context.Context, targetAccountID, name string, devices []FriendRequestDevice) (*FriendRequestSent, error) {
 	c.mu.Lock()
 	selfID := ""
@@ -111,7 +112,7 @@ func (c *Client) SendFriendRequest(ctx context.Context, targetAccountID, roomID,
 	if roomState.Kind != room.RoomKindDirect || roomState.OwnerAccountID != c.state.Account.ID {
 		return nil, Errorf("invalid_room", "好友申请只能使用自己创建的 1:1 房间。")
 	}
-	code, err := decodeOfficialInvite(inviteCode, c.origin, c.state.Account.HostID)
+	code, err := decodeOfficialInvite(inviteCode)
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +234,7 @@ func (c *Client) CancelFriendRequest(ctx context.Context, requestID string) erro
 	if roomState := c.roomLocked(roomID); roomState != nil && roomState.Kind == room.RoomKindDirect {
 		// The request is already gone; a failed cleanup must not turn the
 		// withdrawal into an error. The room can still be left later.
-		_ = c.leaveRoomLocked(ctx, client, roomState)
+		_ = c.leaveRoomLocked(ctx, roomState)
 	}
 	return nil
 }
@@ -255,7 +256,7 @@ func (c *Client) listFriendRequestsLocked(ctx context.Context, client *hosted.Cl
 		if err != nil {
 			continue
 		}
-		code, err := decodeOfficialInvite(string(plaintext), c.origin, c.state.Account.HostID)
+		code, err := decodeOfficialInvite(string(plaintext))
 		if err != nil || code.RoomID != row.RoomID {
 			continue
 		}

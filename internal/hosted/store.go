@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	hostSchemaVersion = 5
+	hostSchemaVersion = 6
 
 	// SessionTTL bounds an authenticated host session.
 	SessionTTL = 12 * time.Hour
@@ -96,8 +96,14 @@ var hostSchema = []string{
 	`CREATE INDEX IF NOT EXISTS hosted_devices_account ON hosted_devices(account_id)`,
 	`CREATE TABLE IF NOT EXISTS hosted_friend_requests (
 		id TEXT PRIMARY KEY,
-		from_account_id TEXT NOT NULL REFERENCES hosted_accounts(id) ON DELETE CASCADE,
-		to_account_id TEXT NOT NULL REFERENCES hosted_accounts(id) ON DELETE CASCADE,
+		from_account_id TEXT NOT NULL,
+		from_name TEXT NOT NULL DEFAULT '',
+		from_host_id TEXT NOT NULL DEFAULT '',
+		from_host_url TEXT NOT NULL DEFAULT '',
+		to_account_id TEXT NOT NULL,
+		to_name TEXT NOT NULL DEFAULT '',
+		to_host_id TEXT NOT NULL DEFAULT '',
+		to_host_url TEXT NOT NULL DEFAULT '',
 		room_id TEXT NOT NULL,
 		sealed TEXT NOT NULL,
 		created_at INTEGER NOT NULL,
@@ -106,6 +112,16 @@ var hostSchema = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS hosted_friend_requests_to ON hosted_friend_requests(to_account_id, expires_at)`,
 	`CREATE INDEX IF NOT EXISTS hosted_friend_requests_from ON hosted_friend_requests(from_account_id, expires_at)`,
+	`CREATE TABLE IF NOT EXISTS hosted_remote_accounts (
+		account_id TEXT PRIMARY KEY,
+		host_id TEXT NOT NULL,
+		host_code TEXT NOT NULL,
+		host_url TEXT NOT NULL DEFAULT '',
+		record TEXT NOT NULL,
+		fetched_at INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS hosted_remote_accounts_expiry ON hosted_remote_accounts(expires_at)`,
 	`CREATE TABLE IF NOT EXISTS pending_registrations (
 		account_id TEXT PRIMARY KEY,
 		account_code TEXT NOT NULL UNIQUE,
@@ -158,7 +174,7 @@ var hostSchema = []string{
 	)`,
 	`CREATE TABLE IF NOT EXISTS hosted_room_members (
 		room_id TEXT NOT NULL REFERENCES hosted_rooms(id) ON DELETE CASCADE,
-		account_id TEXT NOT NULL REFERENCES hosted_accounts(id) ON DELETE CASCADE,
+		account_id TEXT NOT NULL,
 		role TEXT NOT NULL,
 		status TEXT NOT NULL,
 		history TEXT NOT NULL DEFAULT 'none',
@@ -369,6 +385,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("hosted: database schema %d is newer than this binary (%d)", version, hostSchemaVersion)
 	}
 	if version < hostSchemaVersion {
+		// Schema 6 rebuilds two tables so remote accounts no longer need a
+		// local hosted_accounts row. The rebuild must run before the
+		// idempotent schema pass, while foreign keys are disabled.
+		if version >= 1 {
+			if err := s.migrateV6(ctx); err != nil {
+				return err
+			}
+		}
 		// Every statement is idempotent, so upgrading from an older version
 		// simply adds whatever tables and indexes are missing.
 		for _, statement := range hostSchema {
@@ -379,6 +403,197 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", hostSchemaVersion)); err != nil {
 			return fmt.Errorf("hosted: set schema version: %w", err)
 		}
+	}
+	return nil
+}
+
+// migrateV6 removes foreign keys that tied room members and friend requests
+// to accounts stored on this host. Remote accounts belong to another server,
+// so the rows must outlive the local account table's constraints.
+func (s *Store) migrateV6(ctx context.Context) error {
+	roomMembers, err := s.tableExists(ctx, "hosted_room_members")
+	if err != nil {
+		return err
+	}
+	friendRequests, err := s.tableExists(ctx, "hosted_friend_requests")
+	if err != nil {
+		return err
+	}
+	friendRequestsNew, err := s.tableHasColumn(ctx, "hosted_friend_requests", "from_name")
+	if err != nil {
+		return err
+	}
+	roomMembersNeedRebuild := false
+	if roomMembers {
+		if roomMembersNeedRebuild, err = s.tableReferences(ctx, "hosted_room_members", "hosted_accounts"); err != nil {
+			return err
+		}
+	}
+	if !roomMembersNeedRebuild && (!friendRequests || friendRequestsNew) {
+		return nil
+	}
+
+	if _, err := s.db.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		return fmt.Errorf("hosted: disable foreign keys for schema migration: %w", err)
+	}
+	defer func() {
+		_, _ = s.db.ExecContext(context.Background(), "PRAGMA foreign_keys = ON")
+	}()
+
+	if roomMembersNeedRebuild {
+		if err := s.rebuildRoomMembersV6(ctx); err != nil {
+			return err
+		}
+	}
+	if friendRequests && !friendRequestsNew {
+		if err := s.rebuildFriendRequestsV6(ctx); err != nil {
+			return err
+		}
+	}
+	rows, err := s.db.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("hosted: check migrated foreign keys: %w", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		return errors.New("hosted: schema migration left a foreign key violation")
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("hosted: check migrated foreign keys: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) tableExists(ctx context.Context, name string) (bool, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&count); err != nil {
+		return false, fmt.Errorf("hosted: inspect schema: %w", err)
+	}
+	return count > 0, nil
+}
+
+func (s *Store) tableHasColumn(ctx context.Context, table, column string) (bool, error) {
+	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return false, fmt.Errorf("hosted: inspect table columns: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, kind string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &kind, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, fmt.Errorf("hosted: inspect table columns: %w", err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+func (s *Store) tableReferences(ctx context.Context, table, referenced string) (bool, error) {
+	rows, err := s.db.QueryContext(ctx, "PRAGMA foreign_key_list("+table+")")
+	if err != nil {
+		return false, fmt.Errorf("hosted: inspect table foreign keys: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, seq int
+		var target, from, to, onUpdate, onDelete, match string
+		if err := rows.Scan(&id, &seq, &target, &from, &to, &onUpdate, &onDelete, &match); err != nil {
+			return false, fmt.Errorf("hosted: inspect table foreign keys: %w", err)
+		}
+		if target == referenced {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+func (s *Store) rebuildRoomMembersV6(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("hosted: begin room member migration: %w", err)
+	}
+	defer tx.Rollback()
+	steps := []string{
+		`ALTER TABLE hosted_room_members RENAME TO hosted_room_members_v5`,
+		`CREATE TABLE hosted_room_members (
+			room_id TEXT NOT NULL REFERENCES hosted_rooms(id) ON DELETE CASCADE,
+			account_id TEXT NOT NULL,
+			role TEXT NOT NULL,
+			status TEXT NOT NULL,
+			history TEXT NOT NULL DEFAULT 'none',
+			joined_at INTEGER NOT NULL,
+			left_at INTEGER,
+			PRIMARY KEY (room_id, account_id)
+		)`,
+		`INSERT INTO hosted_room_members
+		    (room_id, account_id, role, status, history, joined_at, left_at)
+		 SELECT room_id, account_id, role, status, history, joined_at, left_at
+		   FROM hosted_room_members_v5`,
+		`DROP TABLE hosted_room_members_v5`,
+		`CREATE INDEX IF NOT EXISTS hosted_room_members_account ON hosted_room_members(account_id, status)`,
+	}
+	for _, step := range steps {
+		if _, err := tx.ExecContext(ctx, step); err != nil {
+			return fmt.Errorf("hosted: migrate room members: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("hosted: commit room member migration: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) rebuildFriendRequestsV6(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("hosted: begin friend request migration: %w", err)
+	}
+	defer tx.Rollback()
+	steps := []string{
+		`ALTER TABLE hosted_friend_requests RENAME TO hosted_friend_requests_v5`,
+		`CREATE TABLE hosted_friend_requests (
+			id TEXT PRIMARY KEY,
+			from_account_id TEXT NOT NULL,
+			from_name TEXT NOT NULL DEFAULT '',
+			from_host_id TEXT NOT NULL DEFAULT '',
+			from_host_url TEXT NOT NULL DEFAULT '',
+			to_account_id TEXT NOT NULL,
+			to_name TEXT NOT NULL DEFAULT '',
+			to_host_id TEXT NOT NULL DEFAULT '',
+			to_host_url TEXT NOT NULL DEFAULT '',
+			room_id TEXT NOT NULL,
+			sealed TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL,
+			UNIQUE (from_account_id, to_account_id, room_id)
+		)`,
+		`INSERT INTO hosted_friend_requests
+		    (id, from_account_id, from_name, from_host_id, from_host_url,
+		     to_account_id, to_name, to_host_id, to_host_url,
+		     room_id, sealed, created_at, expires_at)
+		 SELECT f.id, f.from_account_id, COALESCE(a.name, ''), '', '',
+		        f.to_account_id, COALESCE(b.name, ''), '', '',
+		        f.room_id, f.sealed, f.created_at, f.expires_at
+		   FROM hosted_friend_requests_v5 f
+		   LEFT JOIN hosted_accounts a ON a.id = f.from_account_id
+		   LEFT JOIN hosted_accounts b ON b.id = f.to_account_id`,
+		`DROP TABLE hosted_friend_requests_v5`,
+		`CREATE INDEX IF NOT EXISTS hosted_friend_requests_to ON hosted_friend_requests(to_account_id, expires_at)`,
+		`CREATE INDEX IF NOT EXISTS hosted_friend_requests_from ON hosted_friend_requests(from_account_id, expires_at)`,
+	}
+	for _, step := range steps {
+		if _, err := tx.ExecContext(ctx, step); err != nil {
+			return fmt.Errorf("hosted: migrate friend requests: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("hosted: commit friend request migration: %w", err)
 	}
 	return nil
 }
