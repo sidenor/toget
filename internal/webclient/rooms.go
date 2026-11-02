@@ -538,8 +538,9 @@ func (c *Client) joinInviteLocked(ctx context.Context, rawCode string) (*RoomVie
 		return nil, err
 	}
 	response, err := client.JoinRoom(ctx, c.signerLocked(), hosted.RoomJoinRequest{
-		Protocol: hosted.Protocol, RoomID: code.RoomID, Secret: code.Secret,
-		Device: c.deviceRefLocked(),
+		Protocol: hosted.Protocol, RoomID: code.RoomID,
+		SecretHash: sha256Bytes([]byte(code.Secret)),
+		Device:     c.deviceRefLocked(),
 	})
 	if err != nil {
 		if hosted.RoomErrorCode(err) == "already_member" {

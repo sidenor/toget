@@ -719,9 +719,12 @@ SHA-256 of the invite secret, never the secret itself, and stores the epoch
 keys wrapped under a key derived from that secret. The single-use code carries
 the secret, host URL with its certificate or host identity pin, room ID, room
 name, and topic. Joining
-requires a device-signed request; the joiner redeems the secret, unwraps the
-invited epochs, rewraps them to its own device, imports the visible snapshot,
-and uploads its own key packages. No existing member needs to be online.
+requires a device-signed request; the joiner sends the secret's SHA-256 as
+`secret_hash`, not the secret, unwraps the invited epochs locally, rewraps them
+to its own device, imports the visible snapshot, and uploads its own key
+packages. No existing member needs to be online. During the client migration
+window the host also accepts the legacy `secret` field and hashes it
+server-side; clients that send it do not get the blind-host property.
 
 ### Leaving, revocation, and rotation
 

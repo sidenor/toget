@@ -546,6 +546,22 @@ func (s *Service) handleRoomInvite(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// joinSecretHash returns the invite lookup token. New clients send the hash
+// directly; Secret is the legacy form and is hashed here for compatibility.
+func joinSecretHash(request RoomJoinRequest) ([]byte, bool) {
+	if len(request.SecretHash) > 0 {
+		if len(request.SecretHash) != sha256.Size {
+			return nil, false
+		}
+		return request.SecretHash, true
+	}
+	if len(request.Secret) < 16 || len(request.Secret) > 512 {
+		return nil, false
+	}
+	sum := sha256.Sum256([]byte(request.Secret))
+	return sum[:], true
+}
+
 func (s *Service) handleRoomJoin(w http.ResponseWriter, r *http.Request) {
 	body, ok := roomBody(w, r)
 	if !ok {
@@ -557,7 +573,7 @@ func (s *Service) handleRoomJoin(w http.ResponseWriter, r *http.Request) {
 	}
 	var request RoomJoinRequest
 	if err := decodeRoomBody(body, &request); err != nil || request.Protocol != Protocol ||
-		!validRoomID(request.RoomID) || len(request.Secret) < 16 || len(request.Secret) > 512 {
+		!validRoomID(request.RoomID) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid join request")
 		return
 	}
@@ -565,8 +581,12 @@ func (s *Service) handleRoomJoin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "forbidden", "device identity does not match the signed request")
 		return
 	}
-	hash := sha256.Sum256([]byte(request.Secret))
-	invite, err := s.store.InviteBySecretHash(r.Context(), request.RoomID, hash[:])
+	secretHash, ok := joinSecretHash(request)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid join request")
+		return
+	}
+	invite, err := s.store.InviteBySecretHash(r.Context(), request.RoomID, secretHash)
 	if err != nil {
 		s.roomStoreError(w, r, err)
 		return

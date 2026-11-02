@@ -701,8 +701,9 @@ func (s *Service) JoinOfficial(ctx context.Context, code *InviteCode) (*room.Roo
 		}
 		return nil, fmt.Errorf("%w: join from a new device with a fresh invite", room.ErrRoomLeft)
 	}
+	secretHash := sha256.Sum256([]byte(code.Secret))
 	joinRequest := hosted.RoomJoinRequest{
-		Protocol: hosted.Protocol, RoomID: code.RoomID, Secret: code.Secret,
+		Protocol: hosted.Protocol, RoomID: code.RoomID, SecretHash: secretHash[:],
 		Device: officialDeviceRef(snapshot),
 	}
 	var response *hosted.RoomJoinResponse

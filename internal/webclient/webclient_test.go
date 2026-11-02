@@ -1,14 +1,18 @@
 package webclient_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +25,15 @@ type fixture struct {
 	server *httptest.Server
 	origin string
 	mailer *hosted.MemoryMailer
+
+	mu         sync.Mutex
+	joinBodies [][]byte
+}
+
+func (f *fixture) capturedJoinBodies() [][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]byte(nil), f.joinBodies...)
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -43,14 +56,29 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewTLSServer(service.Handler())
+	f := &fixture{mailer: mailer}
+	handler := service.Handler()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == hosted.RoomJoinPath {
+			body, err := io.ReadAll(r.Body)
+			if err == nil {
+				f.mu.Lock()
+				f.joinBodies = append(f.joinBodies, body)
+				f.mu.Unlock()
+				r.Body = io.NopCloser(bytes.NewReader(body))
+			}
+		}
+		handler.ServeHTTP(w, r)
+	}))
 	t.Cleanup(server.Close)
 	// NewBrowserClient uses the process default transport. Trust this test
 	// server's self-signed certificate for the duration of the test.
 	oldTransport := http.DefaultTransport
 	http.DefaultTransport = server.Client().Transport
 	t.Cleanup(func() { http.DefaultTransport = oldTransport })
-	return &fixture{server: server, origin: server.URL, mailer: mailer}
+	f.server = server
+	f.origin = server.URL
+	return f
 }
 
 func register(t *testing.T, f *fixture, name, email string) *webclient.Client {
@@ -539,5 +567,52 @@ func TestBrowserResolveAccount(t *testing.T) {
 	if _, err := alice.ResolveAccount(ctx, remoteCode+profile.AccountID[8:]); err == nil ||
 		webclient.AsError(err).Code != "directory_disabled" {
 		t.Fatalf("remote account error = %v", err)
+	}
+}
+
+// The host stores invite epoch keys wrapped under the invite secret. If the
+// join request carried the secret itself, a malicious or compromised host
+// could unwrap them and read the room. Joining must send only the hash.
+func TestBrowserJoinSendsSecretHashOnly(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	alice := register(t, f, "Alice", "alice@example.com")
+	bob := register(t, f, "Bob", "bob@example.com")
+
+	view, err := alice.CreateRoom(ctx, webclient.CreateRoomInput{Name: "加密房间"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invite, err := alice.CreateInvite(ctx, view.Summary.ID, webclient.InviteInput{
+		History: "all", TTLHours: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bob.JoinInvite(ctx, invite.Code); err != nil {
+		t.Fatal(err)
+	}
+
+	bodies := f.capturedJoinBodies()
+	if len(bodies) != 1 {
+		t.Fatalf("join requests = %d, want 1", len(bodies))
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(bodies[0], &payload); err != nil {
+		t.Fatal(err)
+	}
+	if raw, ok := payload["secret"]; ok {
+		t.Fatalf("join request leaks the raw invite secret: %s", raw)
+	}
+	raw, ok := payload["secret_hash"]
+	if !ok {
+		t.Fatal("join request has no secret_hash")
+	}
+	var hash []byte
+	if err := json.Unmarshal(raw, &hash); err != nil {
+		t.Fatal(err)
+	}
+	if len(hash) != sha256.Size {
+		t.Fatalf("secret_hash length = %d, want %d", len(hash), sha256.Size)
 	}
 }

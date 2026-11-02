@@ -476,8 +476,9 @@ func TestOfficialRoomHostRejectsInvalidAccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	replaySecretHash := sha256.Sum256([]byte(decoded.Secret))
 	joinRequest := hosted.RoomJoinRequest{
-		Protocol: hosted.Protocol, RoomID: decoded.RoomID, Secret: decoded.Secret,
+		Protocol: hosted.Protocol, RoomID: decoded.RoomID, SecretHash: replaySecretHash[:],
 		Device: officialDeviceRefFor(t, bob),
 	}
 	replayedJoin, err := bobClient.JoinRoom(ctx, officialSignerFor(t, bob), joinRequest)
