@@ -17,6 +17,8 @@ const (
 	friendRequestLimit = 30
 	friendListLimit    = 120
 	friendDeleteLimit  = 60
+	friendSentLimit    = 120
+	friendCancelLimit  = 60
 )
 
 type activeAccountDevice struct {
@@ -249,6 +251,75 @@ func (s *Service) handleFriendRequestList(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, FriendRequestList{Protocol: Protocol, Requests: requests})
 }
 
+// handleFriendRequestSent lists outgoing requests for the signed-in account.
+// It never returns seals: the sender already has the invite it created.
+func (s *Service) handleFriendRequestSent(w http.ResponseWriter, r *http.Request) {
+	if s.limited(w, r, "friend_sent", friendSentLimit) {
+		return
+	}
+	body, ok := roomBody(w, r)
+	if !ok {
+		return
+	}
+	auth, ok := s.authenticateRoomDevice(w, r, body)
+	if !ok {
+		return
+	}
+	var request struct {
+		Protocol int `json:"protocol"`
+	}
+	if err := decodeRoomBody(body, &request); err != nil || request.Protocol != Protocol {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid friend request list")
+		return
+	}
+	now := s.now().UTC().Truncate(time.Millisecond)
+	rows, err := s.store.ListFriendRequestsFrom(r.Context(), auth.account.ID, now)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	requests := make([]SentFriendRequestSummary, 0, len(rows))
+	for _, row := range rows {
+		requests = append(requests, SentFriendRequestSummary{
+			ID: row.ID, ToAccountID: row.ToAccountID, ToName: row.ToName,
+			RoomID: row.RoomID, CreatedAt: row.CreatedAt, ExpiresAt: row.ExpiresAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, SentFriendRequestList{
+		Protocol: Protocol, Requests: requests,
+	})
+}
+
+// handleFriendRequestCancel withdraws an outgoing request. A request the
+// recipient already accepted or declined is simply reported as not deleted.
+func (s *Service) handleFriendRequestCancel(w http.ResponseWriter, r *http.Request) {
+	if s.limited(w, r, "friend_cancel", friendCancelLimit) {
+		return
+	}
+	body, ok := roomBody(w, r)
+	if !ok {
+		return
+	}
+	auth, ok := s.authenticateRoomDevice(w, r, body)
+	if !ok {
+		return
+	}
+	var request FriendRequestDelete
+	if err := decodeRoomBody(body, &request); err != nil ||
+		request.Protocol != Protocol || !validFriendRequestID(request.ID) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid friend request")
+		return
+	}
+	deleted, err := s.store.CancelFriendRequest(r.Context(), auth.account.ID, request.ID)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, FriendRequestDeleteResponse{
+		Protocol: Protocol, Deleted: deleted,
+	})
+}
+
 // handleFriendRequestDelete lets the recipient decline a request from any of
 // their devices, even one that cannot open the seal.
 func (s *Service) handleFriendRequestDelete(w http.ResponseWriter, r *http.Request) {
@@ -278,4 +349,3 @@ func (s *Service) handleFriendRequestDelete(w http.ResponseWriter, r *http.Reque
 		Protocol: Protocol, Deleted: deleted,
 	})
 }
-

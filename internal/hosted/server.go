@@ -212,6 +212,8 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("POST "+FriendRequestPath, s.handleFriendRequestCreate)
 	mux.HandleFunc("POST "+FriendRequestListPath, s.handleFriendRequestList)
 	mux.HandleFunc("POST "+FriendRequestDeletePath, s.handleFriendRequestDelete)
+	mux.HandleFunc("POST "+FriendRequestSentPath, s.handleFriendRequestSent)
+	mux.HandleFunc("POST "+FriendRequestCancelPath, s.handleFriendRequestCancel)
 	mux.HandleFunc("POST "+PasswordBeginPath, s.handlePasswordBegin)
 	mux.HandleFunc("POST "+PasswordFinishPath, s.handlePasswordFinish)
 	mux.HandleFunc("POST "+RecoveryRotatePath, s.handleRecoveryRotate)

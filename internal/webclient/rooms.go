@@ -617,6 +617,12 @@ func (c *Client) LeaveRoom(ctx context.Context, roomID string) error {
 	if err != nil {
 		return err
 	}
+	return c.leaveRoomLocked(ctx, client, roomState)
+}
+
+// leaveRoomLocked is LeaveRoom for callers that already hold the client lock
+// and the hosted client.
+func (c *Client) leaveRoomLocked(ctx context.Context, client *hosted.Client, roomState *RoomState) error {
 	if err := c.ensureRoomDeviceLocked(ctx, client, roomState); err != nil {
 		return err
 	}
@@ -640,7 +646,7 @@ func (c *Client) LeaveRoom(ctx context.Context, roomID string) error {
 			return mapRoomError(err)
 		}
 	}
-	c.state.Rooms = removeRoom(c.state.Rooms, roomID)
+	c.state.Rooms = removeRoom(c.state.Rooms, roomState.ID)
 	if err := c.saveVaultLocked(ctx, client); err != nil {
 		c.state.Account.VaultDirty = true
 	}

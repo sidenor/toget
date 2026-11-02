@@ -33,6 +33,39 @@ func (c *Client) ListFriendRequests(ctx context.Context, signer RoomSigner) ([]F
 	return response.Requests, nil
 }
 
+// ListSentFriendRequests returns the account's outgoing requests.
+func (c *Client) ListSentFriendRequests(ctx context.Context, signer RoomSigner) ([]SentFriendRequestSummary, error) {
+	var response SentFriendRequestList
+	if err := c.doRoom(ctx, FriendRequestSentPath, signer,
+		struct {
+			Protocol int `json:"protocol"`
+		}{Protocol: Protocol}, &response); err != nil {
+		return nil, err
+	}
+	if response.Protocol != Protocol {
+		return nil, fmt.Errorf("%w: malformed sent friend request list", ErrInvalidHost)
+	}
+	if response.Requests == nil {
+		response.Requests = []SentFriendRequestSummary{}
+	}
+	return response.Requests, nil
+}
+
+// CancelFriendRequest withdraws one outgoing request. It reports false when
+// the recipient already accepted or declined it.
+func (c *Client) CancelFriendRequest(ctx context.Context, signer RoomSigner, id string) (bool, error) {
+	var response FriendRequestDeleteResponse
+	if err := c.doRoom(ctx, FriendRequestCancelPath, signer, FriendRequestDelete{
+		Protocol: Protocol, ID: id,
+	}, &response); err != nil {
+		return false, err
+	}
+	if response.Protocol != Protocol {
+		return false, fmt.Errorf("%w: malformed friend request cancellation", ErrInvalidHost)
+	}
+	return response.Deleted, nil
+}
+
 // DeleteFriendRequest declines or dismisses one incoming request.
 func (c *Client) DeleteFriendRequest(ctx context.Context, signer RoomSigner, id string) (bool, error) {
 	var response FriendRequestDeleteResponse

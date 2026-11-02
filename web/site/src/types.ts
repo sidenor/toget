@@ -151,6 +151,15 @@ export interface FriendRequestSent {
   expires_at: string;
 }
 
+export interface SentFriendRequestView {
+  id: string;
+  to_account_id: string;
+  to_name?: string;
+  room_id: string;
+  created_at: string;
+  expires_at: string;
+}
+
 export interface FriendRequestView {
   id: string;
   from_account_id: string;

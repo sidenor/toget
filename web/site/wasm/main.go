@@ -214,6 +214,16 @@ func dispatch(ctx context.Context, client *webclient.Client, op, payload string)
 		return client.AddFriend(ctx, input.AccountID, input.Name, input.Devices)
 	case "listFriendRequests":
 		return client.ListFriendRequests(ctx)
+	case "listSentFriendRequests":
+		return client.ListSentFriendRequests(ctx)
+	case "cancelFriendRequest":
+		var input struct {
+			RequestID string `json:"request_id"`
+		}
+		if err := decode(payload, &input); err != nil || input.RequestID == "" {
+			return nil, webclient.Errorf("invalid_request", "好友申请格式不正确。")
+		}
+		return map[string]bool{"ok": true}, client.CancelFriendRequest(ctx, input.RequestID)
 	case "acceptFriendRequest":
 		var input struct {
 			RequestID string `json:"request_id"`

@@ -35,6 +35,16 @@ type StoredFriendRequest struct {
 	ExpiresAt     time.Time
 }
 
+// StoredSentFriendRequest is one outgoing request as presented to its sender.
+type StoredSentFriendRequest struct {
+	ID          string
+	ToAccountID string
+	ToName      string
+	RoomID      string
+	CreatedAt   time.Time
+	ExpiresAt   time.Time
+}
+
 // SaveFriendRequest replaces any earlier request from the same sender to the
 // same recipient for the same room. Replacing instead of updating preserves
 // the new request ID, which is bound into every seal's context.
@@ -120,6 +130,52 @@ func (s *Store) ListFriendRequestsForDevice(ctx context.Context, accountID, devi
 		requests = append(requests, request)
 	}
 	return requests, rows.Err()
+}
+
+// ListFriendRequestsFrom returns a sender's unexpired outgoing requests with
+// the recipient's current display name.
+func (s *Store) ListFriendRequestsFrom(ctx context.Context, accountID string, now time.Time) ([]StoredSentFriendRequest, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT f.id, f.to_account_id, a.name, f.room_id, f.created_at, f.expires_at
+		   FROM hosted_friend_requests f
+		   JOIN hosted_accounts a ON a.id = f.to_account_id
+		  WHERE f.from_account_id = ? AND f.expires_at > ?
+		  ORDER BY f.created_at DESC, f.id
+		  LIMIT ?`,
+		accountID, now.UnixMilli(), MaxFriendRequestsPerAccount)
+	if err != nil {
+		return nil, fmt.Errorf("hosted: list sent friend requests: %w", err)
+	}
+	defer rows.Close()
+	var requests []StoredSentFriendRequest
+	for rows.Next() {
+		var request StoredSentFriendRequest
+		var created, expires int64
+		if err := rows.Scan(&request.ID, &request.ToAccountID, &request.ToName,
+			&request.RoomID, &created, &expires); err != nil {
+			return nil, fmt.Errorf("hosted: scan sent friend request: %w", err)
+		}
+		request.CreatedAt = time.UnixMilli(created).UTC()
+		request.ExpiresAt = time.UnixMilli(expires).UTC()
+		requests = append(requests, request)
+	}
+	return requests, rows.Err()
+}
+
+// CancelFriendRequest removes one request only when the sender owns it. It is
+// idempotent, so a request already answered by the recipient returns false.
+func (s *Store) CancelFriendRequest(ctx context.Context, fromAccountID, id string) (bool, error) {
+	result, err := s.db.ExecContext(ctx,
+		`DELETE FROM hosted_friend_requests WHERE id = ? AND from_account_id = ?`,
+		id, fromAccountID)
+	if err != nil {
+		return false, fmt.Errorf("hosted: cancel friend request: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("hosted: cancel friend request rows: %w", err)
+	}
+	return affected > 0, nil
 }
 
 // DeleteFriendRequest removes one request only when it belongs to the

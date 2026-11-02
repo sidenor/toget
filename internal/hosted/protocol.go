@@ -39,6 +39,10 @@ const (
 	FriendRequestListPath = "/host/v1/friends/requests/list"
 	// FriendRequestDeletePath declines or dismisses one request.
 	FriendRequestDeletePath = "/host/v1/friends/requests/delete"
+	// FriendRequestSentPath lists requests the current account sent.
+	FriendRequestSentPath = "/host/v1/friends/requests/sent"
+	// FriendRequestCancelPath withdraws one request before it is answered.
+	FriendRequestCancelPath = "/host/v1/friends/requests/cancel"
 	// RegisterBeginPath reserves an account ID and starts OPAQUE registration.
 	RegisterBeginPath = "/host/v1/account/register/begin"
 	// RegisterFinishPath completes registration with the client record and blobs.
@@ -234,6 +238,23 @@ type FriendRequestDelete struct {
 type FriendRequestDeleteResponse struct {
 	Protocol int  `json:"protocol"`
 	Deleted  bool `json:"deleted"`
+}
+
+// SentFriendRequestSummary is one outgoing request. It carries no ciphertext;
+// the sender only needs the recipient and expiry to manage the request.
+type SentFriendRequestSummary struct {
+	ID          string    `json:"id"`
+	ToAccountID string    `json:"to_account_id"`
+	ToName      string    `json:"to_name,omitempty"`
+	RoomID      string    `json:"room_id"`
+	CreatedAt   time.Time `json:"created_at"`
+	ExpiresAt   time.Time `json:"expires_at"`
+}
+
+// SentFriendRequestList is the current account's outgoing requests.
+type SentFriendRequestList struct {
+	Protocol int                        `json:"protocol"`
+	Requests []SentFriendRequestSummary `json:"requests"`
 }
 
 // FriendRequestSealContext binds a seal to its request, both accounts, and

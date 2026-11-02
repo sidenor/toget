@@ -9,6 +9,7 @@ import type {
   InviteResult,
   ResolvedAccount,
   RoomSummary,
+  SentFriendRequestView,
 } from "./types";
 import { Avatar, BrandMark, Icon, SearchBox } from "./ui";
 
@@ -133,6 +134,55 @@ function FriendRequestSection({ actions }: { actions: FriendRequestActions }) {
   );
 }
 
+export interface SentFriendRequestActions {
+  requests: SentFriendRequestView[];
+  busyID: string | null;
+  onCancel: (requestID: string) => void;
+}
+
+function SentFriendRequestSection({
+  actions,
+}: {
+  actions: SentFriendRequestActions;
+}) {
+  const { requests, busyID, onCancel } = actions;
+  if (requests.length === 0) {
+    return null;
+  }
+  return (
+    <div className="friend-request-section friend-sent-section">
+      <div className="friend-request-head">
+        <span>等待对方通过</span>
+        <span className="friend-request-count">{requests.length}</span>
+      </div>
+      {requests.map((request) => {
+        const busy = busyID === request.id;
+        return (
+          <div className="friend-request-row" key={request.id}>
+            <span className="friend-lookup-avatar friend-request-avatar">
+              <Icon name="person" size={19} />
+            </span>
+            <span className="friend-request-copy">
+              <strong>{request.to_name?.trim() || "一位新朋友"}</strong>
+              <small>好友申请已发送</small>
+            </span>
+            <span className="friend-request-actions">
+              <button
+                type="button"
+                className="text-button friend-request-decline"
+                onClick={() => onCancel(request.id)}
+                disabled={busy}
+              >
+                {busy ? "撤回中" : "撤回"}
+              </button>
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function EmptyFriends({ compact }: { compact: boolean }) {
   if (compact) {
     return (
@@ -145,7 +195,7 @@ function EmptyFriends({ compact }: { compact: boolean }) {
   return (
     <div className="empty-chat friends-empty">
       <Icon name="contacts" size={30} />
-      <p>还没有好友。创建一个邀请，把链接发给 TA 就行。</p>
+      <p>还没有好友。输入 TA 的 14 位账号 ID，或者创建一个邀请链接。</p>
     </div>
   );
 }
@@ -156,6 +206,9 @@ export function FriendsSidebar({
   requestBusyID,
   onAcceptRequest,
   onDeclineRequest,
+  sentRequests,
+  sentRequestBusyID,
+  onCancelRequest,
   onOpen,
   onAdd,
   onJoin,
@@ -165,6 +218,9 @@ export function FriendsSidebar({
   requestBusyID: string | null;
   onAcceptRequest: (requestID: string) => void;
   onDeclineRequest: (requestID: string) => void;
+  sentRequests: SentFriendRequestView[];
+  sentRequestBusyID: string | null;
+  onCancelRequest: (requestID: string) => void;
   onOpen: (roomID: string) => void;
   onAdd: () => void;
   onJoin: () => void;
@@ -204,6 +260,13 @@ export function FriendsSidebar({
           onDecline: onDeclineRequest,
         }}
       />
+      <SentFriendRequestSection
+        actions={{
+          requests: sentRequests,
+          busyID: sentRequestBusyID,
+          onCancel: onCancelRequest,
+        }}
+      />
       <div className="contact-list">
         {visible.map((entry) => (
           <FriendRow
@@ -230,6 +293,9 @@ export function FriendsPage({
   requestBusyID,
   onAcceptRequest,
   onDeclineRequest,
+  sentRequests,
+  sentRequestBusyID,
+  onCancelRequest,
   onOpen,
   onAdd,
   onJoin,
@@ -239,6 +305,9 @@ export function FriendsPage({
   requestBusyID: string | null;
   onAcceptRequest: (requestID: string) => void;
   onDeclineRequest: (requestID: string) => void;
+  sentRequests: SentFriendRequestView[];
+  sentRequestBusyID: string | null;
+  onCancelRequest: (requestID: string) => void;
   onOpen: (roomID: string) => void;
   onAdd: () => void;
   onJoin: () => void;
@@ -292,6 +361,13 @@ export function FriendsPage({
           onDecline: onDeclineRequest,
         }}
       />
+      <SentFriendRequestSection
+        actions={{
+          requests: sentRequests,
+          busyID: sentRequestBusyID,
+          onCancel: onCancelRequest,
+        }}
+      />
       {entries.length > 0 && (
         <SearchBox
           value={query}
@@ -326,6 +402,9 @@ export function FriendsOverview({
   requestBusyID,
   onAcceptRequest,
   onDeclineRequest,
+  sentRequests,
+  sentRequestBusyID,
+  onCancelRequest,
   onOpen,
   onAdd,
 }: {
@@ -334,6 +413,9 @@ export function FriendsOverview({
   requestBusyID: string | null;
   onAcceptRequest: (requestID: string) => void;
   onDeclineRequest: (requestID: string) => void;
+  sentRequests: SentFriendRequestView[];
+  sentRequestBusyID: string | null;
+  onCancelRequest: (requestID: string) => void;
   onOpen: (roomID: string) => void;
   onAdd: () => void;
 }) {
@@ -365,6 +447,13 @@ export function FriendsOverview({
               busyID: requestBusyID,
               onAccept: onAcceptRequest,
               onDecline: onDeclineRequest,
+            }}
+          />
+          <SentFriendRequestSection
+            actions={{
+              requests: sentRequests,
+              busyID: sentRequestBusyID,
+              onCancel: onCancelRequest,
             }}
           />
           {entries.length === 0 ? (

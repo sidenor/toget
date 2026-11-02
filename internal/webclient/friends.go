@@ -24,6 +24,17 @@ type FriendRequestSent struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+// SentFriendRequestView is one outgoing friend request as shown to its
+// sender. It carries no ciphertext; the sender already holds the invite.
+type SentFriendRequestView struct {
+	ID          string    `json:"id"`
+	ToAccountID string    `json:"to_account_id"`
+	ToName      string    `json:"to_name,omitempty"`
+	RoomID      string    `json:"room_id"`
+	CreatedAt   time.Time `json:"created_at"`
+	ExpiresAt   time.Time `json:"expires_at"`
+}
+
 // FriendRequestView is one incoming friend request after local decryption.
 type FriendRequestView struct {
 	ID            string    `json:"id"`
@@ -158,6 +169,73 @@ func (c *Client) ListFriendRequests(ctx context.Context) ([]FriendRequestView, e
 		return nil, err
 	}
 	return c.listFriendRequestsLocked(ctx, client)
+}
+
+// ListSentFriendRequests returns outgoing requests the account can cancel.
+func (c *Client) ListSentFriendRequests(ctx context.Context) ([]SentFriendRequestView, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.state.Account == nil {
+		return nil, Errorf("signed_out", "还没有登录。")
+	}
+	client, err := c.hostedClient()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := client.ListSentFriendRequests(ctx, c.signerLocked())
+	if err != nil {
+		return nil, mapHostError(err)
+	}
+	requests := make([]SentFriendRequestView, 0, len(rows))
+	for _, row := range rows {
+		requests = append(requests, SentFriendRequestView{
+			ID: row.ID, ToAccountID: row.ToAccountID, ToName: row.ToName,
+			RoomID: row.RoomID, CreatedAt: row.CreatedAt, ExpiresAt: row.ExpiresAt,
+		})
+	}
+	return requests, nil
+}
+
+// CancelFriendRequest withdraws an outgoing request. A request already
+// accepted or declined by the recipient is reported as gone. The unused
+// pending direct room is removed as well so it does not linger in the list.
+func (c *Client) CancelFriendRequest(ctx context.Context, requestID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.state.Account == nil {
+		return Errorf("signed_out", "还没有登录。")
+	}
+	client, err := c.hostedClient()
+	if err != nil {
+		return err
+	}
+	rows, err := client.ListSentFriendRequests(ctx, c.signerLocked())
+	if err != nil {
+		return mapHostError(err)
+	}
+	roomID := ""
+	for _, row := range rows {
+		if row.ID == requestID {
+			roomID = row.RoomID
+			break
+		}
+	}
+	if roomID == "" {
+		return Errorf("friend_request_not_found", "这个好友申请已经处理或失效了。")
+	}
+	deleted, err := client.CancelFriendRequest(ctx, c.signerLocked(), requestID)
+	if err != nil {
+		return mapHostError(err)
+	}
+	if !deleted {
+		return Errorf("friend_request_not_found", "这个好友申请已经处理或失效了。")
+	}
+	if roomState := c.roomLocked(roomID); roomState != nil && roomState.Kind == room.RoomKindDirect {
+		// The request is already gone; a failed cleanup must not turn the
+		// withdrawal into an error. The room can still be left later.
+		_ = c.leaveRoomLocked(ctx, client, roomState)
+	}
+	return nil
 }
 
 func (c *Client) listFriendRequestsLocked(ctx context.Context, client *hosted.Client) ([]FriendRequestView, error) {

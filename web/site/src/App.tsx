@@ -38,6 +38,7 @@ import type {
   FriendRequestSent,
   FriendRequestView,
   InviteResult,
+  SentFriendRequestView,
   Profile,
   RecoveryFile,
   RefreshResult,
@@ -223,6 +224,12 @@ export default function App() {
   const [friendRequestBusyID, setFriendRequestBusyID] = useState<string | null>(
     null,
   );
+  const [sentFriendRequests, setSentFriendRequests] = useState<
+    SentFriendRequestView[]
+  >([]);
+  const [sentFriendRequestBusyID, setSentFriendRequestBusyID] = useState<
+    string | null
+  >(null);
   const [activeRoomID, setActiveRoomID] = useState<string | null>(null);
   const [roomView, setRoomView] = useState<RoomView | null>(null);
   const [tab, setTab] = useState<Tab>("chats");
@@ -436,6 +443,10 @@ export default function App() {
           "listFriendRequests",
         );
         setFriendRequests(Array.isArray(incoming) ? incoming : []);
+        const sent = await target.call<SentFriendRequestView[]>(
+          "listSentFriendRequests",
+        );
+        setSentFriendRequests(Array.isArray(sent) ? sent : []);
       } catch (cause) {
         const error = toSiteError(cause);
         if (
@@ -502,6 +513,7 @@ export default function App() {
     const summaries = Array.isArray(target.rooms()) ? target.rooms() : [];
     setRooms(summaries);
     setFriendRequests([]);
+    setSentFriendRequests([]);
     setRevision((value) => value + 1);
     const mobile = window.matchMedia(MOBILE_QUERY).matches;
     let pick: string | null = null;
@@ -946,6 +958,38 @@ export default function App() {
     [handleBackgroundFailure],
   );
 
+  const cancelFriendRequest = useCallback(
+    async (requestID: string) => {
+      const target = clientRef.current;
+      if (!target) {
+        return;
+      }
+      setSentFriendRequestBusyID(requestID);
+      try {
+        await target.call("cancelFriendRequest", {
+          request_id: requestID,
+        });
+        setSentFriendRequests((current) =>
+          current.filter((request) => request.id !== requestID),
+        );
+        setToast("已撤回好友申请。");
+      } catch (cause) {
+        const error = toSiteError(cause);
+        if (error.code === "friend_request_not_found") {
+          setSentFriendRequests((current) =>
+            current.filter((request) => request.id !== requestID),
+          );
+          setToast("这个好友申请已经处理或失效了。");
+        } else {
+          handleBackgroundFailure(cause);
+        }
+      } finally {
+        setSentFriendRequestBusyID(null);
+      }
+    },
+    [handleBackgroundFailure],
+  );
+
   const requestRecovery = async (user: string) => {
     const target = clientRef.current;
     if (!target) {
@@ -1223,6 +1267,14 @@ export default function App() {
       setRooms(target.rooms());
       setRevision((value) => value + 1);
       await persistState(target);
+      try {
+        const outgoing = await target.call<SentFriendRequestView[]>(
+          "listSentFriendRequests",
+        );
+        setSentFriendRequests(Array.isArray(outgoing) ? outgoing : []);
+      } catch {
+        // The request was sent; the next background refresh will fill the list.
+      }
       setOnline(true);
       setSyncError(null);
       return sent;
@@ -1501,6 +1553,9 @@ export default function App() {
         requestBusyID={friendRequestBusyID}
         onAcceptRequest={(requestID) => void acceptFriendRequest(requestID)}
         onDeclineRequest={(requestID) => void declineFriendRequest(requestID)}
+        sentRequests={sentFriendRequests}
+        sentRequestBusyID={sentFriendRequestBusyID}
+        onCancelRequest={(requestID) => void cancelFriendRequest(requestID)}
         onOpen={(roomID) => void openRoom(roomID, "friends")}
         onAdd={() => setModal("addFriend")}
         onJoin={() => {
@@ -1515,6 +1570,9 @@ export default function App() {
         requestBusyID={friendRequestBusyID}
         onAcceptRequest={(requestID) => void acceptFriendRequest(requestID)}
         onDeclineRequest={(requestID) => void declineFriendRequest(requestID)}
+        sentRequests={sentFriendRequests}
+        sentRequestBusyID={sentFriendRequestBusyID}
+        onCancelRequest={(requestID) => void cancelFriendRequest(requestID)}
         onOpen={(roomID) => void openRoom(roomID, "friends")}
         onAdd={() => setModal("addFriend")}
       />
@@ -1594,6 +1652,8 @@ export default function App() {
           friends={friends}
           friendRequests={friendRequests}
           friendRequestBusyID={friendRequestBusyID}
+          sentFriendRequests={sentFriendRequests}
+          sentFriendRequestBusyID={sentFriendRequestBusyID}
           tab={tab}
           activeRoomID={activeRoomID}
           selectedMemberID={selectedMemberID}
@@ -1604,6 +1664,7 @@ export default function App() {
           onAddFriend={() => setModal("addFriend")}
           onAcceptRequest={(requestID) => void acceptFriendRequest(requestID)}
           onDeclineRequest={(requestID) => void declineFriendRequest(requestID)}
+          onCancelRequest={(requestID) => void cancelFriendRequest(requestID)}
           onJoin={() => {
             setInviteCode("");
             setModal("join");
@@ -1637,7 +1698,12 @@ export default function App() {
       </main>
 
       {isMobile && !hideMobileNav && (
-        <TabBar tab={tab} unread={unread} onTab={selectTab} />
+        <TabBar
+          tab={tab}
+          unread={unread}
+          friendRequests={friendRequests.length}
+          onTab={selectTab}
+        />
       )}
 
       {toast && (
@@ -1795,6 +1861,8 @@ function Sidebar({
   friends,
   friendRequests,
   friendRequestBusyID,
+  sentFriendRequests,
+  sentFriendRequestBusyID,
   tab,
   activeRoomID,
   selectedMemberID,
@@ -1805,6 +1873,7 @@ function Sidebar({
   onAddFriend,
   onAcceptRequest,
   onDeclineRequest,
+  onCancelRequest,
   onJoin,
   onMe,
 }: {
@@ -1814,6 +1883,8 @@ function Sidebar({
   friends: FriendEntry[];
   friendRequests: FriendRequestView[];
   friendRequestBusyID: string | null;
+  sentFriendRequests: SentFriendRequestView[];
+  sentFriendRequestBusyID: string | null;
   tab: Tab;
   activeRoomID: string | null;
   selectedMemberID: string | null;
@@ -1824,6 +1895,7 @@ function Sidebar({
   onAddFriend: () => void;
   onAcceptRequest: (requestID: string) => void;
   onDeclineRequest: (requestID: string) => void;
+  onCancelRequest: (requestID: string) => void;
   onJoin: () => void;
   onMe: () => void;
 }) {
@@ -1860,6 +1932,11 @@ function Sidebar({
           onClick={() => onTab("friends")}
         >
           好友
+          {friendRequests.length > 0 && (
+            <span className="side-tab-badge" aria-hidden="true">
+              {friendRequests.length > 99 ? "99+" : friendRequests.length}
+            </span>
+          )}
         </button>
         <button
           type="button"
@@ -1886,6 +1963,9 @@ function Sidebar({
           requestBusyID={friendRequestBusyID}
           onAcceptRequest={onAcceptRequest}
           onDeclineRequest={onDeclineRequest}
+          sentRequests={sentFriendRequests}
+          sentRequestBusyID={sentFriendRequestBusyID}
+          onCancelRequest={onCancelRequest}
           onOpen={onOpenRoom}
           onAdd={onAddFriend}
           onJoin={onJoin}
@@ -2142,10 +2222,12 @@ function EmptyChat({
 function TabBar({
   tab,
   unread,
+  friendRequests,
   onTab,
 }: {
   tab: Tab;
   unread: number;
+  friendRequests: number;
   onTab: (tab: Tab) => void;
 }) {
   const items: { id: Tab; label: string; icon: IconName }[] = [
@@ -2157,30 +2239,40 @@ function TabBar({
   ];
   return (
     <nav className="tabbar" aria-label="主导航">
-      {items.map((item) => (
-        <button
-          type="button"
-          key={item.id}
-          className={`tabbar-item ${tab === item.id ? "active" : ""}`}
-          aria-current={tab === item.id ? "page" : undefined}
-          aria-label={
-            item.id === "chats" && unread > 0
-              ? `${item.label}，${unread > 99 ? "99+" : unread} 条未读`
-              : item.label
-          }
-          onClick={() => onTab(item.id)}
-        >
-          <span className="tabbar-icon">
-            <Icon name={item.icon} size={23} />
-            {item.id === "chats" && unread > 0 && (
-              <span className="tabbar-badge">
-                {unread > 99 ? "99+" : unread}
-              </span>
-            )}
-          </span>
-          <span>{item.label}</span>
-        </button>
-      ))}
+      {items.map((item) => {
+        const badge =
+          item.id === "chats"
+            ? unread
+            : item.id === "friends"
+              ? friendRequests
+              : 0;
+        const badgeLabel =
+          item.id === "friends" ? " 个好友申请" : " 条未读";
+        return (
+          <button
+            type="button"
+            key={item.id}
+            className={`tabbar-item ${tab === item.id ? "active" : ""}`}
+            aria-current={tab === item.id ? "page" : undefined}
+            aria-label={
+              badge > 0
+                ? `${item.label}，${badge > 99 ? "99+" : badge}${badgeLabel}`
+                : item.label
+            }
+            onClick={() => onTab(item.id)}
+          >
+            <span className="tabbar-icon">
+              <Icon name={item.icon} size={23} />
+              {badge > 0 && (
+                <span className="tabbar-badge">
+                  {badge > 99 ? "99+" : badge}
+                </span>
+              )}
+            </span>
+            <span>{item.label}</span>
+          </button>
+        );
+      })}
     </nav>
   );
 }
